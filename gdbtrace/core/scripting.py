@@ -1,4 +1,4 @@
-"""API de script : l'équivalent Python du langage PRACTICE de Trace32.
+"""API de script de GdbTrace, en Python.
 
 Dans la console et les scripts, l'objet `gdbtrace` est disponible :
 

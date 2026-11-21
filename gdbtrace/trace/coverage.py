@@ -1,4 +1,4 @@
-"""Couverture de code depuis la trace d'instructions (l'équivalent de COVerage de Trace32).
+"""Couverture de code depuis la trace d'instructions (COVerage de GdbTrace).
 
 Non intrusive : ni instrumentation ni recompilation, on mesure le binaire livré. Chaque
 instruction de la trace ETM porte un atome **E** (exécutée, ou branchement pris) ou **N**
@@ -7,7 +7,7 @@ et les N. Elle s'accumule d'exécution en exécution (COVerage.ADD) jusqu'à sa 
 et se sauvegarde puis se fusionne entre sessions et campagnes de test (COVerage.SAVE /
 COVerage.LOAD /Add) tant que le code est identique.
 
-Mesures, au niveau du code objet comme Trace32, rapportées aux lignes et aux fonctions par
+Mesures, au niveau du code objet, rapportées aux lignes et aux fonctions par
 les informations de débogage DWARF :
 - **instructions** (statement coverage objet) : exécutée au moins une fois ; un branchement
   conditionnel compte dès qu'il est atteint, une autre instruction conditionnelle (bloc IT)

@@ -1,6 +1,6 @@
-# gdbtrace
+# GdbTrace
 
-Débogueur pour Cortex-M dans l'esprit de Lauterbach Trace32, construit sur **gdb** (GDB/MI)
+Débogueur pour Cortex-M avec trace, construit sur **gdb** (GDB/MI)
 et des briques open source (OpenOCD, QEMU, pyelftools ; Orbuculum pour la trace à venir).
 Interface en **tkinter**.
 
@@ -91,7 +91,7 @@ apparaissent à leur place par défaut.
 ### Vues en direct (cible en marche)
 
 En mode all-stop, gdb refuse toute lecture mémoire tant que la cible tourne. gdbtrace ouvre donc
-un **canal mémoire latéral** qui lit pendant l'exécution, comme Trace32 via le MEM-AP CoreSight :
+un **canal mémoire latéral** qui lit pendant l'exécution, via le MEM-AP CoreSight :
 
 | Cible | Canal | Remarque |
 |---|---|---|
@@ -260,8 +260,7 @@ les changements de tâche par ITM lèverait cette limite (à faire).
 
 ### Couverture de code (vue Couverture)
 
-**Comment Trace32 procède.** Trace32 (COVerage) ne recompile ni n'instrumente rien. La
-couverture est déduite de la **trace d'instructions** (ETM/PTM) du binaire livré, puis
+**Principe.** GdbTrace (COVerage) ne recompile ni n'instrumente rien. La couverture est déduite de la **trace d'instructions** (ETM/PTM) du binaire livré, puis
 rapportée aux lignes et aux fonctions par les informations de débogage. Le décodeur
 reconstruit chaque instruction exécutée. Chaque instruction conditionnelle porte en plus son
 issue : atome **E** (exécutée, ou branchement pris) ou **N** (condition fausse, ou
@@ -276,10 +275,8 @@ base (COVerage.ADD). On peut aussi remplir le tampon de trace de la puce ou de l
 l'ajouter. La base se cumule sur plusieurs tests et sessions (COVerage.SAVE / LOAD /Add) et
 s'exporte en rapport. L'intérêt est double : on mesure exactement ce qui est livré, sans
 modifier le timing, ce qu'exigent les normes de sûreté (DO-178C, ISO 26262) pour la
-couverture structurelle. Il faut une cible et une sonde capables de trace d'instructions.
-
-**Ce que fait gdbtrace.** Exactement la même chose, à partir de la trace ETM décodée (sonde
-de trace réelle, ou ETM simulé sous QEMU) :
+couverture structurelle. Il faut une cible et une sonde capables de trace d'instructions
+(sonde de trace réelle, ou ETM simulé sous QEMU) :
 
 | | |
 |---|---|
@@ -311,8 +308,7 @@ en RAM) donnerait la même information ; elle n'est pas encore prise en charge.
 
 Limites de l'ETM simulé : QEMU ne dit pas si la condition d'une instruction *non-branchement*
 d'un bloc IT était vraie. Elle est comptée exécutée, alors qu'un vrai ETM donne l'atome exact.
-Les branchements conditionnels, eux, sont exacts. Comme pour Trace32, il s'agit de couverture
-du code objet. La couverture MC/DC (conditions d'une décision) demande une analyse du source,
+Les branchements conditionnels, eux, sont exacts. Il s'agit de couverture du code objet. La couverture MC/DC (conditions d'une décision) demande une analyse du source,
 hors de portée de la trace seule.
 
 ### Console

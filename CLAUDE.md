@@ -4,10 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Projet
 
-gdbtrace : débogueur Cortex-M « à la Trace32 », construit sur gdb (GDB/MI), GUI tkinter. Tout
+GdbTrace (paquet `gdbtrace`) : débogueur Cortex-M avec trace, construit sur gdb (GDB/MI), GUI tkinter. Tout
 le projet est **en français** : docstrings, commentaires, libellés d'interface, messages
-d'erreur, README et messages de commit. Les commentaires citent souvent l'équivalent Trace32
-(Data.dump, Var.view, PER.view, Trace.List…) : garder ce vocabulaire.
+d'erreur, README et messages de commit. Les commentaires citent souvent le nom de commande
+GdbTrace (Data.dump, Var.view, PER.view, Trace.List…) : garder ce vocabulaire. Le produit
+s'appelle **GdbTrace** : ne citer aucun autre débogueur commercial dans le code ni la doc.
 
 Le développement avance par jalons (voir le tableau du README). Messages de commit :
 `Jalon N, étape M : résumé`, puis une liste à puces par module touché.
@@ -41,7 +42,7 @@ Aucun linter n'est configuré.
 ### Couches
 
 `GdbMI` (`core/gdb_backend.py`) → `Session` (`core/session.py`) → consommateurs :
-`App` (GUI), `ScriptAPI` (objet `t32` de la console et des scripts), mode `--batch`
+`App` (GUI), `ScriptAPI` (objet `gdbtrace` de la console et des scripts), mode `--batch`
 (`__main__.py`).
 
 - `GdbMI` : un thread lecteur ; chaque commande porte un jeton et attend sa réponse dans une

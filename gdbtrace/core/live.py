@@ -1,7 +1,7 @@
 """Accès mémoire « en direct », en parallèle de gdb, pendant que la cible tourne.
 
 gdb (mode all-stop) refuse de lire la mémoire tant que la cible est en marche.
-Comme Trace32, on passe par un canal latéral :
+GdbTrace passe donc par un canal latéral :
 
 - OpenOCD : port TCL (`read_memory`), qui accède à la mémoire via le MEM-AP CoreSight
   sans arrêter le cœur (Cortex-M) ;

@@ -1,4 +1,4 @@
-"""Exemple de script gdbtrace (équivalent d'un .cmm Trace32).
+"""Exemple de script GdbTrace.
 
     python -m gdbtrace examples/firmware/demo.elf --svd examples/svd/mps2-an385.svd \
         --script examples/scripts/demo.py

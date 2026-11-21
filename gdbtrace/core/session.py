@@ -1,7 +1,7 @@
 """Session de débogage : API haut niveau au-dessus de GdbMI.
 
-C'est l'objet que manipulent l'interface graphique et les scripts (équivalent des
-commandes Trace32 : Go, Break, Step, Register, Data.dump, Var.view...).
+C'est l'objet que manipulent l'interface graphique et les scripts (commandes GdbTrace :
+Go, Break, Step, Register, Data.dump, Var.view...).
 Toutes les méthodes sont utilisables depuis n'importe quel thread.
 """
 from __future__ import annotations

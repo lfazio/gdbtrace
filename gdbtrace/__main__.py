@@ -29,7 +29,7 @@ def build_target(args, elf: str) -> object:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="gdbtrace", description="Débogueur Cortex-M à la Trace32, sur gdb")
+    p = argparse.ArgumentParser(prog="gdbtrace", description="GdbTrace : débogueur Cortex-M sur gdb")
     p.add_argument("elf", nargs="?",
                    help="firmware ELF avec symboles DWARF (facultatif en GUI : Fichier › Programmer un ELF…)")
     g = p.add_mutually_exclusive_group()

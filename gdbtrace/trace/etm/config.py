@@ -1,6 +1,6 @@
 """Programmation de l'ETM d'un Cortex-M3/M4 (ETMv3.5) et du TPIU en mode parallèle.
 
-Ce que fait Trace32 derrière `ETM.ON` / `Trace.METHOD Analyzer` : déverrouiller l'ETM,
+Ce que GdbTrace fait pour `ETM.ON` (`--etm-config`) : déverrouiller l'ETM,
 le programmer pour tracer tout le code (événement « toujours vrai », aucune plage
 d'exclusion), lui donner un ID de trace, puis régler le TPIU : port parallèle de 1, 2 ou
 4 bits, formateur actif (indispensable pour séparer ETM et ITM sur le même port).

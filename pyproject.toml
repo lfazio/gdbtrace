@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gdbtrace"
 version = "0.1.0"
-description = "Débogueur Cortex-M à la Trace32, construit sur gdb (GDB/MI) avec une GUI tkinter"
+description = "GdbTrace : débogueur Cortex-M construit sur gdb (GDB/MI) avec une GUI tkinter"
 requires-python = ">=3.10"
 dependencies = ["pygdbmi>=0.11", "pyelftools>=0.30"]
 

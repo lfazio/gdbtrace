@@ -1,6 +1,6 @@
 """Programmation de la trace « légère » d'un Cortex-M3/M4/M7 : ITM, DWT, TPIU (SWO).
 
-Ce que Trace32 fait derrière `ITM.ON` / `SWO.ON` : activer la trace (DEMCR.TRCENA),
+Ce que GdbTrace fait pour `ITM.ON` / `SWO.ON` (`--swo-config`) : activer la trace (DEMCR.TRCENA),
 déverrouiller et activer l'ITM, choisir les ports de stimulus, régler l'échantillonnage du
 PC et la trace des exceptions dans le DWT, puis le TPIU (vitesse SWO, NRZ, formateur
 coupé). Les broches SWO propres au microcontrôleur (ex. DBGMCU_CR.TRACE_IOEN des STM32)

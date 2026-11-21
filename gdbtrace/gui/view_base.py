@@ -1,4 +1,4 @@
-"""Vues détachables façon Trace32.
+"""Vues détachables de GdbTrace.
 
 Chaque vue est un `ttk.Frame`. Le `ViewManager` peut l'afficher dans un onglet d'un
 `ttk.Notebook` ou la détacher dans un `tk.Toplevel` (fenêtre flottante). Comme un
