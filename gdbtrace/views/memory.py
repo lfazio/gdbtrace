@@ -1,0 +1,130 @@
+"""Data.dump : dump mémoire hexadécimal, octets modifiés en rouge, édition, rafraîchissement."""
+from __future__ import annotations
+
+import tkinter as tk
+from tkinter import simpledialog, ttk
+
+from ..gui.view_base import View
+
+WIDTH = 16
+HEX_COL = 10  # position de la première colonne hexa dans une ligne
+
+
+class MemoryView(View):
+    title = "Mémoire"
+    kind = "memory"
+
+    def __init__(self, master, app, **kw):
+        super().__init__(master, app, **kw)
+        bar = ttk.Frame(self)
+        bar.pack(fill="x")
+        ttk.Label(bar, text="Adresse :").pack(side="left")
+        self.addr_var = tk.StringVar(value="0x20000000")
+        e = ttk.Entry(bar, textvariable=self.addr_var, width=24)
+        e.pack(side="left", padx=2)
+        e.bind("<Return>", lambda _e: self.refresh())
+        ttk.Label(bar, text="Taille :").pack(side="left")
+        self.len_var = tk.StringVar(value="256")
+        e2 = ttk.Entry(bar, textvariable=self.len_var, width=6)
+        e2.pack(side="left", padx=2)
+        e2.bind("<Return>", lambda _e: self.refresh())
+        ttk.Button(bar, text="Lire", command=self.refresh).pack(side="left", padx=2)
+        self.live_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bar, text="Live", variable=self.live_var,
+                        command=self._live_tick).pack(side="left", padx=6)
+
+        self.text = tk.Text(self, font=self.mono, wrap="none", height=16, width=78,
+                            background="#fbfbf6")
+        self.text.tag_configure("addr", foreground="#3050a0")
+        self.text.tag_configure("changed", foreground="#d00000")
+        self.text.tag_configure("ascii", foreground="#606060")
+        sb = ttk.Scrollbar(self, orient="vertical", command=self.text.yview)
+        self.text.configure(yscrollcommand=sb.set)
+        self.text.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.text.bind("<Double-1>", self._edit)
+        self.text.configure(state="disabled")
+        self.base = 0
+        self.prev: bytes = b""
+        self.prev_base = -1
+        self.status = ""
+
+    # ------------------------------------------------------------------ lecture
+    def _resolve(self) -> int:
+        s = self.addr_var.get().strip()
+        try:
+            return int(s, 0)
+        except ValueError:
+            pass
+        if self.app.symbols and s in self.app.symbols.objects:
+            return self.app.symbols.objects[s][0]
+        return self.session.address_of(s) if self.stopped else 0
+
+    def refresh(self) -> None:
+        if not self.connected:
+            return
+        reader = self.app.live_reader()
+        if not self.stopped and reader is None:
+            return
+        base = self._resolve() & ~(WIDTH - 1)
+        n = max(WIDTH, min(int(self.len_var.get() or 256, 0), 65536))
+        data = reader(base, n) if (not self.stopped and reader) else self.session.read_memory(base, n)
+        self._render(base, data)
+
+    def _render(self, base: int, data: bytes) -> None:
+        prev = self.prev if self.prev_base == base else b""
+        self.base = base
+        t = self.text
+        t.configure(state="normal")
+        yview = t.yview()
+        t.delete("1.0", "end")
+        for off in range(0, len(data), WIDTH):
+            chunk = data[off:off + WIDTH]
+            t.insert("end", f"{base + off:08x}  ", "addr")
+            for i, b in enumerate(chunk):
+                k = off + i
+                tag = "changed" if prev and k < len(prev) and prev[k] != b else ""
+                t.insert("end", f"{b:02x}", tag)
+                t.insert("end", " ")
+            t.insert("end", "   " * (WIDTH - len(chunk)) + " ")
+            t.insert("end", "".join(chr(b) if 32 <= b < 127 else "." for b in chunk), "ascii")
+            t.insert("end", "\n")
+        t.yview_moveto(yview[0])
+        t.configure(state="disabled")
+        self.prev, self.prev_base = data, base
+
+    def _live_tick(self) -> None:
+        if not self.live_var.get() or not self.winfo_exists():
+            return
+        if self.connected and (self.stopped or self.app.live_reader()):
+            self.app.safe(self.refresh)
+        self.after(self.app.live_period_ms, self._live_tick)
+
+    # ------------------------------------------------------------------ édition
+    def _edit(self, event) -> None:
+        if not self.stopped:
+            return
+        idx = self.text.index(f"@{event.x},{event.y}")
+        line, col = (int(x) for x in idx.split("."))
+        rel = col - HEX_COL
+        if rel < 0 or rel >= WIDTH * 3:
+            return
+        addr = self.base + (line - 1) * WIDTH + rel // 3
+        k = addr - self.base
+        cur = self.prev[k] if k < len(self.prev) else 0
+        val = simpledialog.askstring("Écrire", f"Octets à {addr:#010x} (hex) :",
+                                     initialvalue=f"{cur:02x}", parent=self)
+        if val:
+            data = bytes.fromhex(val.replace(" ", ""))
+            self.app.safe(self.session.write_memory, addr, data)
+            self.app.refresh_all()
+
+    def get_state(self) -> dict:
+        return {"addr": self.addr_var.get(), "len": self.len_var.get(), "live": self.live_var.get()}
+
+    def set_state(self, state: dict) -> None:
+        self.addr_var.set(state.get("addr", self.addr_var.get()))
+        self.len_var.set(state.get("len", self.len_var.get()))
+        if state.get("live"):
+            self.live_var.set(True)
+            self.after(100, self._live_tick)

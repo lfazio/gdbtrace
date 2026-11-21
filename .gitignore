@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+build/
+dist/
+examples/firmware/*.elf
+gdbtrace-layout.json
+.pytest_cache/
