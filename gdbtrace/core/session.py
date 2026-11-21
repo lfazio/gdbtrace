@@ -6,9 +6,10 @@ Toutes les méthodes sont utilisables depuis n'importe quel thread.
 """
 from __future__ import annotations
 
+import os
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .gdb_backend import GdbError, GdbMI
@@ -24,6 +25,25 @@ class Frame:
     file: str | None
     fullname: str | None
     line: int | None
+
+
+@dataclass
+class ProgramResult:
+    elf: str
+    size: int = 0                    # octets écrits
+    seconds: float = 0.0
+    verified: bool | None = None     # None : pas de vérification
+    mismatched: list[str] = field(default_factory=list)
+    verify_error: str = ""
+
+    def summary(self) -> str:
+        if self.mismatched:
+            v = "ÉCHEC de la vérification : " + ", ".join(self.mismatched)
+        elif self.verified:
+            v = "vérifié"
+        else:
+            v = "non vérifié" + (f" ({self.verify_error.splitlines()[-1]})" if self.verify_error else "")
+        return f"{os.path.basename(self.elf)} programmé : {self.size} octets en {self.seconds:.1f} s, {v}"
 
 
 @dataclass
@@ -130,6 +150,42 @@ class Session:
 
     def load(self) -> None:
         self.gdb.command("-target-download", timeout=120)
+
+    def program(self, elf: str, verify: bool = True) -> "ProgramResult":
+        """Programme `elf` dans la cible : arrêt, reset (cible arrêtée au vecteur de reset),
+        écriture par le serveur gdb (`load` : flash avec OpenOCD/J-Link/pyOCD, RAM sous QEMU),
+        vérification optionnelle (`compare-sections`), puis reset. gdb prend aussi les
+        symboles de cet ELF."""
+        import time
+        t0 = time.monotonic()
+        if self.state == "running":
+            self.halt()
+        self.gdb.command(f'-file-exec-and-symbols "{elf}"')
+        self.elf = elf
+        if self.target is not None:
+            if hasattr(self.target, "elf"):      # QEMU : relancé plus tard avec ce firmware
+                self.target.elf = elf
+            if self.target.needs_load:          # sonde : flash écrite cible arrêtée au reset
+                self.target.reset(self)
+        res = self.gdb.command("-target-download", timeout=300)
+        result = ProgramResult(elf, int(res.get("load-size", 0) or 0))
+        if verify:
+            try:
+                out = self.cli("compare-sections")
+            except GdbError as exc:              # serveur sans lecture/CRC : non vérifié
+                result.verify_error = str(exc)
+            else:
+                result.mismatched = [ln.split(",")[0].replace("Section ", "")
+                                     for ln in out.splitlines() if "MIS-MATCHED" in ln]
+                result.verified = "matched" in out and not result.mismatched
+        if self.target is not None:
+            self.target.reset(self)
+        else:
+            self.monitor("reset halt")
+        self.cli("flushregs")
+        result.seconds = time.monotonic() - t0
+        self._emit("stopped", {"reason": "programmed"})
+        return result
 
     def monitor(self, cmd: str) -> str:
         """Commande `monitor` brute vers le serveur (OpenOCD : reset halt, flash...)."""

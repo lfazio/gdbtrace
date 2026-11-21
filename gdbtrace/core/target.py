@@ -1,6 +1,7 @@
 """Lancement du serveur gdb côté cible : QEMU (sans matériel) ou OpenOCD (sonde réelle)."""
 from __future__ import annotations
 
+import os
 import shutil
 import socket
 import subprocess
@@ -87,12 +88,42 @@ class QemuTarget(TargetServer):
     #: (plus lent ; QEMU n'émule pas d'ETM, voir trace/etm/qemu_sim.py)
     etm_sim: bool = False
 
+    #: second port QMP réservé au contrôle de la machine (reset) : le premier sert au canal
+    #: live, et un serveur QMP n'accepte qu'un client à la fois
+    ctl_port: int = 0
+    #: image chargée par QEMU (-kernel), rechargée par QEMU à chaque reset de la machine
+    kernel: str = field(default="", repr=False)
+    _ctl: QemuQmp | None = field(default=None, repr=False)
+
     def __post_init__(self) -> None:
         if not self.qmp_port:
             self.qmp_port = free_port()
+        if not self.ctl_port:
+            self.ctl_port = free_port()
+
+    def start(self, timeout: float = 10.0) -> None:
+        self.kernel = self.elf
+        super().start(timeout)
+
+    def stop(self) -> None:
+        if self._ctl is not None:
+            self._ctl.close()
+            self._ctl = None
+        super().stop()
 
     def reset(self, session) -> None:
-        # Le gdbstub de QEMU ne sait pas faire « reset halt » : reset via la table des vecteurs.
+        """Reset de la machine (périphériques, NVIC, mode du cœur), cible arrêtée au vecteur de
+        reset. Le gdbstub de QEMU ne sait pas faire « reset halt » : reset QMP, puis, si un autre
+        ELF a été programmé depuis le lancement, on le réécrit (QEMU recharge son -kernel)."""
+        try:
+            if self._ctl is None:
+                self._ctl = QemuQmp(self.host, self.ctl_port)
+            self._ctl.hmp("system_reset")
+        except OSError:
+            pass                                # QEMU sans port de contrôle : reset logiciel
+        else:
+            if session.elf and self.kernel and os.path.abspath(session.elf) != os.path.abspath(self.kernel):
+                session.load()
         session.reset_from_vectors()
 
     def command_line(self) -> list[str]:
@@ -101,6 +132,7 @@ class QemuTarget(TargetServer):
             "-serial", "none", "-kernel", self.elf,
             "-gdb", f"tcp:{self.host}:{self.gdb_port}", "-S",
             "-qmp", f"tcp:{self.host}:{self.qmp_port},server=on,wait=off",
+            "-qmp", f"tcp:{self.host}:{self.ctl_port},server=on,wait=off",
         ] + (["-accel", "tcg,one-insn-per-tb=on"] if self.etm_sim else [])
 
     def live_memory(self) -> LiveMemory | None:

@@ -105,3 +105,21 @@ def test_script_api(session, capsys):
 
 def test_hexdump():
     assert hexdump(b"AB\x00", 0x10) == "00000010  41 42 00" + " " * 39 + "  AB."
+
+
+def test_program_other_elf(session, rtos_elf):
+    """Programmer un autre ELF dans la cible : symboles de gdb, écriture, vérification, reset."""
+    from gdbtrace.core.symbols import SymbolTable
+    session.go()
+    import time
+    time.sleep(0.2)
+    res = session.program(rtos_elf)
+    assert res.size > 1000 and res.verified and not res.mismatched
+    assert "vérifié" in res.summary()
+    assert session.elf == rtos_elf and session.target.elf == rtos_elf
+    fr = session.frame()
+    assert fr.func == "Reset_Handler" and fr.fullname.endswith("freertos/startup.c")
+    assert fr.pc == SymbolTable(rtos_elf).function("Reset_Handler").start
+    session.break_("worker_step", temporary=True)       # symbole du nouveau programme
+    session.go()
+    assert session.wait_stopped(10) and session.frame().func == "worker_step"
