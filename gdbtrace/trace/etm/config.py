@@ -30,6 +30,7 @@ ETMCR_POWERDOWN = 1 << 0
 ETMCR_STALL = 1 << 7
 ETMCR_BRANCH_OUTPUT = 1 << 8
 ETMCR_PROGRAMMING = 1 << 10
+ETMCR_CYCLE_ACCURATE = 1 << 12
 ETMCR_TIMESTAMP = 1 << 28
 EVENT_ALWAYS = 0x6F            # ressource « toujours vrai » (fonction A)
 TECR1_EXCLUDE_ALL_OFF = 1 << 24   # mode exclusion sans plage : tout est tracé
@@ -40,6 +41,7 @@ class EtmConfig:
     port_width: int = 4          # bits du port de trace parallèle : 1, 2 ou 4
     trace_id: int = 2            # ID de flux dans les trames TPIU (ITM : 1)
     stall: bool = False          # bloquer le cœur plutôt que perdre de la trace
+    cycle_accurate: bool = False # cycles par instruction (analyse temporelle) ; ~8× plus de trace
     timestamps: bool = False
     stm32: bool = False          # activer les broches de trace via DBGMCU_CR
 
@@ -50,6 +52,8 @@ class EtmConfig:
             v |= ETMCR_STALL
         if self.timestamps:
             v |= ETMCR_TIMESTAMP
+        if self.cycle_accurate:
+            v |= ETMCR_CYCLE_ACCURATE
         return v
 
     def register_writes(self) -> list[RegWrite]:
@@ -86,4 +90,5 @@ class EtmConfig:
     def summary(self) -> str:
         return (f"ETM : ID {self.trace_id}, port {self.port_width} bits, formateur TPIU actif"
                 + (", horodatage" if self.timestamps else "") + (", stall" if self.stall else "")
+                + (", cycle-accurate" if self.cycle_accurate else "")
                 + (", broches STM32" if self.stm32 else ""))

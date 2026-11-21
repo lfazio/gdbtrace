@@ -12,6 +12,19 @@ tk = pytest.importorskip("tkinter")
 pytestmark = [needs_qemu, pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="pas de DISPLAY")]
 
 
+def close_app(app) -> None:
+    """Ferme l'App puis ramasse ses objets tkinter dans le thread principal.
+
+    Sinon, le ramasse-miettes peut se déclencher plus tard dans un thread de travail (trace,
+    échantillonneur) : chaque `Variable.__del__` d'une App détruite y attend alors jusqu'à
+    une seconde un mainloop Tk qui ne tourne pas (« main thread is not in main loop »),
+    ce qui bloque ce thread pendant des secondes.
+    """
+    import gc
+    app.quit()
+    gc.collect()
+
+
 def pump(app, cond, timeout=10.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -30,7 +43,7 @@ def app(elf, tmp_path):
     s.connect(elf, QemuTarget(elf=elf, gdb_port=free_port()))
     a.attach(s)
     yield a
-    a.quit()
+    close_app(a)
 
 
 def test_views_follow_breakpoint(app):
@@ -180,7 +193,7 @@ def rtos_app(rtos_elf, tmp_path):
     s.connect(rtos_elf, QemuTarget(elf=rtos_elf, gdb_port=free_port()))
     a.attach(s)
     yield a
-    a.quit()
+    close_app(a)
 
 
 def test_rtos_view(rtos_app):
@@ -231,7 +244,7 @@ def test_profile_view_live_per_task(rtos_app):
     pv.start()
     assert pv.running_source == "Live"
     app.go()
-    assert pump(app, lambda: pv.profile.total > 300, timeout=8)
+    assert pump(app, lambda: pv.profile.total > 300), (pv.profile.total, pv.sampler and pv.sampler.errors)
     app.halt()
     assert pump(app, lambda: app.session.state == "stopped")
     pv.stop()
@@ -287,7 +300,7 @@ def etm_app(elf, tmp_path):
     s.connect(elf, QemuTarget(elf=elf, gdb_port=free_port(), etm_sim=True))
     a.attach(s)
     yield a
-    a.quit()
+    close_app(a)
 
 
 def test_trace_view_with_simulated_etm(etm_app):
@@ -323,4 +336,16 @@ def test_trace_view_with_simulated_etm(etm_app):
     # 2e exécution : la trace s'enrichit (ETM simulé à chaque arrêt)
     n = app.trace.etm.stats["instructions"]
     app.go()
-    assert pump(app, lambda: app.trace.etm.stats["instructions"] > n and not app.trace.etm_busy)
+    assert pump(app, lambda: app.trace.etm.stats["instructions"] > n and not app.trace.etm_busy), \
+        etm_diagnostics(app)
+
+
+def etm_diagnostics(app) -> str:
+    """Message d'échec : état de la simulation ETM et erreurs affichées dans la console."""
+    from gdbtrace.views.console import ConsoleView
+    sim = app.trace.etm_sim
+    con = app.views.find(ConsoleView)
+    errors = [l for l in con.out.get("1.0", "end").splitlines() if "Error" in l or "ETM" in l]
+    return (f"état={app.session.state} frame={app.current_frame} busy={app.trace.etm_busy} "
+            f"runs={sim and sim.runs} path={sim and sim.path} stats={app.trace.etm.stats} "
+            f"erreurs={errors[-5:]}")

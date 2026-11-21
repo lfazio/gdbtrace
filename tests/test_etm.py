@@ -298,3 +298,93 @@ def test_qemu_simulated_etm(elf):
 
 def img_size(tm, addr):
     return tm.etm.image.instr(addr).size
+
+
+# ====================================================================== cycles (analyse temporelle)
+def _ins(code: bytes, addr: int = 0x1000):
+    from gdbtrace.trace.etm.image import _classify
+    img = CodeImage.__new__(CodeImage)
+    import capstone
+    cs = capstone.Cs(capstone.CS_ARCH_ARM, capstone.CS_MODE_THUMB | capstone.CS_MODE_MCLASS)
+    cs.detail = True
+    return _classify(next(cs.disasm(code, addr)))
+
+
+def test_cycle_model():
+    from gdbtrace.trace.etm.cycles import P, cycles_of
+    assert cycles_of(_ins(b"\x80\xb5")) == 3                         # push {r7, lr} : 1 + 2
+    assert cycles_of(_ins(b"\x80\xbd"), True, True) == 3 + P         # pop {r7, pc} : 1 + 2 + P
+    assert cycles_of(_ins(b"\x3b\x68")) == 2                         # ldr r3, [r7]
+    assert cycles_of(_ins(b"\x3b\x60")) == 1                         # str r3, [r7]
+    assert cycles_of(_ins(b"\x01\x30")) == 1                         # adds r0, #1
+    beq = _ins(b"\x00\xd0")                                          # beq
+    assert cycles_of(beq, True, True) == 1 + P and cycles_of(beq, True, False) == 1
+    assert cycles_of(beq, False) == 1                                # condition fausse
+    assert cycles_of(_ins(b"\x90\xfb\xf1\xf0")) == 7                 # sdiv r0, r0, r1 (moyenne)
+    assert cycles_of(_ins(b"\x70\x47"), True, True) == 1 + P         # bx lr
+
+
+def test_cycle_accurate_pheaders():
+    from gdbtrace.trace.etm.etm3 import Wait
+    d = Etm3Decoder(cycle_accurate=True)
+    d.synced = True
+    out = d.feed(bytes([0xA8 | 0x40, 0xBC, 0xC0, 0x92, 0x96, 0x86, 0x8C, 0x04, 0x85, 0x01])
+                 + b"\x70\x05" + isync_packet(0x2000)[1:])
+    assert out[0] == Atoms("E", (3,))          # format 3 : 3 cycles puis E
+    assert out[1] == Wait(8)                   # format 3 sans atome : 8 cycles
+    assert out[2] == Atoms("N", (1,))          # format 1 CA : N
+    assert out[3] == Atoms("E", (0,)) and out[4] == Atoms("N", (0,))   # format 4
+    assert out[5] == Atoms("EN", (1, 0))       # format 2 : 1 cycle sur le premier atome
+    assert out[6] == Atoms("EEE", (1, 1, 1))   # format 1 CA : E sur 3 bits
+    assert out[7] == Wait(5 + (1 << 7))        # paquet de cycle count
+    assert isinstance(out[8], ISync) and out[8].cycles == 5 and out[8].addr == 0x2000
+
+
+def as_timed(events):
+    out = []
+    for e in events:
+        if isinstance(e, ql.Step):
+            out.append(("step", e.addr, e.cycles))
+        elif isinstance(e, ql.ExcEntry):
+            out.append(("exc", e.number, e.tailchain, e.cycles))
+        else:
+            out.append(("ret", e.cycles))
+    return out
+
+
+@needs_qemu
+@pytest.mark.parametrize("name", ["bare", "rtos"])
+def test_cycle_accurate_roundtrip(qemu_paths, name):
+    from gdbtrace.trace.etm.cycles import annotate
+    img, events = qemu_paths[name]
+    timed = annotate(events[:200_000], img)
+    data = encode(timed, img, cycle_accurate=True)
+    decoded, pk, fl = decode(data, img, cycle_accurate=True)
+    assert pk.errors == 0 and fl.timing.startswith("mesuré")
+    assert as_timed(decoded) == as_timed(timed)                     # cycles et enchaînements
+    assert fl.stats.cycles == sum(e.cycles for e in timed)
+    # sans cycle-accurate : mêmes durées, estimées par le décodeur (enchaînements détectés)
+    est, _, fl2 = decode(encode(timed, img), img)
+    assert fl2.timing.startswith("estimé") and as_timed(est) == as_timed(timed)
+
+
+@needs_qemu
+@pytest.mark.parametrize("name", ["bare", "rtos"])
+def test_opencsd_agrees_on_cycles(qemu_paths, name, tmp_path):
+    if opencsd.lister() is None:
+        pytest.skip("OpenCSD absent : tools/build_opencsd.sh")
+    from gdbtrace.trace.etm.cycles import annotate
+    img, events = qemu_paths[name]
+    timed = annotate(events[:100_000], img)
+    opencsd.make_snapshot(str(tmp_path / "snap"), img,
+                          frame_bytes(2, encode(timed, img, cycle_accurate=True)), cycle_accurate=True)
+    ocsd_events, errors = opencsd.decode(str(tmp_path / "snap"), img, with_cycles=True)
+    assert errors == []
+    ref = [t if t[0] != "exc" else ("exc", t[1], t[3]) for t in as_timed(timed)]
+    assert ocsd_events == ref[:len(ocsd_events)] and len(ocsd_events) >= len(ref) - 2
+
+
+def test_etm_config_cycle_accurate():
+    from gdbtrace.trace.etm.config import EtmConfig
+    w = {r.name: r for r in EtmConfig(cycle_accurate=True).register_writes()}
+    assert w["ETMCR"].value == 1 << 12

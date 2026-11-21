@@ -35,12 +35,13 @@ class TraceManager:
         self.etm_busy = False
 
     # ------------------------------------------------------------------ ETM
-    def setup_etm(self, elf: str, symbols) -> str | None:
-        """Prépare le décodage ETM pour cet ELF. Retourne un message si impossible."""
+    def setup_etm(self, elf: str, symbols, cycle_accurate: bool = False) -> str | None:
+        """Prépare le décodage ETM pour cet ELF. `cycle_accurate` doit refléter la
+        configuration de l'ETM (ETMCR bit 12). Retourne un message si impossible."""
         try:
             from .etm.image import CodeImage
             from .etm.trace import EtmTrace
-            self.etm = EtmTrace(CodeImage(elf), symbols)
+            self.etm = EtmTrace(CodeImage(elf), symbols, cycle_accurate=cycle_accurate)
         except Exception as exc:  # noqa: BLE001 - capstone absent, ELF illisible
             self.etm = None
             return f"trace ETM indisponible : {exc}"
@@ -48,7 +49,10 @@ class TraceManager:
 
     def enable_qemu_sim(self, qmp) -> None:
         from .etm.qemu_sim import QemuEtmSim
+        from .etm.trace import EtmTrace
         if self.etm is not None:
+            if not self.etm.cycle_accurate:      # la simulation encode en cycle-accurate
+                self.etm = EtmTrace(self.etm.image, self.etm.symbols, cycle_accurate=True)
             self.etm_sim = QemuEtmSim(qmp, self.etm.image, self.etm)
 
     def _etm_feed(self, data: bytes) -> None:

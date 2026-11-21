@@ -12,7 +12,7 @@ retour d'exception.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable, Iterator
 
 _TRACE = re.compile(r"^Trace \d+: 0x[0-9a-f]+ \[[0-9a-f]+/([0-9a-f]+)/")
@@ -21,10 +21,15 @@ _TAKING = re.compile(r"\.\.\.taking pending (?:non)?secure exception (\d+)")
 _NEWPC = re.compile(r"\.\.\.loaded new PC 0x([0-9a-f]+)")
 
 
+# `cycles` : durée de l'événement (instruction, latence d'exception), mesurée par un ETM
+# cycle-accurate ou estimée par le modèle (trace/etm/cycles.py). Hors égalité : deux
+# chemins identiques restent égaux quelle que soit la source de temps.
+
 @dataclass(frozen=True)
 class Step:
     """Instruction exécutée."""
     addr: int
+    cycles: int = field(default=0, compare=False)
 
 
 @dataclass(frozen=True)
@@ -32,11 +37,13 @@ class ExcEntry:
     number: int
     handler: int
     tailchain: bool = False      # enchaînée sans retour au code interrompu
+    cycles: int = field(default=0, compare=False)
 
 
 @dataclass(frozen=True)
 class ExcReturn:
     """Retour d'exception : l'exécution reprend à l'adresse de la Step suivante."""
+    cycles: int = field(default=0, compare=False)
 
 
 Event = Step | ExcEntry | ExcReturn
@@ -98,16 +105,31 @@ LOG_ITEMS = "exec,nochain,int"
 
 def record(elf: str, seconds: float, path: str, machine: str = "mps2-an385",
            qemu: str = "qemu-system-arm") -> None:
-    """Exécute le firmware sous QEMU pendant `seconds` en journalisant chaque instruction."""
+    """Exécute le firmware sous QEMU pendant `seconds` en journalisant chaque instruction.
+    Le temps n'est compté qu'une fois le journal réellement alimenté : sur une machine
+    chargée, QEMU peut mettre du temps à démarrer."""
+    import os
     import subprocess
+    import time
+    if os.path.exists(path):
+        os.remove(path)
     cmd = [qemu, "-M", machine, "-nographic", "-monitor", "none", "-serial", "none",
            "-kernel", elf, *QEMU_LOG_ARGS, "-d", LOG_ITEMS, "-D", path]
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        proc.wait(timeout=seconds)
-    except subprocess.TimeoutExpired:
-        proc.terminate()
-        proc.wait(timeout=5)
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and proc.poll() is None:
+            if os.path.exists(path) and os.path.getsize(path) > 0:
+                break
+            time.sleep(0.02)
+        try:
+            proc.wait(timeout=seconds)
+        except subprocess.TimeoutExpired:
+            pass
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=5)
 
 
 def parse_file(path: str) -> list[Event]:

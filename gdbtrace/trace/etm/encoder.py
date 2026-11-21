@@ -14,7 +14,8 @@ from __future__ import annotations
 
 from typing import Iterable
 
-from .image import DIRECT, INDIRECT, CodeImage
+from .cycles import outcome, successors
+from .image import INDIRECT, CodeImage
 from .qemu_log import Event, ExcEntry, ExcReturn, Step
 
 ASYNC = b"\x00\x00\x00\x00\x00\x80"
@@ -55,11 +56,16 @@ def isync_packet(addr: int, reason: int = 0) -> bytes:
 
 
 class Etm3Encoder:
-    def __init__(self, image: CodeImage, sync_period: int = 1024):
+    """`cycle_accurate=True` : mode cycle-accurate (ETMCR bit 12) ; chaque atome porte les
+    cycles de son instruction (`Step.cycles`, voir `cycles.annotate`) et les latences
+    d'exception sont émises en cycles sans instruction."""
+
+    def __init__(self, image: CodeImage, sync_period: int = 1024, cycle_accurate: bool = False):
         self.image = image
         self.sync_period = sync_period
+        self.cycle_accurate = cycle_accurate
         self.out = bytearray()
-        self.atoms: list[str] = []
+        self.atoms: list[tuple[str, int]] = []     # (atome, cycles)
         self.last_addr = 0
         self.need_addr = False
         self.synced = False
@@ -71,7 +77,12 @@ class Etm3Encoder:
         self._since_sync += len(data)
 
     def _flush_atoms(self) -> None:
-        a = self.atoms
+        if self.cycle_accurate:
+            for atom, cycles in self.atoms:
+                self._ca_atom(atom, cycles)
+            self.atoms.clear()
+            return
+        a = [atom for atom, _ in self.atoms]
         i = 0
         while i < len(a):
             if a[i] == "N" and i + 1 < len(a):          # format 2 : deux atomes dont un N
@@ -86,11 +97,33 @@ class Etm3Encoder:
             if i < len(a) and a[i] == "N":
                 n, i = 1, i + 1
             self._emit(bytes([0x80 | e << 2 | n << 6]))
-        a.clear()
+        self.atoms.clear()
+
+    # --- mode cycle-accurate (P-headers CA de l'ETMv3)
+    def _wait(self, cycles: int) -> None:
+        """Cycles sans instruction : format 3 sans atome, 1 à 8 cycles par octet."""
+        while cycles > 0:
+            k = min(8, cycles)
+            self._emit(bytes([0xA0 | (k - 1) << 2]))
+            cycles -= k
+
+    def _ca_atom(self, atom: str, cycles: int) -> None:
+        if cycles == 0:                                  # format 4 : un atome, 0 cycle
+            self._emit(bytes([0x92 | (0x04 if atom == "N" else 0)]))
+            return
+        if atom == "E":                                  # format 3 : 1 à 8 cycles puis E
+            self._wait(cycles - min(cycles, 8))
+            self._emit(bytes([0xA0 | (min(cycles, 8) - 1) << 2 | 0x40]))
+        else:                                            # format 1 CA : N sur 1 cycle
+            self._wait(cycles - 1)
+            self._emit(b"\xC0")
 
     def _sync(self, addr: int, reason: int) -> None:
         self._flush_atoms()
-        self._emit(ASYNC + isync_packet(addr, reason))
+        isync = isync_packet(addr, reason)
+        if self.cycle_accurate:                          # I-sync avec cycle count (0x70)
+            isync = b"\x70\x00" + isync[1:]
+        self._emit(ASYNC + isync)
         self.last_addr = addr
         self.need_addr = False
         self.synced = True
@@ -105,63 +138,40 @@ class Etm3Encoder:
     # ------------------------------------------------------------------ encodage
     def encode(self, events: Iterable[Event]) -> bytes:
         evs = list(events)
-        succ = _successors(evs)
+        succ = successors(evs)
         for idx, ev in enumerate(evs):
             if isinstance(ev, Step):
                 if not self.synced or self._since_sync >= self.sync_period:
                     self._sync(ev.addr, 1 if not self.synced else 0)
                 elif self.need_addr:
                     self._branch(ev.addr)
-                self._instr(ev.addr, succ.get(idx))
+                self._instr(ev, succ.get(idx))
             elif isinstance(ev, ExcEntry):
                 if self.synced:
+                    self._flush_atoms()
+                    if self.cycle_accurate:
+                        self._wait(ev.cycles)            # latence d'entrée
                     self._branch(ev.handler, ev.number)
             elif isinstance(ev, ExcReturn):
                 if self.synced:
                     self._flush_atoms()
+                    if self.cycle_accurate:
+                        self._wait(ev.cycles)            # latence de sortie
                     self._emit(b"\x76")
                     self.need_addr = True
         self._flush_atoms()
         return bytes(self.out)
 
-    def _instr(self, addr: int, nxt: int | None) -> None:
-        ins = self.image.instr(addr)
+    def _instr(self, ev: Step, nxt: int | None) -> None:
+        ins = self.image.instr(ev.addr)
         if ins is None:
-            raise ValueError(f"instruction hors image à {addr:#x}")
-        seq = addr + ins.size
-        if ins.kind == DIRECT:
-            taken = nxt == ins.target if nxt is not None else not ins.cond
-            self.atoms.append("E" if taken or not ins.cond else "N")
-        elif ins.kind == INDIRECT:
-            if ins.cond and nxt == seq:
-                self.atoms.append("N")
-            else:
-                self.atoms.append("E")
-                self.need_addr = True
-        else:
-            self.atoms.append("E")
+            raise ValueError(f"instruction hors image à {ev.addr:#x}")
+        executed, taken = outcome(ins, ev.addr, nxt)
+        self.atoms.append(("E" if executed else "N", ev.cycles))
+        if ins.kind == INDIRECT and executed:
+            self.need_addr = True
 
 
-def _successors(evs: list[Event]) -> dict[int, int]:
-    """Pour chaque instruction (indice de Step), l'adresse de l'instruction suivante dans le
-    même contexte : la Step suivante, ou celle qui suit le retour de l'exception qui l'a
-    interrompue (exceptions imbriquées et enchaînées gérées par une pile)."""
-    succ: dict[int, int] = {}
-    last: int | None = None
-    stack: list[int | None] = []
-    for i, ev in enumerate(evs):
-        if isinstance(ev, Step):
-            if last is not None:
-                succ[last] = ev.addr
-            last = i
-        elif isinstance(ev, ExcEntry):
-            if not ev.tailchain:
-                stack.append(last)
-            last = None
-        elif isinstance(ev, ExcReturn):
-            last = stack.pop() if stack else None
-    return succ
-
-
-def encode(events: Iterable[Event], image: CodeImage, sync_period: int = 1024) -> bytes:
-    return Etm3Encoder(image, sync_period).encode(events)
+def encode(events: Iterable[Event], image: CodeImage, sync_period: int = 1024,
+           cycle_accurate: bool = False) -> bytes:
+    return Etm3Encoder(image, sync_period, cycle_accurate).encode(events)

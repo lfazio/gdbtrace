@@ -31,11 +31,20 @@ class ISync(EtmPacket):
     addr: int = 0
     reason: int = 0          # 0 périodique, 1 trace activée, 2 reprise après overflow, 3 sortie de debug
     thumb: bool = True
+    cycles: int = 0          # I-sync avec cycle count (0x70, mode cycle-accurate)
 
 
 @dataclass
 class Atoms(EtmPacket):
     atoms: str = ""          # « E » exécutée, « N » non exécutée, dans l'ordre d'exécution
+    cycles: tuple = ()       # mode cycle-accurate : cycles de chaque atome
+
+
+@dataclass
+class Wait(EtmPacket):
+    """Cycles écoulés sans instruction (mode cycle-accurate : P-header format 3 sans atome,
+    ou paquet de cycle count)."""
+    cycles: int = 0
 
 
 @dataclass
@@ -75,8 +84,9 @@ class Other(EtmPacket):
 class Etm3Decoder:
     """Décodeur incrémental. `ctxid_bytes` : octets de context ID (0 sur Cortex-M)."""
 
-    def __init__(self, ctxid_bytes: int = 0):
+    def __init__(self, ctxid_bytes: int = 0, cycle_accurate: bool = False):
         self.ctxid_bytes = ctxid_bytes
+        self.cycle_accurate = cycle_accurate   # doit refléter ETMCR bit 12 de la cible
         self.buf = bytearray()
         self.synced = False
         self.last_addr = 0          # base de la compression d'adresse
@@ -138,6 +148,9 @@ class Etm3Decoder:
         if h & 0x01:
             return self._branch(i)
         if h & 0x81 == 0x80:
+            if self.cycle_accurate:
+                pkt = self._pheader_ca(h)
+                return (pkt, 1) if pkt is not None else self._error(1)
             return self._pheader(h), 1
         if h == 0x00:
             n = self._zeros_then_80(i)
@@ -152,10 +165,13 @@ class Etm3Decoder:
             r = self._cont(i + 1, 5)
             if r is None:
                 return None, 0
-            return self._isync(i, 1 + r[1])
+            pkt, used = self._isync(i, 1 + r[1])
+            if pkt is not None:
+                pkt.cycles = r[0]
+            return pkt, used
         if h == 0x04:
             r = self._cont(i + 1, 5)
-            return (None, 0) if r is None else (Other("cycle-count", r[0]), 1 + r[1])
+            return (None, 0) if r is None else (Wait(r[0]), 1 + r[1])
         if h == 0x0C:
             return Trigger(), 1
         if h == 0x66:
@@ -201,6 +217,24 @@ class Etm3Decoder:
         if h & 0xF3 == 0x82:                # format 2 : deux atomes, bit 3 = 1er, bit 2 = 2e
             return Atoms(("N" if h & 0x8 else "E") + ("N" if h & 0x4 else "E"))
         return Atoms("")
+
+    @staticmethod
+    def _pheader_ca(h: int) -> EtmPacket | None:
+        """P-headers du mode cycle-accurate (lecture identique à OpenCSD)."""
+        code = h & 0xA3
+        if code == 0x80:                    # format 1 : E (bits 4:2) puis N, 1 cycle par atome
+            e, n = (h >> 2) & 0x7, (h >> 6) & 1
+            if e + n == 0:
+                return None
+            return Atoms("E" * e + "N" * n, (1,) * (e + n))
+        if code == 0x82:
+            if h & 0x10:                    # format 4 : un atome, 0 cycle
+                return Atoms("N" if h & 0x4 else "E", (0,))
+            return Atoms(("N" if h & 0x8 else "E") + ("N" if h & 0x4 else "E"), (1, 0))   # format 2
+        if code == 0xA0:                    # format 3 : 1 à 8 cycles, puis un atome E optionnel
+            cycles = ((h >> 2) & 0x7) + 1
+            return Atoms("E", (cycles,)) if h & 0x40 else Wait(cycles)
+        return None
 
     def _isync(self, i: int, hdr_len: int) -> tuple[EtmPacket | None, int]:
         b = self.buf

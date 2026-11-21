@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import tempfile
 
+from .cycles import annotate
 from .encoder import Etm3Encoder
 from .qemu_log import LOG_ITEMS, parse
 
@@ -53,9 +54,10 @@ class QemuEtmSim:
                 text = fh.read().decode("latin-1")
         finally:
             os.remove(path)
-        events = list(parse(text.splitlines()))
+        # cycles du modèle (QEMU n'en a pas), encodés en mode cycle-accurate
+        events = annotate(list(parse(text.splitlines())), self.image)
         self.last_events = len(events)
-        data = Etm3Encoder(self.image).encode(events)
+        data = Etm3Encoder(self.image, cycle_accurate=True).encode(events)
         self.etm.feed(data)
         return len(data)
 

@@ -40,11 +40,13 @@ class FlowRow:
 
 
 class EtmTrace:
-    def __init__(self, image: CodeImage, symbols=None, history: int = 200_000):
+    def __init__(self, image: CodeImage, symbols=None, history: int = 200_000,
+                 cycle_accurate: bool = False):
         self.image = image
         self.symbols = symbols
-        self.packets = Etm3Decoder()
-        self.flow = FlowDecoder(image)
+        self.cycle_accurate = cycle_accurate
+        self.packets = Etm3Decoder(cycle_accurate=cycle_accurate)
+        self.flow = FlowDecoder(image, cycle_accurate)
         self.history: deque[Event] = deque(maxlen=history)
         self.executed: set[int] = set()
         self.bytes = 0
@@ -68,8 +70,8 @@ class EtmTrace:
 
     def reset(self) -> None:
         with self._lock:
-            self.packets = Etm3Decoder()
-            self.flow = FlowDecoder(self.image)
+            self.packets = Etm3Decoder(cycle_accurate=self.cycle_accurate)
+            self.flow = FlowDecoder(self.image, self.cycle_accurate)
             self.history.clear()
             self.executed.clear()
             self.bytes = 0
@@ -86,7 +88,12 @@ class EtmTrace:
         fs = self.flow.stats
         return {"octets": self.bytes, "instructions": fs.instructions, "non exécutées": fs.not_executed,
                 "erreurs": self.packets.errors, "atomes perdus": fs.lost_atoms,
-                "code inconnu": fs.unknown_code}
+                "code inconnu": fs.unknown_code, "cycles": fs.cycles}
+
+    @property
+    def timing(self) -> str:
+        """Origine des durées : mesurées (cycle-accurate) ou estimées (modèle)."""
+        return self.flow.timing
 
     # ------------------------------------------------------------------ couverture
     def _instructions_of(self, func) -> list[int]:
