@@ -15,6 +15,7 @@ Interface en **tkinter**.
 | 5. Trace SWO/ITM | printf ITM, trace des exceptions, profilage statistique (fonctions, lignes, tâches) par SWO ou lecture du PC en marche | ✅ |
 | 6. Trace ETM | Trace d'instructions ETMv3 (Cortex-M3/M4) : listing avant l'arrêt, flot d'appels, couverture ; ETM simulé sous QEMU ; décodage validé contre OpenCSD | ✅ |
 | 7. Analyse temporelle | Durées par fonction et par exception (appels, brut, net, min/max/moy), chronogramme des appels ; ETM cycle-accurate (validé contre OpenCSD) ou modèle de cycles | ✅ |
+| 8. Couverture de code | Couverture du code objet par la trace ETM, sans instrumentation : instructions, branches prises / non prises, lignes, fonctions ; cumul et fusion de campagnes ; rapports HTML et LCOV | ✅ |
 
 ## Installation
 
@@ -186,10 +187,9 @@ permet de reconstruire **chaque instruction exécutée**, combiné au code de l'
 - **Listing** : les N dernières instructions avant l'arrêt (« ce qui s'est passé avant le
   crash »), avec la fonction, le désassemblage, la ligne source, les exceptions et leurs retours.
   Double-clic : la source s'ouvre ;
-- **Appels** : appels, retours, exceptions, indentés par profondeur ;
-- **Couverture** : instructions exécutées par fonction (les literal pools `$d` ne sont pas
-  comptés) ; « Couverture dans la source » colore la marge de la vue Source (vert : exécutée,
-  rouge : jamais exécutée).
+- **Appels** : appels, retours, exceptions, indentés par profondeur.
+
+La couverture de code a sa propre vue, décrite plus bas.
 
 Sources de trace :
 
@@ -258,6 +258,63 @@ décision est reportée au premier retour. Si elle reste ambiguë, les morceaux 
 comme appels partiels plutôt que d'être attribués au hasard (le net reste exact). Tracer
 les changements de tâche par ITM lèverait cette limite (à faire).
 
+### Couverture de code (vue Couverture)
+
+**Comment Trace32 procède.** Trace32 (COVerage) ne recompile ni n'instrumente rien. La
+couverture est déduite de la **trace d'instructions** (ETM/PTM) du binaire livré, puis
+rapportée aux lignes et aux fonctions par les informations de débogage. Le décodeur
+reconstruit chaque instruction exécutée. Chaque instruction conditionnelle porte en plus son
+issue : atome **E** (exécutée, ou branchement pris) ou **N** (condition fausse, ou
+branchement non pris). On obtient ainsi une couverture **du code objet** :
+- **instructions** (statement coverage) ;
+- **branches** (decision coverage objet) : chaque branchement conditionnel doit avoir été
+  vu **pris et non pris**. Un `if` toujours vrai dans les tests apparaît « partiel » même si
+  toutes ses lignes ont été exécutées.
+
+Pour une campagne longue, la trace est **streamée** vers le PC et ajoutée en continu à la
+base (COVerage.ADD). On peut aussi remplir le tampon de trace de la puce ou de la sonde puis
+l'ajouter. La base se cumule sur plusieurs tests et sessions (COVerage.SAVE / LOAD /Add) et
+s'exporte en rapport. L'intérêt est double : on mesure exactement ce qui est livré, sans
+modifier le timing, ce qu'exigent les normes de sûreté (DO-178C, ISO 26262) pour la
+couverture structurelle. Il faut une cible et une sonde capables de trace d'instructions.
+
+**Ce que fait gdbtrace.** Exactement la même chose, à partir de la trace ETM décodée (sonde
+de trace réelle, ou ETM simulé sous QEMU) :
+
+| | |
+|---|---|
+| Base | compte, par adresse, les atomes E et N ; s'accumule d'exécution en exécution, jusqu'à **RàZ** |
+| Instruction | `ok`, `pris` (branchement toujours pris), `non pris` (jamais pris), `cond. fausse` (instruction conditionnelle jamais exécutée), `jamais` |
+| Ligne, fonction, fichier | **ok** (tout exécuté, chaque branchement des deux côtés), **partiel**, **jamais** ; % d'instructions, issues de branchements vues, nombre d'entrées |
+| Code mesuré | instructions des fonctions de l'ELF, sans les *literal pools* (`$d`) ni les `nop` d'alignement ; les branchements d'un bloc IT sont conditionnels |
+| Cumul | **Enregistrer** / **Charger** (fusion) d'une base JSON, refusée si le code a changé |
+| Rapports | **HTML** autonome (résumé, fichiers et fonctions, source annotée, instructions en cause), **LCOV** `.info` (genhtml, GitLab, Jenkins, SonarQube…) |
+
+Dans la GUI, la vue **Couverture** liste fichiers et fonctions avec leur état.
+« Annoter Source et Désassemblage » ajoute ✔ / ½ / ✘ dans la marge de la Source. Dans le
+Désassemblage, chaque instruction est colorée et l'issue manquante d'un branchement est
+nommée.
+
+En intégration continue, une campagne par script :
+
+```bash
+.venv/bin/python -m gdbtrace examples/firmware/demo.elf --etm-sim --batch \
+    --script examples/scripts/coverage.py --coverage run1.json --coverage cov.html --coverage cov.info
+.venv/bin/python -m gdbtrace examples/firmware/demo.elf --etm-sim --batch \
+    --script examples/scripts/coverage.py --coverage-merge run1.json --coverage total.html  # cumul
+```
+
+Sur matériel, il faut une sonde de trace parallèle (`--etm-config --trace HOST:PORT`, voir
+plus haut) et un Cortex-M3/M4/M7 avec ETM. Le débit du port limite la durée d'une capture
+sans perte. Pour un Cortex-M0+ sans ETM, la MTB (Micro Trace Buffer, trace des branchements
+en RAM) donnerait la même information ; elle n'est pas encore prise en charge.
+
+Limites de l'ETM simulé : QEMU ne dit pas si la condition d'une instruction *non-branchement*
+d'un bloc IT était vraie. Elle est comptée exécutée, alors qu'un vrai ETM donne l'atome exact.
+Les branchements conditionnels, eux, sont exacts. Comme pour Trace32, il s'agit de couverture
+du code objet. La couverture MC/DC (conditions d'une décision) demande une analyse du source,
+hors de portée de la trace seule.
+
 ### Console
 
 | Saisie | Effet |
@@ -271,7 +328,9 @@ les changements de tâche par ITM lèverait cette limite (à faire).
 | `t32.profile(2.0, per_task=True)` | PERF : profil statistique pendant 2 s (relance puis arrête la cible si besoin) |
 | `t32.itm(0)` | texte reçu sur le port ITM 0 |
 | `t32.swo_config(cpu_hz=180_000_000, swo_hz=2_000_000)` | programme ITM/DWT/TPIU (+ OpenOCD) |
-| `t32.trace_list(30)`, `t32.calls(40)`, `t32.coverage(20)` | Trace.List, flot d'appels, couverture (trace ETM) |
+| `t32.trace_list(30)`, `t32.calls(40)` | Trace.List, flot d'appels (trace ETM) |
+| `t32.cov.summary()`, `t32.cov.list(20)`, `t32.cov.files()` | couverture : résumé, COVerage.ListFunc, ListModule |
+| `t32.cov.export("cov.html")`, `t32.cov.save(f)`, `t32.cov.load(f)`, `t32.cov.reset()` | rapports (.html, .info LCOV, .json), cumul de campagnes, RàZ |
 | `t32.etm_config(port_width=4, stm32=True)` | programme l'ETM et le TPIU parallèle |
 | `t32.program("fw.elf")`, `t32.program()` | FLASH.ReProgram : écrit, vérifie et reset (ELF courant par défaut) |
 | `t32.timing(20, unit="us")`, `t32.timeline(30)` | durées par fonction / derniers appels (trace ETM) |
@@ -304,14 +363,16 @@ gdbtrace/
   trace/etm/image.py    image du code et classification Thumb-2 (capstone)
   trace/etm/encoder.py  encodeur ETMv3 (ETM simulé, tests)
   trace/etm/qemu_log.py chemin réel depuis le journal QEMU
-  trace/etm/trace.py    historique, couverture, flot d'appels
+  trace/etm/trace.py    historique, flot d'appels ; alimente la base de couverture
+  trace/coverage.py     base de couverture (E/N par adresse), lignes, fonctions, fusion
+  trace/coverage_report.py  rapports HTML et LCOV
   trace/etm/config.py   programmation ETM + TPIU parallèle
   trace/etm/cycles.py   modèle de cycles Cortex-M3/M4 (durées estimées)
   trace/timing.py       analyse temporelle : pile d'appels, durées, chronogramme
   core/scripting.py     API `t32` + console Python
   gui/                  fenêtre tkinter, vues détachables, pompe d'événements thread-safe
   views/                Fichiers, Source, Désassemblage, Registres, Mémoire, Watch, Périphériques, RTOS,
-                        Pile, Breakpoints, Console, ITM, Profil, Trace, Timing
+                        Pile, Breakpoints, Console, ITM, Profil, Trace, Timing, Couverture
 examples/
   firmware/             firmware de démo Cortex-M3 (SysTick 1 kHz, timer CMSDK)
   freertos/             firmware de démo FreeRTOS V11.3.3 (noyau MIT inclus) : 7 tâches,
