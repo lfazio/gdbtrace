@@ -7,6 +7,8 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 
+from .live import LiveMemory, OpenOcdTcl, QemuQmp
+
 
 def _wait_port(host: str, port: int, timeout: float) -> None:
     deadline = time.monotonic() + timeout
@@ -40,6 +42,10 @@ class TargetServer:
     def reset(self, session) -> None:
         """Reset matériel par défaut : commande monitor OpenOCD / pyOCD / J-Link."""
         session.monitor("reset halt")
+
+    def live_memory(self) -> LiveMemory | None:
+        """Canal mémoire utilisable cible en marche, ou None si le serveur n'en offre pas."""
+        return None
 
     @property
     def remote(self) -> str:
@@ -75,6 +81,12 @@ class QemuTarget(TargetServer):
     machine: str = "mps2-an385"
     qemu: str = "qemu-system-arm"
     needs_load: bool = False
+    #: port QMP (0 = choisi automatiquement), sert à la lecture mémoire en direct
+    qmp_port: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.qmp_port:
+            self.qmp_port = free_port()
 
     def reset(self, session) -> None:
         # Le gdbstub de QEMU ne sait pas faire « reset halt » : reset via la table des vecteurs.
@@ -85,7 +97,11 @@ class QemuTarget(TargetServer):
             self.qemu, "-M", self.machine, "-nographic", "-monitor", "none",
             "-serial", "none", "-kernel", self.elf,
             "-gdb", f"tcp:{self.host}:{self.gdb_port}", "-S",
+            "-qmp", f"tcp:{self.host}:{self.qmp_port},server=on,wait=off",
         ]
+
+    def live_memory(self) -> LiveMemory | None:
+        return QemuQmp(self.host, self.qmp_port)
 
 
 @dataclass
@@ -109,10 +125,24 @@ class OpenOcdTarget(TargetServer):
         ]
         return cmd
 
+    def live_memory(self) -> LiveMemory | None:
+        return OpenOcdTcl(self.host, self.tcl_port)
+
 
 @dataclass
 class RemoteTarget(TargetServer):
-    """Serveur gdb déjà lancé ailleurs (J-Link GDB Server, pyOCD, probe-rs...)."""
+    """Serveur gdb déjà lancé ailleurs (J-Link GDB Server, pyOCD, probe-rs...).
+
+    `tcl_port` : si le serveur est un OpenOCD lancé à part, son port TCL permet la
+    lecture mémoire en direct.
+    """
+    tcl_host: str | None = None
+    tcl_port: int = 0
+
+    def live_memory(self) -> LiveMemory | None:
+        if self.tcl_port:
+            return OpenOcdTcl(self.tcl_host or self.host, self.tcl_port)
+        return None
 
     def start(self, timeout: float = 10.0) -> None:
         _wait_port(self.host, self.gdb_port, timeout)

@@ -3,7 +3,7 @@ import os
 import time
 
 import pytest
-from conftest import needs_qemu
+from conftest import FIB_LINE, needs_qemu
 
 from gdbtrace.core.session import Session
 from gdbtrace.core.target import QemuTarget, free_port
@@ -38,12 +38,12 @@ def test_views_follow_breakpoint(app):
     from gdbtrace.views.registers import RegistersView
     src = app.views.find(SourceView)
     assert src.current_file.endswith("startup.c")
-    app.toggle_breakpoint_at(file=src.current_file.replace("startup.c", "main.c"), line=15)
-    assert app.cached_breakpoints and app.cached_breakpoints[0].line == 15
+    app.toggle_breakpoint_at(file=src.current_file.replace("startup.c", "main.c"), line=FIB_LINE)
+    assert app.cached_breakpoints and app.cached_breakpoints[0].line == FIB_LINE
     app.go()
     assert pump(app, lambda: app.current_frame is not None and app.current_frame.func == "fib")
     assert src.current_file.endswith("main.c")
-    assert "current" in src.text.tag_names("15.4")
+    assert "current" in src.text.tag_names(f"{FIB_LINE}.4")
     regs = app.views.find(RegistersView)
     assert "pc" in regs.tree.get_children()
     dis = app.views.find(DisasmView)
@@ -79,3 +79,93 @@ def test_detach_and_layout(app, tmp_path):
     import json
     data = json.loads((tmp_path / "layout.json").read_text())
     assert {"kind": "memory", "where": None} .items() <= next(v for v in data["views"] if v["kind"] == "memory").items()
+
+
+def run_to(app, func):
+    app.session.break_(func, temporary=True)
+    app.go()
+    assert pump(app, lambda: app.current_frame is not None and app.current_frame.func == func)
+
+
+def test_live_views_while_running(app):
+    """Watch, Mémoire et Périphériques se mettent à jour pendant que la cible tourne."""
+    from conftest import SVD
+    from gdbtrace.views.data import WatchView
+    from gdbtrace.views.memory import MemoryView
+    from gdbtrace.views.peripherals import PeripheralsView
+    assert app.live is not None and app.poller is not None
+    assert app.live_label.cget("bg") == "#208020"
+    app.load_svd(SVD)
+    run_to(app, "animate")                      # SysTick et TIMER0 configurés
+
+    w = app.views.find(WatchView)
+    w.add("ticks")
+    w.add("tick")                               # locale : gelée en marche
+    items = {w.tree.item(i, "text"): i for i in w.tree.get_children()}
+    assert w.layouts[items["ticks"]].live and not w.layouts[items["tick"]].live
+
+    p = app.views.find(PeripheralsView)
+    p.expand("TIMER0")
+    p.expand("SysTick")
+    assert p.tree.set("SysTick.CTRL.CLKSOURCE", "value") == "1  PROCESSOR"
+    assert p.tree.set("TIMER0.CTRL.EN", "value") == "1  ENABLED"
+
+    m = app.views.find(MemoryView)
+    m.addr_var.set("ticks")
+    m.len_var.set("16")
+    m.refresh()
+
+    ticks0 = int(w.tree.set(items["ticks"], "value"))
+    timer0 = p.tree.set("TIMER0.VALUE", "value")
+    mem0 = m.text.get("1.0", "1.end")
+    app.go()
+    assert pump(app, lambda: app.session.state == "running")
+    assert pump(app, lambda: int(w.tree.set(items["ticks"], "value")) > ticks0 + 20)
+    assert pump(app, lambda: p.tree.set("TIMER0.VALUE", "value") != timer0)
+    assert pump(app, lambda: m.text.get("1.0", "1.end") != mem0)
+    assert "disabled" in w.tree.item(items["tick"], "tags")
+    assert "changed" in w.tree.item(items["ticks"], "tags")
+
+    app.halt()
+    assert pump(app, lambda: app.session.state == "stopped")
+    pump(app, lambda: False, timeout=0.3)
+    assert w.tree.set(items["ticks"], "value") == app.session.evaluate("ticks")
+
+
+def test_peripheral_write_and_layout_state(app, tmp_path, monkeypatch):
+    from conftest import SVD
+    from gdbtrace.views.peripherals import PeripheralsView
+    app.load_svd(SVD)
+    run_to(app, "animate")
+    p = app.views.find(PeripheralsView)
+    p.expand("TIMER0")
+    # écriture d'un champ (lecture-modification-écriture) : EN 1 → 0, autres bits conservés
+    writes = []
+    real_write = app.session.write_memory
+    monkeypatch.setattr(app.session, "write_memory",
+                        lambda a, d: (writes.append((a, d)), real_write(a, d)))
+    monkeypatch.setattr(p, "_ask_field", lambda f: 0)
+    p.tree.focus("TIMER0.CTRL.EN")
+    p._edit(None)
+    assert writes == [(0x40000000, (0x0).to_bytes(4, "little"))]
+    # QEMU ignore les écritures périphériques du débogueur : la relecture le révèle
+    assert app.session.read_u32(0x40000000) & 1 == 1
+    assert "relu 0x1" in app.status.get() and "ignorée" in app.status.get()
+    # registre en lecture seule : refusé
+    p.expand("SCB")
+    p.tree.focus("SCB.CPUID")
+    p._edit(None)
+    assert "lecture seule" in app.status.get()
+    # le SVD et les périphériques dépliés sont mémorisés dans le layout
+    state = p.get_state()
+    assert state["svd"].endswith("mps2-an385.svd") and "TIMER0" in state["open"]
+
+
+def test_internal_cli_output_not_in_console(app):
+    from gdbtrace.views.console import ConsoleView
+    con = app.views.find(ConsoleView)
+    app.session.ptype("ticks")
+    pump(app, lambda: False, timeout=0.2)
+    assert "type =" not in con.out.get("1.0", "end")
+    app.execute("!ptype ticks")                 # commande explicite : affichée
+    assert pump(app, lambda: "type = volatile unsigned long" in con.out.get("1.0", "end"))

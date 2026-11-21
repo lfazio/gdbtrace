@@ -1,3 +1,5 @@
+from conftest import FIB_LINE
+
 from gdbtrace.core.symbols import SymbolTable
 
 
@@ -7,6 +9,6 @@ def test_symbols(elf):
     assert fib and fib.start == 0xAC
     assert t.function_at(fib.start + 4).name == "fib"
     le = t.line_at(fib.start + 8)
-    assert le.file.endswith("main.c") and le.line == 15
+    assert le.file.endswith("main.c") and le.line == FIB_LINE
     assert t.objects["sensors"][0] == 0x20000000
     assert any(f.endswith("startup.c") for f in t.source_files())

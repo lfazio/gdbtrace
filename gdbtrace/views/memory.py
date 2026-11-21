@@ -29,9 +29,10 @@ class MemoryView(View):
         e2.pack(side="left", padx=2)
         e2.bind("<Return>", lambda _e: self.refresh())
         ttk.Button(bar, text="Lire", command=self.refresh).pack(side="left", padx=2)
-        self.live_var = tk.BooleanVar(value=False)
+        # Live : rafraîchi pendant que la cible tourne, via le canal latéral (OpenOCD/QEMU)
+        self.live_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(bar, text="Live", variable=self.live_var,
-                        command=self._live_tick).pack(side="left", padx=6)
+                        command=lambda: self.app.safe(self._update_subscription)).pack(side="left", padx=6)
 
         self.text = tk.Text(self, font=self.mono, wrap="none", height=16, width=78,
                             background="#fbfbf6")
@@ -58,18 +59,50 @@ class MemoryView(View):
             pass
         if self.app.symbols and s in self.app.symbols.objects:
             return self.app.symbols.objects[s][0]
-        return self.session.address_of(s) if self.stopped else 0
+        if self.stopped:
+            return self.session.address_of_expr(s)
+        return self.base  # cible en marche : gdb ne peut pas évaluer, on garde l'adresse connue
+
+    def _window(self) -> tuple[int, int]:
+        base = self._resolve() & ~(WIDTH - 1)
+        n = max(WIDTH, min(int(self.len_var.get() or 256, 0), 65536))
+        return base, n
 
     def refresh(self) -> None:
         if not self.connected:
             return
-        reader = self.app.live_reader()
-        if not self.stopped and reader is None:
+        base, n = self._window()
+        self.base = base
+        if self.stopped:
+            self._render(base, self.session.read_memory(base, n))
+        self._update_subscription()
+
+    # ------------------------------------------------------------------ live (canal latéral)
+    def _update_subscription(self) -> None:
+        poller = self.app.poller
+        if poller is None:
             return
-        base = self._resolve() & ~(WIDTH - 1)
-        n = max(WIDTH, min(int(self.len_var.get() or 256, 0), 65536))
-        data = reader(base, n) if (not self.stopped and reader) else self.session.read_memory(base, n)
-        self._render(base, data)
+        if self.live_var.get() and self.connected:
+            base, n = self._window()
+            poller.subscribe(self, [(base, n)], lambda data, b=base: self._on_live(b, data))
+        else:
+            poller.unsubscribe(self)
+
+    def _on_live(self, base: int, data: dict[int, bytes]) -> None:
+        if base in data:
+            self._render(base, data[base])
+
+    def on_running(self) -> None:
+        self._update_subscription()
+
+    def on_disconnected(self) -> None:
+        if self.app.poller:
+            self.app.poller.unsubscribe(self)
+
+    def destroy(self) -> None:
+        if self.app.poller:
+            self.app.poller.unsubscribe(self)
+        super().destroy()
 
     def _render(self, base: int, data: bytes) -> None:
         prev = self.prev if self.prev_base == base else b""
@@ -92,13 +125,6 @@ class MemoryView(View):
         t.yview_moveto(yview[0])
         t.configure(state="disabled")
         self.prev, self.prev_base = data, base
-
-    def _live_tick(self) -> None:
-        if not self.live_var.get() or not self.winfo_exists():
-            return
-        if self.connected and (self.stopped or self.app.live_reader()):
-            self.app.safe(self.refresh)
-        self.after(self.app.live_period_ms, self._live_tick)
 
     # ------------------------------------------------------------------ édition
     def _edit(self, event) -> None:
@@ -125,6 +151,4 @@ class MemoryView(View):
     def set_state(self, state: dict) -> None:
         self.addr_var.set(state.get("addr", self.addr_var.get()))
         self.len_var.set(state.get("len", self.len_var.get()))
-        if state.get("live"):
-            self.live_var.set(True)
-            self.after(100, self._live_tick)
+        self.live_var.set(state.get("live", True))

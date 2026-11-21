@@ -1,6 +1,6 @@
 import time
 
-from conftest import needs_qemu
+from conftest import FIB_LINE, needs_qemu
 
 from gdbtrace.core.scripting import ScriptAPI, hexdump
 
@@ -14,7 +14,7 @@ def test_connect_stops_at_reset_handler(session):
 
 def test_breakpoint_go_and_locals(session):
     bp = session.break_("fib")
-    assert bp.func == "fib" and bp.line == 15
+    assert bp.func == "fib" and bp.line == FIB_LINE
     session.go()
     reason = session.wait_stopped(5)
     assert reason["reason"] == "breakpoint-hit"

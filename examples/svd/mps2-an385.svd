@@ -1,0 +1,237 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SVD de démonstration pour la carte Arm MPS2 AN385 (Cortex-M3) telle qu'émulée par QEMU.
+  Sous-ensemble : périphériques du cœur (SysTick, SCB) et périphériques CMSDK APB
+  (TIMER0/1, UART0). Pour une vraie carte, utiliser le SVD du fabricant (option svd).
+-->
+<device schemaVersion="1.3" xmlns:xs="http://www.w3.org/2001/XMLSchema-instance">
+  <name>MPS2_AN385</name>
+  <description>Arm MPS2 AN385, Cortex-M3 (sous-ensemble pour gdbtrace)</description>
+  <width>32</width>
+  <size>32</size>
+  <access>read-write</access>
+  <resetValue>0x00000000</resetValue>
+  <resetMask>0xFFFFFFFF</resetMask>
+  <peripherals>
+
+    <peripheral>
+      <name>TIMER0</name>
+      <description>CMSDK APB timer 0</description>
+      <groupName>TIMER</groupName>
+      <baseAddress>0x40000000</baseAddress>
+      <registers>
+        <register>
+          <name>CTRL</name>
+          <description>Control</description>
+          <addressOffset>0x0</addressOffset>
+          <fields>
+            <field><name>EN</name><description>Timer enable</description><bitOffset>0</bitOffset><bitWidth>1</bitWidth>
+              <enumeratedValues>
+                <enumeratedValue><name>DISABLED</name><value>0</value></enumeratedValue>
+                <enumeratedValue><name>ENABLED</name><value>1</value></enumeratedValue>
+              </enumeratedValues>
+            </field>
+            <field><name>EXTIN_EN</name><description>External input as enable</description><bitOffset>1</bitOffset><bitWidth>1</bitWidth></field>
+            <field><name>EXTIN_CLK</name><description>External input as clock</description><bitOffset>2</bitOffset><bitWidth>1</bitWidth></field>
+            <field><name>IRQ_EN</name><description>Interrupt enable</description><bitOffset>3</bitOffset><bitWidth>1</bitWidth></field>
+          </fields>
+        </register>
+        <register>
+          <name>VALUE</name>
+          <description>Current value (décompte)</description>
+          <addressOffset>0x4</addressOffset>
+        </register>
+        <register>
+          <name>RELOAD</name>
+          <description>Reload value</description>
+          <addressOffset>0x8</addressOffset>
+        </register>
+        <register>
+          <name>INTSTATUS</name>
+          <description>Interrupt status (écriture de 1 : INTCLEAR)</description>
+          <addressOffset>0xC</addressOffset>
+          <fields>
+            <field><name>IRQ</name><bitRange>[0:0]</bitRange></field>
+          </fields>
+        </register>
+      </registers>
+    </peripheral>
+
+    <peripheral derivedFrom="TIMER0">
+      <name>TIMER1</name>
+      <description>CMSDK APB timer 1</description>
+      <baseAddress>0x40001000</baseAddress>
+    </peripheral>
+
+    <peripheral>
+      <name>UART0</name>
+      <description>CMSDK APB UART 0</description>
+      <groupName>UART</groupName>
+      <baseAddress>0x40004000</baseAddress>
+      <registers>
+        <register>
+          <name>DATA</name>
+          <description>Données RX/TX (la lecture dépile la FIFO de réception)</description>
+          <addressOffset>0x0</addressOffset>
+          <readAction>modify</readAction>
+          <fields><field><name>DATA</name><bitOffset>0</bitOffset><bitWidth>8</bitWidth></field></fields>
+        </register>
+        <register>
+          <name>STATE</name>
+          <description>État</description>
+          <addressOffset>0x4</addressOffset>
+          <fields>
+            <field><name>TXFULL</name><bitOffset>0</bitOffset><bitWidth>1</bitWidth></field>
+            <field><name>RXFULL</name><bitOffset>1</bitOffset><bitWidth>1</bitWidth></field>
+            <field><name>TXOVR</name><bitOffset>2</bitOffset><bitWidth>1</bitWidth></field>
+            <field><name>RXOVR</name><bitOffset>3</bitOffset><bitWidth>1</bitWidth></field>
+          </fields>
+        </register>
+        <register>
+          <name>CTRL</name>
+          <description>Contrôle</description>
+          <addressOffset>0x8</addressOffset>
+          <fields>
+            <field><name>TXEN</name><bitOffset>0</bitOffset><bitWidth>1</bitWidth></field>
+            <field><name>RXEN</name><bitOffset>1</bitOffset><bitWidth>1</bitWidth></field>
+            <field><name>TXINTEN</name><bitOffset>2</bitOffset><bitWidth>1</bitWidth></field>
+            <field><name>RXINTEN</name><bitOffset>3</bitOffset><bitWidth>1</bitWidth></field>
+          </fields>
+        </register>
+        <register>
+          <name>INTSTATUS</name>
+          <description>Interrupt status / clear</description>
+          <addressOffset>0xC</addressOffset>
+        </register>
+        <register>
+          <name>BAUDDIV</name>
+          <description>Diviseur de baud</description>
+          <addressOffset>0x10</addressOffset>
+          <fields><field><name>BAUDDIV</name><bitOffset>0</bitOffset><bitWidth>20</bitWidth></field></fields>
+        </register>
+      </registers>
+    </peripheral>
+
+    <peripheral>
+      <name>SysTick</name>
+      <description>Timer système du cœur Cortex-M</description>
+      <groupName>CORE</groupName>
+      <baseAddress>0xE000E010</baseAddress>
+      <registers>
+        <register>
+          <name>CTRL</name>
+          <description>SysTick Control and Status</description>
+          <addressOffset>0x0</addressOffset>
+          <fields>
+            <field><name>COUNTFLAG</name><description>Repasse à 0 à la lecture</description><bitOffset>16</bitOffset><bitWidth>1</bitWidth><access>read-only</access></field>
+            <field><name>CLKSOURCE</name><bitOffset>2</bitOffset><bitWidth>1</bitWidth>
+              <enumeratedValues>
+                <enumeratedValue><name>EXTERNAL</name><value>0</value></enumeratedValue>
+                <enumeratedValue><name>PROCESSOR</name><value>1</value></enumeratedValue>
+              </enumeratedValues>
+            </field>
+            <field><name>TICKINT</name><bitOffset>1</bitOffset><bitWidth>1</bitWidth></field>
+            <field><name>ENABLE</name><bitOffset>0</bitOffset><bitWidth>1</bitWidth></field>
+          </fields>
+        </register>
+        <register>
+          <name>LOAD</name>
+          <description>Reload value</description>
+          <addressOffset>0x4</addressOffset>
+          <fields><field><name>RELOAD</name><lsb>0</lsb><msb>23</msb></field></fields>
+        </register>
+        <register>
+          <name>VAL</name>
+          <description>Current value</description>
+          <addressOffset>0x8</addressOffset>
+          <fields><field><name>CURRENT</name><bitRange>[23:0]</bitRange></field></fields>
+        </register>
+        <register>
+          <name>CALIB</name>
+          <description>Calibration</description>
+          <addressOffset>0xC</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field><name>NOREF</name><bitOffset>31</bitOffset><bitWidth>1</bitWidth></field>
+            <field><name>SKEW</name><bitOffset>30</bitOffset><bitWidth>1</bitWidth></field>
+            <field><name>TENMS</name><bitOffset>0</bitOffset><bitWidth>24</bitWidth></field>
+          </fields>
+        </register>
+      </registers>
+    </peripheral>
+
+    <peripheral>
+      <name>SCB</name>
+      <description>System Control Block</description>
+      <groupName>CORE</groupName>
+      <baseAddress>0xE000ED00</baseAddress>
+      <registers>
+        <register>
+          <name>CPUID</name>
+          <addressOffset>0x0</addressOffset>
+          <access>read-only</access>
+          <resetValue>0x410FC231</resetValue>
+          <fields>
+            <field><name>IMPLEMENTER</name><bitOffset>24</bitOffset><bitWidth>8</bitWidth>
+              <enumeratedValues><enumeratedValue><name>ARM</name><value>0x41</value></enumeratedValue></enumeratedValues>
+            </field>
+            <field><name>VARIANT</name><bitOffset>20</bitOffset><bitWidth>4</bitWidth></field>
+            <field><name>ARCHITECTURE</name><bitOffset>16</bitOffset><bitWidth>4</bitWidth></field>
+            <field><name>PARTNO</name><bitOffset>4</bitOffset><bitWidth>12</bitWidth>
+              <enumeratedValues>
+                <enumeratedValue><name>CORTEX_M0</name><value>0xC20</value></enumeratedValue>
+                <enumeratedValue><name>CORTEX_M3</name><value>0xC23</value></enumeratedValue>
+                <enumeratedValue><name>CORTEX_M4</name><value>0xC24</value></enumeratedValue>
+                <enumeratedValue><name>CORTEX_M7</name><value>0xC27</value></enumeratedValue>
+              </enumeratedValues>
+            </field>
+            <field><name>REVISION</name><bitOffset>0</bitOffset><bitWidth>4</bitWidth></field>
+          </fields>
+        </register>
+        <register>
+          <name>ICSR</name>
+          <description>Interrupt Control and State</description>
+          <addressOffset>0x4</addressOffset>
+          <fields>
+            <field><name>PENDSTSET</name><bitOffset>26</bitOffset><bitWidth>1</bitWidth></field>
+            <field><name>ISRPENDING</name><bitOffset>22</bitOffset><bitWidth>1</bitWidth><access>read-only</access></field>
+            <field><name>VECTPENDING</name><bitOffset>12</bitOffset><bitWidth>9</bitWidth><access>read-only</access></field>
+            <field><name>RETTOBASE</name><bitOffset>11</bitOffset><bitWidth>1</bitWidth><access>read-only</access></field>
+            <field><name>VECTACTIVE</name><bitOffset>0</bitOffset><bitWidth>9</bitWidth><access>read-only</access></field>
+          </fields>
+        </register>
+        <register>
+          <name>VTOR</name>
+          <description>Vector Table Offset</description>
+          <addressOffset>0x8</addressOffset>
+        </register>
+        <register>
+          <name>AIRCR</name>
+          <description>Application Interrupt and Reset Control</description>
+          <addressOffset>0xC</addressOffset>
+          <resetValue>0xFA050000</resetValue>
+          <fields>
+            <field><name>VECTKEY</name><bitOffset>16</bitOffset><bitWidth>16</bitWidth></field>
+            <field><name>ENDIANNESS</name><bitOffset>15</bitOffset><bitWidth>1</bitWidth>
+              <enumeratedValues>
+                <enumeratedValue><name>LITTLE</name><value>0</value></enumeratedValue>
+                <enumeratedValue><name>BIG</name><value>1</value></enumeratedValue>
+              </enumeratedValues>
+            </field>
+            <field><name>PRIGROUP</name><bitOffset>8</bitOffset><bitWidth>3</bitWidth></field>
+            <field><name>SYSRESETREQ</name><bitOffset>2</bitOffset><bitWidth>1</bitWidth><access>write-only</access></field>
+          </fields>
+        </register>
+        <register>
+          <dim>3</dim>
+          <dimIncrement>4</dimIncrement>
+          <dimIndex>1-3</dimIndex>
+          <name>SHPR%s</name>
+          <description>System Handler Priority</description>
+          <addressOffset>0x18</addressOffset>
+        </register>
+      </registers>
+    </peripheral>
+
+  </peripherals>
+</device>

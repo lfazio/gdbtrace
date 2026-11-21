@@ -20,7 +20,7 @@ class EventPump:
         self._q: queue.Queue[tuple[Callable, tuple, dict]] = queue.Queue()
         self.on_error: Callable[[str], None] = lambda msg: print(msg)
         self._running = True
-        self.root.after(self.period_ms, self._poll)
+        self._after_id = self.root.after(self.period_ms, self._poll)
 
     def post(self, fn: Callable, *args: Any, **kw: Any) -> None:
         """Planifie fn(*args) dans le thread GUI. Utilisable depuis n'importe quel thread."""
@@ -53,9 +53,13 @@ class EventPump:
 
     def stop(self) -> None:
         self._running = False
+        try:  # évite « invalid command name ..._poll » après destruction de la fenêtre
+            self.root.after_cancel(self._after_id)
+        except tk.TclError:
+            pass
 
     def _poll(self) -> None:
         if not self._running:
             return
         self.drain()
-        self.root.after(self.period_ms, self._poll)
+        self._after_id = self.root.after(self.period_ms, self._poll)

@@ -7,6 +7,8 @@ Dans la console et les scripts, l'objet `t32` est disponible :
     print(t32.eval("counter"))   # Var.view counter
     t32.d(0x20000000, 32)        # Data.dump
     t32.r()                      # Register.view
+    t32.mem(0x20000000, 16)      # lecture mémoire, même cible en marche (canal live)
+    t32.periph("SysTick")        # PER.view (nécessite un SVD)
 
 Un script `.py` est exécuté avec `t32.run_script("init.py")` ou au démarrage avec
 l'option `--script`.
@@ -20,6 +22,8 @@ import runpy
 import threading
 from typing import Callable
 
+from . import svd
+from .live import LiveMemory
 from .session import Session
 
 
@@ -34,8 +38,13 @@ def hexdump(data: bytes, base: int, width: int = 16) -> str:
 
 
 class ScriptAPI:
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, live: LiveMemory | None = None,
+                 device: svd.Device | None = None):
         self.s = session
+        #: canal mémoire en direct (None si le serveur gdb n'en offre pas)
+        self.live = live
+        #: périphériques décrits par le SVD chargé (None sinon)
+        self.device = device
 
     # run-control
     def go(self, until: str | None = None) -> None:
@@ -92,6 +101,45 @@ class ScriptAPI:
         for i, f in enumerate(self.s.backtrace()):
             loc = f"{f.file}:{f.line}" if f.file else ""
             print(f"#{i} {f.pc:08x} {f.func or '??'} {loc}")
+
+    # mémoire en direct et périphériques
+    def mem(self, addr: int, n: int) -> bytes:
+        """Lecture mémoire qui marche aussi cible en marche (canal live si nécessaire)."""
+        if self.s.state == "stopped":
+            return self.s.read_memory(addr, n)
+        return self.live_read(addr, n)
+
+    def live_read(self, addr: int, n: int) -> bytes:
+        """Lecture par le canal latéral (OpenOCD TCL / QEMU QMP), cible arrêtée ou non."""
+        if self.live is None:
+            raise RuntimeError("pas de canal mémoire live pour cette cible")
+        return self.live.read(addr, n)
+
+    def load_svd(self, path: str) -> None:
+        self.device = svd.parse(path)
+
+    def periph(self, name: str, force: bool = False) -> dict[str, int]:
+        """PER.view : affiche les registres décodés d'un périphérique SVD, retourne {reg: valeur}."""
+        if self.device is None:
+            raise RuntimeError("aucun SVD chargé (t32.load_svd ou --svd)")
+        p = self.device.peripheral(name)
+        if p is None:
+            raise KeyError(f"périphérique inconnu : {name}")
+        values: dict[str, int] = {}
+        for addr, n, regs in svd.read_blocks(p, force=force):
+            values.update(svd.decode_block(p, addr, self.mem(addr, n), regs))
+        print(f"{p.name} @ {p.base:#010x}  {p.description}")
+        for r in p.registers:
+            if r.name not in values:
+                why = "write-only" if r.access == svd.WRITE_ONLY else "non lu : lecture destructive"
+                print(f"  {r.name:<12} {p.address(r):08x}  ({why})")
+                continue
+            v = values[r.name]
+            print(f"  {r.name:<12} {p.address(r):08x}  {v:0{r.nbytes * 2}x}")
+            for f in r.fields:
+                if f.access != svd.WRITE_ONLY:
+                    print(f"      {f.name:<14} {f.bits:<8} {f.format(v)}")
+        return values
 
     # accès bas niveau
     def gdb(self, cli: str) -> str: return self.s.cli(cli)

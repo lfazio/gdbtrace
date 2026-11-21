@@ -11,7 +11,11 @@ from .core.target import OpenOcdTarget, QemuTarget, RemoteTarget, free_port
 def build_target(args) -> object:
     if args.remote:
         host, _, port = args.remote.rpartition(":")
-        return RemoteTarget(host=host or "127.0.0.1", gdb_port=int(port))
+        t = RemoteTarget(host=host or "127.0.0.1", gdb_port=int(port))
+        if args.tcl:
+            thost, _, tport = args.tcl.rpartition(":")
+            t.tcl_host, t.tcl_port = thost or t.host, int(tport)
+        return t
     if args.openocd is not None:
         return OpenOcdTarget(configs=args.openocd or ["board/st_nucleo_f4.cfg"],
                              gdb_port=args.gdb_port or 3333)
@@ -27,6 +31,9 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--openocd", nargs="*", metavar="CFG",
                    help="lancer OpenOCD avec ces fichiers -f (ex. board/st_nucleo_f4.cfg)")
     g.add_argument("--remote", metavar="HOST:PORT", help="serveur gdb déjà lancé (J-Link, pyOCD...)")
+    p.add_argument("--tcl", metavar="HOST:PORT",
+                   help="avec --remote : port TCL d'un OpenOCD lancé à part (mémoire en direct)")
+    p.add_argument("--svd", metavar="FICHIER", help="description CMSIS-SVD des périphériques")
     p.add_argument("--machine", default="mps2-an385", help="machine QEMU")
     p.add_argument("--gdb", default="gdb-multiarch", help="exécutable gdb")
     p.add_argument("--gdb-port", type=int, default=0)
@@ -42,17 +49,24 @@ def main(argv: list[str] | None = None) -> int:
     if args.batch:
         from .core.scripting import ScriptAPI
         from .core.session import Session
+        from .core import svd
+        device = svd.parse(args.svd) if args.svd else None
         s = Session(args.gdb)
         s.connect(os.path.abspath(args.elf), target, load)
+        live = target.live_memory()
         try:
             if args.script:
-                ScriptAPI(s).run_script(args.script)
+                ScriptAPI(s, live, device).run_script(args.script)
         finally:
+            if live:
+                live.close()
             s.disconnect()
         return 0
 
     from .gui.app import App
     app = App(layout_file=args.layout)
+    if args.svd:
+        app.safe(app.load_svd, args.svd)
     app.connect(os.path.abspath(args.elf), target, args.gdb, load,
                 then=(lambda: app.run_script(args.script)) if args.script else None)
     app.mainloop()

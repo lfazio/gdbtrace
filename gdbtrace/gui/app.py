@@ -8,6 +8,8 @@ import traceback
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable
 
+from ..core import svd
+from ..core.live import LiveMemory, LivePoller
 from ..core.scripting import Console, ScriptAPI
 from ..core.session import Breakpoint, Frame, Session
 from ..core.symbols import SymbolTable
@@ -21,9 +23,10 @@ def view_classes() -> dict[str, type[View]]:
     from ..views.console import ConsoleView
     from ..views.data import BreakpointsView, StackView, WatchView
     from ..views.memory import MemoryView
+    from ..views.peripherals import PeripheralsView
     from ..views.registers import RegistersView
-    classes = [SourceView, DisasmView, RegistersView, WatchView, StackView, BreakpointsView,
-               MemoryView, ConsoleView]
+    classes = [SourceView, DisasmView, RegistersView, WatchView, PeripheralsView, StackView,
+               BreakpointsView, MemoryView, ConsoleView]
     return {c.kind: c for c in classes}
 
 
@@ -32,6 +35,7 @@ DEFAULT_LAYOUT = [
     {"kind": "disasm", "where": "code"},
     {"kind": "registers", "where": "data"},
     {"kind": "watch", "where": "data"},
+    {"kind": "peripherals", "where": "data"},
     {"kind": "stack", "where": "data"},
     {"kind": "breakpoints", "where": "data"},
     {"kind": "console", "where": "bottom"},
@@ -58,8 +62,13 @@ class App:
         self.current_frame: Frame | None = None
         self.cached_breakpoints: list[Breakpoint] = []
         self.console_views: list = []
+        # canal mémoire en direct (OpenOCD TCL / QEMU QMP) et son poller
         self.live_period_ms = 200
-        self._live_reader: Callable[[int, int], bytes] | None = None
+        self.live: LiveMemory | None = None
+        self.poller: LivePoller | None = None
+        # description des périphériques (CMSIS-SVD)
+        self.device: svd.Device | None = None
+        self.svd_path: str | None = None
         self._pending_output: list[tuple[str, str]] = []
 
         self.views = ViewManager(self)
@@ -77,6 +86,7 @@ class App:
         mb = tk.Menu(self.root)
         m = tk.Menu(mb, tearoff=False)
         m.add_command(label="Exécuter un script…", command=self._ask_script)
+        m.add_command(label="Charger un SVD…", command=self._ask_svd)
         m.add_command(label="Recharger l'ELF (load)", command=lambda: self.run_action(self.session.load))
         m.add_separator()
         m.add_command(label="Enregistrer le layout", command=self.save_layout)
@@ -129,6 +139,8 @@ class App:
         bar.pack(side="bottom", fill="x")
         self.state_label = tk.Label(bar, width=12, text="", fg="white", bg="#777")
         self.state_label.pack(side="left")
+        self.live_label = tk.Label(bar, width=6, text="LIVE", fg="white", bg="#aaaaaa")
+        self.live_label.pack(side="left", padx=(2, 0))
         ttk.Label(bar, textvariable=self.status).pack(side="left", padx=6)
 
     def _bind_keys(self) -> None:
@@ -149,6 +161,9 @@ class App:
                 self.symbols = SymbolTable(session.elf)
             except Exception as exc:  # noqa: BLE001
                 self.report_error(f"lecture des symboles : {exc}")
+        self.api.device = self.device
+        if session.target is not None and session.state != "disconnected":
+            self._setup_live(session.target)
         if session.state == "stopped":
             self.refresh_all()
         self.update_status()
@@ -162,6 +177,7 @@ class App:
         def done(_r):
             if session.elf and not self.symbols:
                 self.symbols = SymbolTable(session.elf)
+            self._setup_live(target)
             self.refresh_all()
             if then:
                 then()
@@ -177,6 +193,7 @@ class App:
             self.save_layout()
         except Exception:  # noqa: BLE001
             pass
+        self._teardown_live()
         if self.session and self.session.state != "disconnected":
             try:
                 self.session.disconnect()
@@ -185,12 +202,52 @@ class App:
         self.pump.stop()
         self.root.destroy()
 
-    def set_live_reader(self, fn: Callable[[int, int], bytes] | None) -> None:
-        """Lecteur mémoire utilisable cible en marche (port TCL OpenOCD...)."""
-        self._live_reader = fn
+    # ================================================================== live / SVD
+    def _setup_live(self, target: TargetServer) -> None:
+        """Ouvre le canal mémoire latéral de la cible (s'il existe) et démarre le poller."""
+        self._teardown_live()
+        self.live = target.live_memory()
+        if self.live is not None:
+            self.poller = LivePoller(
+                self.live,
+                is_running=lambda: self.session is not None and self.session.state == "running",
+                post=self.pump.post, period_ms=self.live_period_ms, on_error=self.report_error)
+            self.poller.start()
+        if self.api:
+            self.api.live = self.live
+        if self.session and self.session.state == "running":
+            self.views.running_all()  # abonne les vues
+        self.update_status()
 
-    def live_reader(self) -> Callable[[int, int], bytes] | None:
-        return self._live_reader
+    def _teardown_live(self) -> None:
+        if self.poller is not None:
+            self.poller.stop()
+        if self.live is not None:
+            self.live.close()
+        self.poller = self.live = None
+        if self.api:
+            self.api.live = None
+
+    def load_svd(self, path: str) -> None:
+        self.device = svd.parse(path)
+        self.svd_path = os.path.abspath(path)
+        if self.api:
+            self.api.device = self.device
+        for v in list(self.views.views):
+            if hasattr(v, "on_svd_loaded"):
+                self.safe(v.on_svd_loaded)
+        self.status.set(f"SVD chargé : {self.device.name} ({len(self.device.peripherals)} périphériques)")
+
+    def _ask_svd(self) -> None:
+        path = filedialog.askopenfilename(filetypes=[("CMSIS-SVD", "*.svd *.xml"), ("Tous", "*")])
+        if path:
+            self.safe(self.load_svd, path)
+
+    def show_memory(self, addr: int) -> None:
+        from ..views.memory import MemoryView
+        v = self.views.show(MemoryView, "bottom")
+        v.addr_var.set(f"{addr:#010x}")
+        self.safe(v.refresh)
 
     def _on_event(self, kind: str, data: dict) -> None:
         if kind == "stopped":
@@ -213,6 +270,7 @@ class App:
         elif kind == "disconnected":
             self.current_frame = None
             self.views.disconnected_all()
+            self._teardown_live()
             self.status.set("Déconnecté")
         self.update_status()
 
@@ -245,6 +303,8 @@ class App:
                   "disconnected": ("DÉCONNECTÉ", "#777777")}
         text, bg = colors.get(state, (state, "#777"))
         self.state_label.configure(text=text, bg=bg)
+        # LIVE vert : canal mémoire latéral disponible (vues rafraîchies en marche)
+        self.live_label.configure(bg="#208020" if self.live is not None else "#aaaaaa")
         fr = self.current_frame
         if fr and state == "stopped":
             where = f"{fr.func or '??'}  {os.path.basename(fr.file or '')}:{fr.line or ''}"
@@ -329,8 +389,10 @@ class App:
                 if stripped.startswith("!"):
                     return self.session.cli(stripped[1:])
                 return self.session.monitor(stripped[4:])
-            def show(_out):
-                # La sortie est déjà affichée via le flux « console » de gdb (événement output).
+            def show(out):
+                # console() capture la sortie sans la diffuser : on l'affiche ici.
+                if out:
+                    self.write_console(out if out.endswith("\n") else out + "\n", "gdb")
                 if done:
                     done(False)
             self.pump.background(job, then=show)

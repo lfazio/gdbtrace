@@ -282,6 +282,17 @@ class Session:
         val = self.evaluate(f"(unsigned long)&{symbol}")
         return _int(val.split()[0])
 
+    def address_of_expr(self, expr: str) -> int:
+        """Adresse d'une lvalue quelconque (`sensors[1].value`). GdbError si pas en mémoire."""
+        return _int(self.evaluate(f"(unsigned long)&({expr})").split()[0])
+
+    def sizeof(self, expr: str) -> int:
+        return _int(self.evaluate(f"sizeof({expr})").split()[0])
+
+    def ptype(self, expr: str) -> str:
+        """Type de l'expression, typedefs résolus (`type = unsigned int`)."""
+        return self.cli(f"ptype {expr}").strip()
+
     def disassemble(self, start: int, end: int) -> list[dict]:
         """Retourne [{address, func-name, offset, inst, opcodes}, ...]."""
         res = self.gdb.command(f"-data-disassemble -s {start:#x} -e {end:#x} -- 2")
@@ -307,6 +318,10 @@ class Session:
 
     def var_assign(self, name: str, value: str) -> str:
         return self.gdb.command(f"-var-assign {name} {value}")["value"]
+
+    def path_expression(self, name: str) -> str:
+        """Expression C complète d'un varobj (`var1.1.value` → `(sensors)[1].value`)."""
+        return self.gdb.command(f"-var-info-path-expression {name}")["path_expr"]
 
     def var_children(self, name: str) -> list[dict]:
         res = self.gdb.command(f"-var-list-children --all-values {name}")

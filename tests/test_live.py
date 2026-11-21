@@ -1,0 +1,146 @@
+"""Canal mémoire en direct : regroupement, poller, client TCL OpenOCD (faux serveur), QEMU QMP."""
+import re
+import socket
+import threading
+import time
+
+import pytest
+from conftest import needs_qemu
+
+from gdbtrace.core.live import (LiveMemoryError, LivePoller, OpenOcdTcl, merge_ranges,
+                                slice_ranges)
+
+
+# ---------------------------------------------------------------------- regroupement
+def test_merge_ranges():
+    assert merge_ranges([(0x100, 4), (0x104, 4), (0x200, 8)]) == [(0x100, 8), (0x200, 8)]
+    assert merge_ranges([(0x100, 4), (0x110, 4)], gap=16) == [(0x100, 0x14)]
+    assert merge_ranges([(0x100, 4), (0x120, 4)], gap=16) == [(0x100, 4), (0x120, 4)]
+    assert merge_ranges([(0x10, 0), (0x8, 16), (0x0, 4)]) == [(0x0, 0x18)]
+
+
+def test_slice_ranges():
+    blocks = {(0x100, 8): bytes(range(8))}
+    assert slice_ranges(blocks, [(0x102, 2), (0x200, 4)]) == {0x102: b"\x02\x03"}
+
+
+# ---------------------------------------------------------------------- poller (lecteur factice)
+class FakeMemory:
+    def __init__(self):
+        self.calls = []
+        self.fail = False
+
+    def read(self, addr, n):
+        self.calls.append((addr, n))
+        if self.fail:
+            raise LiveMemoryError("boom")
+        return bytes((addr + i) & 0xFF for i in range(n))
+
+    def close(self):
+        pass
+
+
+def test_poller_only_while_running_and_merges():
+    mem, running, got, errors = FakeMemory(), [False], [], []
+    p = LivePoller(mem, lambda: running[0], lambda fn, *a: fn(*a), period_ms=10,
+                   on_error=errors.append)
+    p.subscribe("a", [(0x10, 2), (0x12, 2)], got.append)
+    p.start()
+    try:
+        time.sleep(0.08)
+        assert got == [] and mem.calls == []          # cible arrêtée : rien
+        running[0] = True
+        time.sleep(0.08)
+        assert got and got[-1] == {0x10: b"\x10\x11", 0x12: b"\x12\x13"}
+        assert set(mem.calls) == {(0x10, 4)}           # deux plages, une seule lecture
+        mem.fail = True
+        time.sleep(0.08)
+        assert errors and len(errors) == 1             # erreur signalée une seule fois
+        p.unsubscribe("a")
+        n = len(got)
+        mem.fail = False
+        time.sleep(0.05)
+        assert len(got) == n
+    finally:
+        p.stop()
+
+
+# ---------------------------------------------------------------------- OpenOCD TCL (faux serveur)
+class FakeOpenOcd(threading.Thread):
+    """Imite le serveur TCL d'OpenOCD : commandes et réponses terminées par 0x1A."""
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(1)
+        self.port = self.sock.getsockname()[1]
+        self.commands = []
+
+    def run(self):
+        conn, _ = self.sock.accept()
+        buf = b""
+        while True:
+            data = conn.recv(4096)
+            if not data:
+                return
+            buf += data
+            while b"\x1a" in buf:
+                cmd, _, buf = buf.partition(b"\x1a")
+                cmd = cmd.decode()
+                self.commands.append(cmd)
+                conn.sendall(self.reply(cmd).encode() + b"\x1a")
+
+    @staticmethod
+    def reply(cmd):
+        m = re.search(r"read_memory (\S+) (\d+) (\d+)", cmd)
+        if not m:
+            return "invalid command name"
+        addr, width, count = int(m.group(1), 16), int(m.group(2)), int(m.group(3))
+        if addr >= 0xDEAD0000:
+            return "ERR read_memory: failed to read memory"
+        step = width // 8
+        return " ".join(hex((addr + i * step) & ((1 << width) - 1)) for i in range(count))
+
+
+def test_openocd_tcl_client():
+    srv = FakeOpenOcd()
+    srv.start()
+    tcl = OpenOcdTcl("127.0.0.1", srv.port)
+    try:
+        # aligné : accès 32 bits, petit-boutiste
+        assert tcl.read(0x20000000, 8) == (0x20000000).to_bytes(4, "little") + (0x20000004).to_bytes(4, "little")
+        assert "read_memory 0x20000000 32 2" in srv.commands[-1]
+        # non aligné : accès octets
+        assert tcl.read(0x20000001, 3) == bytes([0x01, 0x02, 0x03])
+        assert "read_memory 0x20000001 8 3" in srv.commands[-1]
+        with pytest.raises(LiveMemoryError, match="failed to read memory"):
+            tcl.read(0xDEAD0000, 4)
+        # le client reste utilisable après une erreur
+        assert len(tcl.read(0x1000, 4)) == 4
+    finally:
+        tcl.close()
+
+
+# ---------------------------------------------------------------------- QEMU QMP
+@needs_qemu
+def test_qemu_live_read_while_running(session):
+    lm = session.target.live_memory()
+    try:
+        addr = session.address_of("ticks")
+        assert lm.read(addr, 4) == session.read_memory(addr, 4)   # cohérent avec gdb à l'arrêt
+        session.go()
+        time.sleep(0.2)
+        assert session.state == "running"
+        t1 = int.from_bytes(lm.read(addr, 4), "little")
+        time.sleep(0.1)
+        t2 = int.from_bytes(lm.read(addr, 4), "little")
+        assert t2 > t1 > 0                                         # SysTick à 1 kHz
+        # bloc privé Cortex-M (SysTick), lisible lui aussi en marche
+        ctrl = int.from_bytes(lm.read(0xE000E010, 4), "little")
+        assert ctrl & 7 == 7
+        # lecture non alignée et lecture longue (plusieurs blocs)
+        assert len(lm.read(0x20000001, 7)) == 7
+        assert len(lm.read(0x20000000, 9000)) == 9000
+    finally:
+        lm.close()

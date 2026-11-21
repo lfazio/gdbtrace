@@ -4,6 +4,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import simpledialog, ttk
 
+from ..core.live_vars import LeafLayout, compute_layout, decode
 from ..gui.view_base import View
 
 
@@ -111,6 +112,9 @@ class WatchView(View):
         e.bind("<Return>", lambda _e: self.add(self.expr.get()))
         ttk.Button(bar, text="Ajouter", command=lambda: self.add(self.expr.get())).pack(side="left")
         ttk.Button(bar, text="Retirer", command=self._remove).pack(side="left", padx=2)
+        self.live_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bar, text="Live", variable=self.live_var,
+                        command=self._update_subscription).pack(side="left", padx=6)
         body = ttk.Frame(self)
         body.pack(fill="both", expand=True)
         self.tree = _tree(body, [("value", "Valeur", 200), ("type", "Type", 140)],
@@ -120,6 +124,8 @@ class WatchView(View):
         self.exprs: list[str] = []          # expressions racines (persistées)
         self.varobj: dict[str, str] = {}    # item de l'arbre -> nom du varobj gdb
         self.item_of: dict[str, str] = {}   # varobj -> item
+        self.numchild: dict[str, int] = {}  # item -> nombre d'enfants
+        self.layouts: dict[str, LeafLayout] = {}  # feuille -> disposition mémoire (live)
 
     def add(self, expr: str) -> None:
         expr = expr.strip()
@@ -130,6 +136,7 @@ class WatchView(View):
         self.expr.set("")
         if self.stopped:
             self._create_root(expr)
+            self.app.safe(self._compute_layouts)  # suivie en direct dès le prochain Go
 
     def _create_root(self, expr: str) -> None:
         try:
@@ -143,7 +150,8 @@ class WatchView(View):
         item = self.tree.insert(parent, "end", text=label, values=(v.get("value", ""), v.get("type", "")))
         self.varobj[item] = v["name"]
         self.item_of[v["name"]] = item
-        if int(v.get("numchild", 0)) > 0:
+        self.numchild[item] = int(v.get("numchild", 0))
+        if self.numchild[item] > 0:
             self.tree.insert(item, "end", iid=f"{item}{self.PLACEHOLDER}", text="…")
 
     def _expand(self, _e) -> None:
@@ -156,6 +164,7 @@ class WatchView(View):
                 if label.isdigit():
                     label = f"[{label}]"
                 self._insert(item, label, c)
+            self.app.safe(self._compute_layouts)
 
     def refresh(self) -> None:
         if not self.stopped:
@@ -164,6 +173,7 @@ class WatchView(View):
             self.tree.delete(*self.tree.get_children())
             for e in self.exprs:
                 self._create_root(e)
+            self.app.safe(self._compute_layouts)
             return
         for item in self.varobj:
             if self.tree.exists(item):
@@ -173,11 +183,70 @@ class WatchView(View):
             if item and self.tree.exists(item) and ch.get("in_scope", "true") == "true":
                 self.tree.set(item, "value", ch.get("value", ""))
                 self.tree.item(item, tags=("changed",))
+        self.app.safe(self._compute_layouts)
+
+    # ------------------------------------------------------------------ live
+    def _compute_layouts(self) -> None:
+        """Cible arrêtée : adresse/taille/type des feuilles, pour le décodage en marche."""
+        leaves = [it for it, n in self.numchild.items()
+                  if n == 0 and it not in self.layouts and self.tree.exists(it)]
+        if not leaves:
+            return
+        try:
+            local_names = {v.get("name") for v in self.session.locals()}
+        except Exception:  # noqa: BLE001 - pas de frame : aucune locale
+            local_names = set()
+        for it in leaves:
+            self.layouts[it] = compute_layout(self.session, self.varobj[it], local_names)
+
+    def _update_subscription(self) -> None:
+        poller = self.app.poller
+        if poller is None:
+            return
+        ranges = [(lay.addr, lay.size) for lay in self.layouts.values() if lay.live]
+        if self.live_var.get() and ranges:
+            poller.subscribe(self, ranges, self._on_live)
+        else:
+            poller.unsubscribe(self)
+
+    def on_running(self) -> None:
+        live = self.live_var.get() and self.app.poller is not None
+        for it, lay in self.layouts.items():
+            if self.tree.exists(it):
+                # valeur gelée (grisée) si elle ne peut pas être suivie en marche
+                self.tree.item(it, tags=() if (live and lay.live) else ("disabled",))
+        self._update_subscription()
+
+    def _on_live(self, data: dict[int, bytes]) -> None:
+        for it, lay in self.layouts.items():
+            if not lay.live or lay.addr not in data or not self.tree.exists(it):
+                continue
+            val = decode(lay, data[lay.addr])
+            if val != self.tree.set(it, "value"):
+                self.tree.set(it, "value", val)
+                self.tree.item(it, tags=("changed",))
+            else:
+                self.tree.item(it, tags=())
 
     def on_disconnected(self) -> None:
+        if self.app.poller:
+            self.app.poller.unsubscribe(self)
         self.tree.delete(*self.tree.get_children())
         self.varobj.clear()
         self.item_of.clear()
+        self.numchild.clear()
+        self.layouts.clear()
+
+    def destroy(self) -> None:
+        if self.app.poller:
+            self.app.poller.unsubscribe(self)
+        super().destroy()
+
+    def _subtree(self, item: str) -> list[str]:
+        out = [item]
+        for c in self.tree.get_children(item):
+            out += self._subtree(c)
+        return out
 
     def _remove(self) -> None:
         item = self.tree.focus()
@@ -186,12 +255,16 @@ class WatchView(View):
         label = self.tree.item(item, "text")
         if label in self.exprs:
             self.exprs.remove(label)
-        name = self.varobj.pop(item, None)
+        name = self.varobj.get(item)
+        for it in self._subtree(item):  # gdb supprime aussi les varobjs enfants
+            vo = self.varobj.pop(it, None)
+            self.item_of.pop(vo, None)
+            self.numchild.pop(it, None)
+            self.layouts.pop(it, None)
         self.tree.delete(item)
         if name and self.stopped:
             self.app.safe(self.session.var_delete, name)
-        for k in [k for k, v in self.item_of.items() if v not in self.varobj]:
-            self.item_of.pop(k)
+        self._update_subscription()
 
     def _edit(self, _e) -> str | None:
         item = self.tree.focus()

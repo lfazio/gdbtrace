@@ -40,6 +40,8 @@ class GdbMI:
         self._write_lock = threading.Lock()
         self._listeners: list[Listener] = []
         self._reader: threading.Thread | None = None
+        self._console_lock = threading.Lock()
+        self._capture: list[str] | None = None  # sortie de console() en cours
 
     # ------------------------------------------------------------------ cycle de vie
     def start(self) -> None:
@@ -113,21 +115,19 @@ class GdbMI:
                 self._pending.pop(token, None)
 
     def console(self, cli: str, timeout: float = 10.0) -> str:
-        """Exécute une commande CLI gdb et retourne sa sortie texte."""
-        out: list[str] = []
-        done = threading.Event()
+        """Exécute une commande CLI gdb et retourne sa sortie texte.
 
-        def grab(rec: dict) -> None:
-            if rec.get("type") == "console" and not done.is_set():
-                out.append(rec.get("payload") or "")
-
-        self.add_listener(grab)
-        try:
-            escaped = cli.replace("\\", "\\\\").replace('"', '\\"')
-            self.command(f'-interpreter-exec console "{escaped}"', timeout)
-        finally:
-            done.set()
-            self.remove_listener(grab)
+        La sortie est capturée et **pas** diffusée aux abonnés : les commandes internes
+        (ptype, info line...) ne doivent pas polluer la console de l'utilisateur.
+        Les appels sont sérialisés pour que chaque capture reçoive sa propre sortie.
+        """
+        escaped = cli.replace("\\", "\\\\").replace('"', '\\"')
+        with self._console_lock:
+            self._capture = []
+            try:
+                self.command(f'-interpreter-exec console "{escaped}"', timeout)
+            finally:
+                out, self._capture = self._capture, None
         return "".join(out)
 
     # ------------------------------------------------------------------ lecteur
@@ -147,6 +147,10 @@ class GdbMI:
                 if q is not None:
                     q.put(rec)
                     continue
+            capture = self._capture
+            if capture is not None and rec.get("type") == "console":
+                capture.append(rec.get("payload") or "")
+                continue
             self._dispatch(rec)
         self._dispatch({"type": "notify", "message": "gdb-exited", "payload": None, "token": None})
 
