@@ -52,7 +52,8 @@ def test_qemu_log_parser():
                   ql.ExcEntry(15, 0x294), ql.Step(0x294), ql.Step(0x296),
                   ql.ExcEntry(14, 0x300, tailchain=True),   # retour annulé par l'enchaînement
                   ql.Step(0x300), ql.ExcReturn(),
-                  ql.Step(0x102)]                     # 0x104 non confirmée (fin du journal)
+                  ql.Step(0x102),
+                  ql.Step(0x104)]                     # fin du journal sans « Stopped » : exécutée
 
 
 # ====================================================================== image du code
@@ -188,3 +189,112 @@ def test_resynchronisation_mid_stream(qemu_paths):
     ref = as_tuples(events)
     tail = as_tuples(decoded)
     assert ref[len(ref) - len(tail):] == tail                           # suffixe exact du chemin
+
+
+# ====================================================================== capture et configuration
+def test_etm_config_registers():
+    from gdbtrace.trace.etm.config import (DBGMCU_CR, ETMCR, ETMTEEVR, ETMTECR1, ETMTRACEIDR,
+                                           TPIU_CSPSR, TPIU_FFCR, TPIU_SPPR, EtmConfig)
+    cfg = EtmConfig(port_width=4, trace_id=2, stm32=True)
+    w = cfg.register_writes()
+    names = [r.name for r in w]
+    by = {r.name: r for r in w}
+    assert by["TPIU_CSPSR"].value == 0x8 and by["TPIU_SPPR"].value == 0 and by["TPIU_FFCR"].value == 0x102
+    assert by["ETMTRACEIDR"].value == 2 and by["ETMTEEVR"].value == 0x6F and by["ETMTECR1"].value == 1 << 24
+    assert by["DBGMCU_CR.TRACE"].value == 0xE0 and by["DBGMCU_CR.TRACE"].mask == 0xE0   # IOEN + 4 bits
+    # ETMCR : programmation (bit 10) avant la configuration, effacée en dernier
+    assert names.index("ETMCR.prog") < names.index("ETMTRACEIDR") < names.index("ETMCR") == len(w) - 1
+    assert by["ETMCR"].value == 0 and by["ETMCR.prog"].value == 1 << 10
+    assert {r.addr for r in w} >= {ETMCR, ETMTEEVR, ETMTECR1, ETMTRACEIDR, TPIU_CSPSR, DBGMCU_CR}
+    assert EtmConfig(port_width=1).register_writes()[1].value == 0x1        # CSPSR, sans STM32
+    with pytest.raises(ValueError):
+        EtmConfig(port_width=3).register_writes()
+
+
+@needs_qemu
+def test_tpiu_routing_itm_and_etm(qemu_paths):
+    """Port parallèle : ITM (ID 1) et ETM (ID 2) multiplexés dans les mêmes trames TPIU."""
+    from gdbtrace.trace.etm.trace import EtmTrace
+    from gdbtrace.trace.itm import ItmTextSink
+    from gdbtrace.trace.swo import TraceSession
+    from test_itm import SYNC, stim
+    img, events = qemu_paths["bare"]
+    events = events[:20_000]
+    etm_bytes = encode(events, img)
+    itm_bytes = SYNC + b"".join(stim(0, c) for c in b"trace ok\n")
+    half = len(etm_bytes) // 2
+    raw = (frame_bytes(2, etm_bytes[:half]) + frame_bytes(1, itm_bytes)[4:]
+           + frame_bytes(2, etm_bytes[half:])[4:])
+    trace = EtmTrace(img)
+    sess = TraceSession(formatter=True, etm_sink=trace.feed)
+    text = ItmTextSink()
+    sess.add_sink(lambda pkts: [text.add(p) for p in pkts])
+    for i in range(0, len(raw), 64):
+        sess.feed(raw[i:i + 64])
+    assert text.text(0) == "trace ok"
+    assert sess.stats["octets ETM"] == len(etm_bytes)
+    assert as_tuples(trace.last(len(events))) == as_tuples(events)
+
+
+@needs_qemu
+def test_coverage_and_call_flow(qemu_paths, elf):
+    from gdbtrace.core.symbols import SymbolTable
+    from gdbtrace.trace.etm.trace import EtmTrace
+    img, events = qemu_paths["bare"]
+    sym = SymbolTable(elf)
+    trace = EtmTrace(img, sym)
+    trace.feed(encode(events, img))
+    cov = {c.name: c for c in trace.coverage()}
+    for name in ("fib", "delay", "main", "update_sensor", "peripherals_init"):
+        assert cov[name].percent == 100, name                 # literal pools exclus
+    assert cov["HardFault_Handler"].executed == 0
+    assert "__addsf3 = __aeabi_fadd" in cov or "__aeabi_fadd = __addsf3" in cov   # alias fusionnés
+    main_c = sym.line_at(sym.function("fib").start).file
+    lines = trace.line_coverage(main_c)
+    assert lines and all(lines.values())                      # toutes les lignes de main.c exécutées
+    flow = trace.call_flow(5000)
+    kinds = {r.kind for r in flow}
+    assert {"call", "return", "exception", "exc-return"} <= kinds
+    calls = [r for r in flow if r.kind == "call" and r.func == "fib"]
+    assert calls and all(r.depth >= 2 for r in calls)         # main → update_sensor → fib
+
+
+@needs_qemu
+def test_qemu_simulated_etm(elf):
+    """ETM simulé : journal QEMU activé à chaque exécution, converti en trace à l'arrêt."""
+    import time
+    from gdbtrace.core.session import Session
+    from gdbtrace.core.symbols import SymbolTable
+    from gdbtrace.core.target import QemuTarget, free_port
+    from gdbtrace.trace.manager import TraceManager
+    t = QemuTarget(elf=elf, gdb_port=free_port(), etm_sim=True)
+    s = Session()
+    s.connect(elf, t)
+    lm = t.live_memory()
+    tm = TraceManager()
+    try:
+        assert tm.setup_etm(elf, SymbolTable(elf)) is None
+        tm.enable_qemu_sim(lm)
+        s.break_("animate")
+        for _ in range(2):
+            tm.on_target_running()
+            s.go()
+            s.wait_stopped(10)
+            tm.on_target_stopped()
+            time.sleep(0.1)
+            while tm.etm_busy:
+                time.sleep(0.05)
+        last = [e for e in tm.etm.last(10) if isinstance(e, ql.Step)]
+        # dernière instruction tracée : juste avant le point d'arrêt dans animate()
+        sym = SymbolTable(elf)
+        assert sym.function_at(last[-1].addr).name == "animate"
+        assert last[-1].addr + img_size(tm, last[-1].addr) == s.frame().pc
+        assert tm.etm.stats["erreurs"] == 0 and tm.etm_sim.runs == 2
+    finally:
+        tm.close()
+        lm.close()
+        s.disconnect()
+
+
+def img_size(tm, addr):
+    return tm.etm.image.instr(addr).size

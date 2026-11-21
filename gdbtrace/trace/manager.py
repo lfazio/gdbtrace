@@ -28,6 +28,75 @@ class TraceManager:
         self.line_listeners: list[LineListener] = []
         self._profile: Profile | None = None
         self._profile_sink = None
+        # trace d'instructions ETM (flux TPIU id 2, ou simulée sous QEMU)
+        self.etm = None                     # EtmTrace
+        self.etm_sim = None                 # QemuEtmSim
+        self.etm_listeners: list[Callable[[], None]] = []
+        self.etm_busy = False
+
+    # ------------------------------------------------------------------ ETM
+    def setup_etm(self, elf: str, symbols) -> str | None:
+        """Prépare le décodage ETM pour cet ELF. Retourne un message si impossible."""
+        try:
+            from .etm.image import CodeImage
+            from .etm.trace import EtmTrace
+            self.etm = EtmTrace(CodeImage(elf), symbols)
+        except Exception as exc:  # noqa: BLE001 - capstone absent, ELF illisible
+            self.etm = None
+            return f"trace ETM indisponible : {exc}"
+        return None
+
+    def enable_qemu_sim(self, qmp) -> None:
+        from .etm.qemu_sim import QemuEtmSim
+        if self.etm is not None:
+            self.etm_sim = QemuEtmSim(qmp, self.etm.image, self.etm)
+
+    def _etm_feed(self, data: bytes) -> None:
+        self.etm.feed(data)
+        self._etm_changed()
+
+    def _etm_changed(self) -> None:
+        for fn in list(self.etm_listeners):
+            self.post(fn)
+
+    def on_target_running(self) -> None:
+        if self.etm_sim is not None:
+            try:
+                self.etm_sim.start_run()
+            except Exception as exc:  # noqa: BLE001
+                self.on_error(f"ETM simulé : {exc}")
+
+    def on_target_stopped(self) -> None:
+        """Fin d'une exécution : sous QEMU, conversion du journal en trace ETM (en tâche de fond)."""
+        if self.etm_sim is None or self.etm_sim.path is None:
+            return
+        import threading
+
+        def work():
+            self.etm_busy = True
+            try:
+                self.etm_sim.end_run()
+            except Exception as exc:  # noqa: BLE001
+                self.post(self.on_error, f"ETM simulé : {exc}")
+            finally:
+                self.etm_busy = False
+            self._etm_changed()
+        threading.Thread(target=work, name="etm-sim", daemon=True).start()
+
+    def configure_etm(self, cfg, session) -> list[str]:
+        """Programme l'ETM et le TPIU parallèle (cible arrêtée)."""
+        log = [f"{name} = {val:#010x}" for name, val in cfg.apply(session)]
+        log.append(cfg.summary())
+        return log
+
+    def close(self) -> None:
+        self.stop()
+        if self.etm_sim is not None:
+            try:
+                self.etm_sim.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self.etm_sim = None
 
     # ------------------------------------------------------------------ sources
     @property
@@ -44,7 +113,8 @@ class TraceManager:
 
     def _start(self, source: SwoSource, formatter: bool) -> None:
         self.stop()
-        self.session = TraceSession(formatter=formatter)
+        self.session = TraceSession(formatter=formatter,
+                                    etm_sink=self._etm_feed if self.etm is not None else None)
         self.session.add_sink(lambda pkts: [self.text.add(p) for p in pkts])
         self.session.add_sink(self.exceptions)
         if self._profile is not None:

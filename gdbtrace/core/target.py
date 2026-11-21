@@ -83,6 +83,9 @@ class QemuTarget(TargetServer):
     needs_load: bool = False
     #: port QMP (0 = choisi automatiquement), sert à la lecture mémoire en direct
     qmp_port: int = 0
+    #: ETM simulé : une instruction par bloc TCG, journal activé à chaque exécution
+    #: (plus lent ; QEMU n'émule pas d'ETM, voir trace/etm/qemu_sim.py)
+    etm_sim: bool = False
 
     def __post_init__(self) -> None:
         if not self.qmp_port:
@@ -98,7 +101,7 @@ class QemuTarget(TargetServer):
             "-serial", "none", "-kernel", self.elf,
             "-gdb", f"tcp:{self.host}:{self.gdb_port}", "-S",
             "-qmp", f"tcp:{self.host}:{self.qmp_port},server=on,wait=off",
-        ]
+        ] + (["-accel", "tcg,one-insn-per-tb=on"] if self.etm_sim else [])
 
     def live_memory(self) -> LiveMemory | None:
         return QemuQmp(self.host, self.qmp_port)

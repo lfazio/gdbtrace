@@ -23,9 +23,15 @@ PacketSink = Callable[[list[Packet]], None]
 class TraceSession:
     """Décode les octets reçus et distribue les paquets aux abonnés (thread de la source)."""
 
-    def __init__(self, formatter: bool = False, itm_stream: int = 1):
+    def __init__(self, formatter: bool = False, itm_stream: int = 1, etm_stream: int = 2,
+                 etm_sink: Callable[[bytes], object] | None = None):
+        """Avec le formateur TPIU (port parallèle, ORBTrace…), les flux sont séparés par ID :
+        ITM → décodeur ITM, ETM → `etm_sink(octets)` (trace d'instructions)."""
         self.deformatter = TpiuDeformatter() if formatter else None
         self.itm_stream = itm_stream
+        self.etm_stream = etm_stream
+        self.etm_sink = etm_sink
+        self.etm_bytes = 0
         self.decoder = ItmDecoder()
         self.sinks: list[PacketSink] = []
         self.bytes = 0
@@ -43,8 +49,13 @@ class TraceSession:
         with self._lock:
             self.bytes += len(data)
             if self.deformatter is not None:
-                data = b"".join(chunk for sid, chunk in self.deformatter.feed(data)
-                                if sid == self.itm_stream)
+                chunks = self.deformatter.feed(data)
+                data = b"".join(c for sid, c in chunks if sid == self.itm_stream)
+                etm = b"".join(c for sid, c in chunks if sid == self.etm_stream)
+                if etm:
+                    self.etm_bytes += len(etm)
+                    if self.etm_sink is not None:
+                        self.etm_sink(etm)
             pkts = self.decoder.feed(data)
             self.overflows += sum(isinstance(p, Overflow) for p in pkts)
         if pkts:
@@ -55,7 +66,8 @@ class TraceSession:
     @property
     def stats(self) -> dict[str, int]:
         return {"octets": self.bytes, "paquets": self.decoder.packets,
-                "erreurs": self.decoder.errors, "overflows": self.overflows}
+                "erreurs": self.decoder.errors, "overflows": self.overflows,
+                "octets ETM": self.etm_bytes}
 
 
 # ====================================================================== sources

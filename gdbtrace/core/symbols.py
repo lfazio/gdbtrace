@@ -38,9 +38,18 @@ class SymbolTable:
         self.functions: list[Function] = []
         self.objects: dict[str, tuple[int, int]] = {}
         self.lines: list[LineEntry] = []
+        #: symboles de correspondance ARM ($t code Thumb, $a code ARM, $d données), triés :
+        #: les « literal pools » ($d) au milieu du code ne sont pas des instructions
+        self.mapping: list[tuple[int, str]] = []
         self._load()
         self._func_starts = [f.start for f in self.functions]
         self._line_addrs = [e.address for e in self.lines]
+        self._map_addrs = [a for a, _ in self.mapping]
+
+    def is_data(self, addr: int) -> bool:
+        """Vrai si `addr` est dans une zone de données ($d) : constantes, tables de saut."""
+        i = bisect.bisect_right(self._map_addrs, addr) - 1
+        return i >= 0 and self.mapping[i][1] == "d"
 
     def _load(self) -> None:
         with open(self.path, "rb") as fh:
@@ -52,12 +61,16 @@ class SymbolTable:
                     kind = sym["st_info"]["type"]
                     if not sym.name or sym["st_shndx"] == "SHN_UNDEF":
                         continue
+                    if sym.name[:2] in ("$t", "$a", "$d") and (len(sym.name) == 2 or sym.name[2] == "."):
+                        self.mapping.append((sym["st_value"], sym.name[1]))
+                        continue
                     if kind == "STT_FUNC":
                         # bit 0 = Thumb sur ARM, ce n'est pas une partie de l'adresse
                         self.functions.append(Function(sym.name, sym["st_value"] & ~1, sym["st_size"]))
                     elif kind == "STT_OBJECT":
                         self.objects[sym.name] = (sym["st_value"], sym["st_size"])
             self.functions.sort(key=lambda f: f.start)
+            self.mapping.sort()
             if elf.has_dwarf_info():
                 self._load_lines(elf)
 

@@ -83,7 +83,11 @@ def parse(lines: Iterable[str]) -> Iterator[Event]:
                 held_return = False
             yield ExcEntry(number, int(m.group(1), 16) & ~1, tailchain)
             number, tailchain = None, False
-    # la dernière instruction annoncée n'est pas confirmée : on l'ignore
+    # Fin du journal : une instruction annoncée sans « Stopped execution » derrière a été
+    # exécutée (ex. celle qui précède un point d'arrêt, dont l'instruction n'est jamais
+    # annoncée).
+    if pending is not None:
+        yield Step(pending)
     if held_return:
         yield ExcReturn()
 
