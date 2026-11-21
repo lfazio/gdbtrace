@@ -12,7 +12,7 @@ Interface en **tkinter**.
 | 2. Scripting | Console Python avec l'objet `t32`, scripts `--script`, mode `--batch` | ✅ |
 | 3. Vues en direct | Mémoire, Watch et périphériques rafraîchis cible en marche (OpenOCD TCL / QEMU QMP), vue Périphériques CMSIS-SVD | ✅ |
 | 4. RTOS | Vue FreeRTOS (tâches, piles, CPU, queues/mutex/sémaphores), contexte et pile d'appels de chaque tâche, en direct | ✅ |
-| 5. Trace SWO/ITM | printf ITM, profilage statistique par échantillonnage du PC (DWT) | à faire |
+| 5. Trace SWO/ITM | printf ITM, trace des exceptions, profilage statistique (fonctions, lignes, tâches) par SWO ou lecture du PC en marche | ✅ |
 | 6. Trace ETM | Capture ORBTrace, historique d'exécution, couverture de code | à faire |
 
 ## Installation
@@ -33,6 +33,9 @@ make -C examples/firmware                                        # firmware de d
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf --svd examples/svd/mps2-an385.svd  # périphériques
 make -C examples/freertos && .venv/bin/python -m gdbtrace examples/freertos/freertos.elf  # FreeRTOS
 .venv/bin/python -m gdbtrace fw.elf --openocd configs/nucleo-f429zi.cfg --rtos  # tâches = threads gdb
+.venv/bin/python -m gdbtrace fw.elf --openocd configs/nucleo-f429zi.cfg --swo-config --cpu-hz 180000000  # ITM/SWO
+.venv/bin/python -m gdbtrace fw.elf --swo 127.0.0.1:3443          # SWO servi par Orbuculum / J-Link
+.venv/bin/python -m gdbtrace fw.elf --swo-file capture.bin        # rejouer une capture SWO
 ```
 
 Raccourcis : `F5` Go, `F8` Break, `F11` Step, `F10` Over, `Shift+F11` Out, `F7` Step assembleur.
@@ -102,6 +105,36 @@ Configuration conseillée du noyau : `configUSE_TRACE_FACILITY 1`,
 (remplissage 0xA5), `configQUEUE_REGISTRY_SIZE` > 0, `configGENERATE_RUN_TIME_STATS 1`. Ports
 gérés pour le contexte des tâches : ARM_CM3 (testé) et ARM_CM4F.
 
+### Trace SWO/ITM et profilage
+
+**ITM (vue ITM, l'équivalent de TERM)** : le firmware écrit sur les ports de stimulus de l'ITM
+(`ITM_SendChar` de CMSIS, ou `itm_puts` dans `examples/freertos/main.c`). Le flux sort par la
+broche SWO et gdbtrace le décode : texte UTF-8 par port (port 0 par défaut), valeurs brutes en
+hexa pour les autres ports, filtre de ports et horodatage. La capture vient :
+- d'**OpenOCD** : `--swo-config` (ou « Configurer la cible… ») programme ITM, DWT et TPIU,
+  configure le TPIU d'OpenOCD (`<cible>.tpiu configure -protocol uart … -output :3443`),
+  puis se connecte au port ;
+- d'**Orbuculum** ou de **J-Link** : `--swo HOST:PORT` ;
+- d'un **fichier** de capture brute : `--swo-file` (avec `--swo-formatter` si le formateur
+  TPIU était actif, par exemple sur une sonde ORBTrace).
+
+**Profil (vue Profil, l'équivalent de PERF)** : profilage statistique sans instrumenter le
+code. On obtient le % du temps CPU par fonction, par ligne (double-clic : la source s'ouvre) et
+par tâche FreeRTOS. Sources des échantillons :
+
+| Source | Comment | Cible |
+|---|---|---|
+| SWO | paquets « PC sample » du DWT (`--swo-config`, échantillonnage réglé via CYCTAP/POSTPRESET) | sonde + broche SWO |
+| Live | lecture de `DWT_PCSR` par l'AHB-AP, cœur non arrêté | OpenOCD, Cortex-M3/M4/M7 (pas M0) |
+| Live | PC de la vCPU lu par le moniteur (~2 000 éch./s) | QEMU |
+
+L'onglet **Exceptions** compte les entrées dans chaque exception ou IRQ et, si l'horodatage
+ITM est actif, le temps total et maximal passé dedans. Ces données viennent du SWO.
+
+QEMU n'émule ni l'ITM ni le SWO : sous QEMU, la sortie ITM du firmware reste inerte et
+seul le profil « Live » fonctionne. Le décodage SWO est testé sur des flux synthétiques et un
+faux serveur ; il reste à valider sur sonde réelle.
+
 ### Console
 
 | Saisie | Effet |
@@ -112,6 +145,9 @@ gérés pour le contexte des tâches : ARM_CM3 (testé) et ARM_CM4F.
 | `t32.periph("TIMER0")` | PER.view : registres et champs décodés, retourne `{registre: valeur}` |
 | `t32.tasks()`, `t32.queues()` | TASK.List / objets du noyau FreeRTOS (aussi cible en marche) |
 | `t32.task("consumer")` | contexte et pile d'appels d'une tâche |
+| `t32.profile(2.0, per_task=True)` | PERF : profil statistique pendant 2 s (relance puis arrête la cible si besoin) |
+| `t32.itm(0)` | texte reçu sur le port ITM 0 |
+| `t32.swo_config(cpu_hz=180_000_000, swo_hz=2_000_000)` | programme ITM/DWT/TPIU (+ OpenOCD) |
 | `!info breakpoints` | Commande CLI gdb brute |
 | `mon reset halt` | Commande `monitor` vers OpenOCD |
 
@@ -130,10 +166,16 @@ gdbtrace/
   core/svd.py           parseur CMSIS-SVD (derivedFrom, dim, clusters, champs, énumérations)
   core/rtos/freertos.py awareness FreeRTOS : disposition via DWARF, parcours des listes,
                         piles, objets du noyau, contexte et pile d'appels des tâches
+  trace/itm.py          décodeur ITM/DWT (instrumentation, PC, exceptions, data trace...)
+  trace/tpiu.py         déformateur de trames TPIU
+  trace/swo.py          sources SWO (TCP, fichier), session de trace, stats d'exceptions
+  trace/config.py       programmation ITM/DWT/TPIU, commandes TPIU d'OpenOCD
+  trace/profile.py      profil statistique et échantillonneur de PC
+  trace/manager.py      capture SWO d'une session (GUI et batch)
   core/scripting.py     API `t32` + console Python
   gui/                  fenêtre tkinter, vues détachables, pompe d'événements thread-safe
-  views/                Source, Désassemblage, Registres, Mémoire, Watch, Périphériques, Pile,
-                        Breakpoints, Console
+  views/                Source, Désassemblage, Registres, Mémoire, Watch, Périphériques, RTOS,
+                        Pile, Breakpoints, Console, ITM, Profil
 examples/
   firmware/             firmware de démo Cortex-M3 (SysTick 1 kHz, timer CMSDK)
   freertos/             firmware de démo FreeRTOS V11.3.3 (noyau MIT inclus) : 7 tâches,
@@ -154,4 +196,4 @@ xvfb-run -a .venv/bin/python -m pytest
 
 Les tests lancent QEMU (`mps2-an385`) avec le firmware de démo. Sans `DISPLAY`, les tests GUI sont ignorés.
 Le client TCL OpenOCD est testé contre un faux serveur TCL ; il reste à valider sur une sonde réelle,
-comme le support RTOS d'OpenOCD (`--rtos`).
+comme le support RTOS d'OpenOCD (`--rtos`), la capture SWO et `DWT_PCSR` via OpenOCD.
