@@ -240,8 +240,10 @@ def slice_ranges(blocks: dict[Range, bytes], wanted: list[Range]) -> dict[int, b
 @dataclass
 class _Sub:
     ranges: list[Range]
-    callback: Callable[[dict[int, bytes]], None]
+    callback: Callable[[object], None]
     token: int = field(default=0)
+    #: tâche de lecture libre (parcours de listes chaînées...) : job(read) -> résultat
+    job: Callable[[Callable[[int, int], bytes]], object] | None = None
 
 
 class LivePoller:
@@ -288,6 +290,15 @@ class LivePoller:
             self._subs[key] = _Sub(list(ranges), callback, self._tokens)
         self._wake.set()
 
+    def subscribe_job(self, key: object, job: Callable[[Callable[[int, int], bytes]], object],
+                      callback: Callable[[object], None]) -> None:
+        """`job(read)` est exécuté dans le thread du poller (lectures en chaîne de pointeurs,
+        impossibles avec des plages fixes) ; `callback(résultat)` dans le thread GUI."""
+        with self._lock:
+            self._tokens += 1
+            self._subs[key] = _Sub([], callback, self._tokens, job)
+        self._wake.set()
+
     def unsubscribe(self, key: object) -> None:
         with self._lock:
             self._subs.pop(key, None)
@@ -312,17 +323,29 @@ class LivePoller:
             if subs:
                 self._poll(subs)
 
+    def _report(self, msg: str) -> None:
+        if msg != self._last_error:
+            self._last_error = msg
+            self.post(self.on_error, msg)
+
     def _poll(self, subs: list[tuple[object, _Sub]]) -> None:
+        for key, sub in subs:
+            if sub.job is None:
+                continue
+            try:
+                result = sub.job(self.reader.read)
+            except Exception as exc:  # noqa: BLE001
+                self._report(f"lecture live : {exc}")
+                continue
+            self.post(self._deliver, key, sub.token, result)
+        subs = [(k, s) for k, s in subs if s.job is None]
         wanted = [r for _, s in subs for r in s.ranges]
         blocks: dict[Range, bytes] = {}
         for addr, n in merge_ranges(wanted):
             try:
                 blocks[(addr, n)] = self.reader.read(addr, n)
             except Exception as exc:  # noqa: BLE001 - une plage en erreur n'arrête pas les autres
-                msg = f"lecture live {addr:#x}+{n} : {exc}"
-                if msg != self._last_error:
-                    self._last_error = msg
-                    self.post(self.on_error, msg)
+                self._report(f"lecture live {addr:#x}+{n} : {exc}")
         if blocks and len(blocks) == len(merge_ranges(wanted)):
             self._last_error = None  # tout a été lu : une nouvelle erreur sera de nouveau signalée
         self.reads += 1
@@ -331,7 +354,7 @@ class LivePoller:
             if data:
                 self.post(self._deliver, key, sub.token, data)
 
-    def _deliver(self, key: object, token: int, data: dict[int, bytes]) -> None:
+    def _deliver(self, key: object, token: int, data: object) -> None:
         """Exécuté dans le thread GUI : ignore les résultats d'un abonnement périmé."""
         with self._lock:
             sub = self._subs.get(key)

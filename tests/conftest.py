@@ -44,3 +44,31 @@ def session(elf):
     s.connect(elf, QemuTarget(elf=elf, gdb_port=free_port()))
     yield s
     s.disconnect()
+
+
+RTOS_DIR = os.path.join(ROOT, "examples", "freertos")
+RTOS_ELF = os.path.join(RTOS_DIR, "freertos.elf")
+
+
+@pytest.fixture(scope="session")
+def rtos_elf():
+    if not shutil.which("arm-none-eabi-gcc"):
+        pytest.skip("arm-none-eabi-gcc absent")
+    subprocess.run(["make", "-s", "-C", RTOS_DIR], check=True)
+    return RTOS_ELF
+
+
+@pytest.fixture
+def rtos_session(rtos_elf):
+    """Firmware FreeRTOS arrêté dans worker_step(), ordonnanceur démarré depuis ~0,3 s."""
+    import time
+    s = Session()
+    s.connect(rtos_elf, QemuTarget(elf=rtos_elf, gdb_port=free_port()))
+    s.go()
+    time.sleep(0.3)
+    s.halt()
+    s.break_("worker_step", temporary=True)
+    s.go()
+    s.wait_stopped(5)
+    yield s
+    s.disconnect()

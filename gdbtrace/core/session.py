@@ -250,7 +250,8 @@ class Session:
         return out
 
     def register(self, name: str) -> int:
-        return _int(self.evaluate(f"${name}"))
+        # conversion explicite : gdb affiche $sp/$pc comme pointeurs (« 0x... <sym+n> »)
+        return _int(self.evaluate(f"(unsigned long)${name}")) & 0xFFFFFFFF
 
     def write_register(self, name: str, value: int) -> None:
         self.gdb.command(f"-data-evaluate-expression \"${name}={value}\"")
