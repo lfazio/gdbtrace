@@ -81,6 +81,10 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--etm-cycle-accurate", action="store_true",
                    help="trace ETM cycle-accurate (durées mesurées pour l'analyse temporelle, ~8× plus de trace)")
     e.add_argument("--etm-width", type=int, default=4, choices=(1, 2, 4), help="largeur du port de trace")
+    e.add_argument("--etm-port", choices=("parallel", "swo"), default="parallel",
+                   help="sortie de l'ETM : port de trace parallèle (sonde de trace) ou broche SWO "
+                        "(formateur TPIU, capturée par la sonde de débogage via OpenOCD ; "
+                        "faible débit, voir --cpu-hz / --swo-hz)")
     e.add_argument("--stm32", action="store_true", help="activer les broches de trace (DBGMCU_CR des STM32)")
     m = p.add_argument_group("trace MTB (Cortex-M0+)")
     m.add_argument("--mtb", nargs="?", const="auto", metavar="ADRESSE",
@@ -136,20 +140,23 @@ def main(argv: list[str] | None = None) -> int:
 
     def setup_trace(trace, session) -> None:
         """Options SWO : configuration de la cible puis démarrage de la capture."""
-        if args.swo_config:
+        etm_swo = args.etm_config and args.etm_port == "swo"   # ETM + ITM formatés sur le SWO
+        if args.swo_config or etm_swo:
             from .trace.config import SwoConfig
-            cfg = SwoConfig(cpu_hz=args.cpu_hz, swo_hz=args.swo_hz, ports=0xFFFFFFFF)
+            cfg = SwoConfig(cpu_hz=args.cpu_hz, swo_hz=args.swo_hz, ports=0xFFFFFFFF, formatter=etm_swo)
             for line in trace.configure_target(cfg, session, target, args.swo_port):
                 print(line)
         if args.swo:
             host, _, port = args.swo.rpartition(":")
-            trace.start_tcp(host or "127.0.0.1", int(port), args.swo_formatter)
+            trace.start_tcp(host or "127.0.0.1", int(port), args.swo_formatter or etm_swo)
         elif args.swo_file:
-            trace.start_file(args.swo_file, args.swo_formatter)
+            trace.start_file(args.swo_file, args.swo_formatter or etm_swo)
         if args.etm_config:
             from .trace.etm.config import EtmConfig
-            for line in trace.configure_etm(EtmConfig(port_width=args.etm_width, stm32=args.stm32,
-                                                           cycle_accurate=args.etm_cycle_accurate), session):
+            cfg = EtmConfig(port_width=args.etm_width, stm32=args.stm32, port=args.etm_port,
+                            cpu_hz=args.cpu_hz, swo_hz=args.swo_hz,
+                            cycle_accurate=args.etm_cycle_accurate)
+            for line in trace.configure_etm(cfg, session):
                 print(line)
         if args.mtb_probe:
             from .trace.mtb import rom_components

@@ -2,8 +2,8 @@
 
 Ce que GdbTrace fait pour `ITM.ON` / `SWO.ON` (`--swo-config`) : activer la trace (DEMCR.TRCENA),
 déverrouiller et activer l'ITM, choisir les ports de stimulus, régler l'échantillonnage du
-PC et la trace des exceptions dans le DWT, puis le TPIU (vitesse SWO, NRZ, formateur
-coupé). Les broches SWO propres au microcontrôleur (ex. DBGMCU_CR.TRACE_IOEN des STM32)
+PC et la trace des exceptions dans le DWT, puis le TPIU (vitesse SWO, NRZ ; formateur coupé,
+sauf pour l'ETM par SWO). Les broches SWO propres au microcontrôleur (ex. DBGMCU_CR.TRACE_IOEN des STM32)
 sont réglées par OpenOCD (`tpiu enable`) ou par le firmware.
 """
 from __future__ import annotations
@@ -44,6 +44,8 @@ class SwoConfig:
     exceptions: bool = True
     manchester: bool = False
     trace_bus_id: int = 1
+    #: formateur TPIU actif : obligatoire pour transporter l'ETM (ID 2) avec l'ITM (ID 1)
+    formatter: bool = False
     notes: list[str] = field(default_factory=list, repr=False)
 
     # ------------------------------------------------------------------ calculs
@@ -82,7 +84,7 @@ class SwoConfig:
             RegWrite("TPIU_CSPSR", TPIU_CSPSR, 1),
             RegWrite("TPIU_ACPR", TPIU_ACPR, self.prescaler),
             RegWrite("TPIU_SPPR", TPIU_SPPR, 1 if self.manchester else 2),
-            RegWrite("TPIU_FFCR", TPIU_FFCR, 0x100),           # formateur coupé
+            RegWrite("TPIU_FFCR", TPIU_FFCR, 0x102 if self.formatter else 0x100),  # formateur
             RegWrite("ITM_LAR", ITM_LAR, UNLOCK),
             RegWrite("ITM_TCR", ITM_TCR, tcr),
             RegWrite("ITM_TER", ITM_TER, self.ports & 0xFFFFFFFF),
@@ -120,7 +122,7 @@ def openocd_tpiu_commands(cfg: SwoConfig, tpiu: str, port: int) -> list[str]:
     proto = "manchester" if cfg.manchester else "uart"
     return [
         f"{tpiu} configure -protocol {proto} -traceclk {cfg.cpu_hz} -pin-freq {cfg.swo_hz} "
-        f"-output :{port} -formatter 0",
+        f"-output :{port} -formatter {1 if cfg.formatter else 0}",
         f"{tpiu} enable",
     ]
 

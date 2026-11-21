@@ -280,7 +280,8 @@ class TraceManager:
             for cmd in openocd_tpiu_commands(cfg, tpiu, port):
                 out = session.monitor(cmd).strip()
                 log.append(f"monitor {cmd}" + (f" → {out}" if out else ""))
-            self.start_tcp(host if isinstance(target, RemoteTarget) else "127.0.0.1", port)
+            self.start_tcp(host if isinstance(target, RemoteTarget) else "127.0.0.1", port,
+                           formatter=cfg.formatter)
             log.append(f"capture SWO TCP {port} démarrée")
         log.append(cfg.summary())
         return log
