@@ -29,14 +29,16 @@ def view_classes() -> dict[str, type[View]]:
     from ..views.itm import ItmView
     from ..views.profile import ProfileView
     from ..views.rtos import RtosView
-    classes = [SourceView, DisasmView, RegistersView, WatchView, PeripheralsView, RtosView,
-               StackView, BreakpointsView, MemoryView, ConsoleView, ItmView, ProfileView]
+    from ..views.trace import TraceView
+    classes = [SourceView, DisasmView, TraceView, RegistersView, WatchView, PeripheralsView,
+               RtosView, StackView, BreakpointsView, MemoryView, ConsoleView, ItmView, ProfileView]
     return {c.kind: c for c in classes}
 
 
 DEFAULT_LAYOUT = [
     {"kind": "source", "where": "code"},
     {"kind": "disasm", "where": "code"},
+    {"kind": "trace", "where": "code"},
     {"kind": "registers", "where": "data"},
     {"kind": "watch", "where": "data"},
     {"kind": "peripherals", "where": "data"},
@@ -78,6 +80,7 @@ class App:
         # trace SWO/ITM (capture, texte ITM, exceptions) et fréquence du cœur pour la configurer
         self.trace = TraceManager(post=self.pump.post, on_error=self.report_error)
         self.cpu_hz = 25_000_000
+        self.coverage_in_source = False        # couverture ETM affichée dans la vue Source
         # description des périphériques (CMSIS-SVD)
         self.device: svd.Device | None = None
         self.svd_path: str | None = None
@@ -179,6 +182,8 @@ class App:
         self.api.trace = self.trace
         self.api.symbols = self.symbols
         self._rtos_layout = None
+        if session.elf and self.symbols is not None:
+            self.trace.setup_etm(session.elf, self.symbols)
         if session.target is not None and session.state != "disconnected":
             self._setup_live(session.target)
         if session.state == "stopped":
@@ -213,7 +218,7 @@ class App:
         for v in list(self.views.views):          # arrête les échantillonneurs (vue Profil)
             if hasattr(v, "stop") and v.kind == "profile":
                 self.safe(v.stop)
-        self.trace.stop()
+        self.trace.close()
         self._teardown_live()
         if self.session and self.session.state != "disconnected":
             try:
@@ -236,6 +241,15 @@ class App:
             self.poller.start()
         if self.api:
             self.api.live = self.live
+        from ..core.target import QemuTarget
+        if isinstance(target, QemuTarget) and target.etm_sim and self.live is not None:
+            if self.trace.etm is None and self.session and self.session.elf and self.symbols:
+                msg = self.trace.setup_etm(self.session.elf, self.symbols)
+                if msg:
+                    self.report_error(msg)
+            if self.trace.etm is not None and self.trace.etm_sim is None:
+                self.trace.enable_qemu_sim(self.live)
+                self.trace.attach_session(self.session)
         if self.session and self.session.state == "running":
             self.views.running_all()  # abonne les vues
         self.update_status()
@@ -305,7 +319,7 @@ class App:
         elif kind == "disconnected":
             self.current_frame = None
             self.views.disconnected_all()
-            self.trace.stop()
+            self.trace.close()
             self._rtos_layout = None
             self._teardown_live()
             self.status.set("Déconnecté")

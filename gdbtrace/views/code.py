@@ -13,6 +13,8 @@ BP_MARK = "●"
 class _CodeText(tk.Text):
     def __init__(self, master, font, **kw):
         super().__init__(master, font=font, wrap="none", background="#ffffff", **kw)
+        self.tag_configure("cov_hit", background="#d6f2d6")     # couverture ETM : exécutée
+        self.tag_configure("cov_miss", background="#f6d6d6")    # code jamais exécuté
         self.tag_configure("current", background="#fff2a8")
         self.tag_configure("bp", foreground="#d00000")
         self.tag_configure("gutter", foreground="#909090")
@@ -88,7 +90,23 @@ class SourceView(View):
         if self.pc_line and self.pc_line[0] == self.current_file:
             n = self.pc_line[1]
             t.tag_add("current", f"{n}.0", f"{n + 1}.0")
+        self._decorate_coverage()
         t.configure(state="disabled")
+
+    def _decorate_coverage(self) -> None:
+        """Marge colorée selon la couverture ETM (vue Trace, « Couverture dans la source »)."""
+        t = self.text
+        t.tag_remove("cov_hit", "1.0", "end")
+        t.tag_remove("cov_miss", "1.0", "end")
+        etm = self.app.trace.etm
+        if not getattr(self.app, "coverage_in_source", False) or etm is None or not self.current_file:
+            return
+        key = (self.current_file, etm.generation)
+        if getattr(self, "_cov_key", None) != key:
+            self._cov_cache = etm.line_coverage(self.current_file)
+            self._cov_key = key
+        for line, hit in self._cov_cache.items():
+            t.tag_add("cov_hit" if hit else "cov_miss", f"{line}.0", f"{line}.8")
 
     def _same(self, name: str) -> bool:
         return bool(self.current_file) and (name == self.current_file

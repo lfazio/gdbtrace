@@ -13,13 +13,13 @@ Interface en **tkinter**.
 | 3. Vues en direct | Mémoire, Watch et périphériques rafraîchis cible en marche (OpenOCD TCL / QEMU QMP), vue Périphériques CMSIS-SVD | ✅ |
 | 4. RTOS | Vue FreeRTOS (tâches, piles, CPU, queues/mutex/sémaphores), contexte et pile d'appels de chaque tâche, en direct | ✅ |
 | 5. Trace SWO/ITM | printf ITM, trace des exceptions, profilage statistique (fonctions, lignes, tâches) par SWO ou lecture du PC en marche | ✅ |
-| 6. Trace ETM | Capture ORBTrace, historique d'exécution, couverture de code | à faire |
+| 6. Trace ETM | Trace d'instructions ETMv3 (Cortex-M3/M4) : listing avant l'arrêt, flot d'appels, couverture ; ETM simulé sous QEMU ; décodage validé contre OpenCSD | ✅ |
 
 ## Installation
 
 ```bash
 sudo apt install python3-tk gdb-multiarch openocd qemu-system-arm gcc-arm-none-eabi
-python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
+python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'     # dev inclut capstone (trace ETM)
 ```
 
 ## Utilisation
@@ -36,6 +36,8 @@ make -C examples/freertos && .venv/bin/python -m gdbtrace examples/freertos/free
 .venv/bin/python -m gdbtrace fw.elf --openocd configs/nucleo-f429zi.cfg --swo-config --cpu-hz 180000000  # ITM/SWO
 .venv/bin/python -m gdbtrace fw.elf --swo 127.0.0.1:3443          # SWO servi par Orbuculum / J-Link
 .venv/bin/python -m gdbtrace fw.elf --swo-file capture.bin        # rejouer une capture SWO
+.venv/bin/python -m gdbtrace examples/firmware/demo.elf --etm-sim  # trace ETM simulée (QEMU)
+.venv/bin/python -m gdbtrace fw.elf --openocd … --etm-config --stm32 --trace 127.0.0.1:PORT  # ETM réel
 ```
 
 Raccourcis : `F5` Go, `F8` Break, `F11` Step, `F10` Over, `Shift+F11` Out, `F7` Step assembleur.
@@ -135,6 +137,45 @@ QEMU n'émule ni l'ITM ni le SWO : sous QEMU, la sortie ITM du firmware reste in
 seul le profil « Live » fonctionne. Le décodage SWO est testé sur des flux synthétiques et un
 faux serveur ; il reste à valider sur sonde réelle.
 
+### Trace d'instructions ETM (vue Trace)
+
+L'ETM d'un Cortex-M3/M4 (ETMv3.5) émet un flux compact (moins d'un bit par instruction) qui
+permet de reconstruire **chaque instruction exécutée**, combiné au code de l'ELF. La vue Trace
+(l'équivalent de Trace.List) propose :
+- **Listing** : les N dernières instructions avant l'arrêt (« ce qui s'est passé avant le
+  crash »), avec la fonction, le désassemblage, la ligne source, les exceptions et leurs retours.
+  Double-clic : la source s'ouvre ;
+- **Appels** : appels, retours, exceptions, indentés par profondeur ;
+- **Couverture** : instructions exécutées par fonction (les literal pools `$d` ne sont pas
+  comptés) ; « Couverture dans la source » colore la marge de la vue Source (vert : exécutée,
+  rouge : jamais exécutée).
+
+Sources de trace :
+
+| Source | Option | Remarque |
+|---|---|---|
+| ETM simulé (QEMU) | `--etm-sim` | QEMU n'a pas d'ETM : son journal d'exécution est activé à chaque Go, puis converti à l'arrêt en flux ETMv3, tel que l'émettrait un ETM-M, et décodé comme une vraie capture. QEMU tourne plus lentement (une instruction par bloc TCG). |
+| Port de trace parallèle | `--etm-config [--etm-width 4] [--stm32]` puis `--trace HOST:PORT` ou `--trace-file F` | flux TPIU formaté : ETM (ID 2) et ITM (ID 1) séparés automatiquement. Il faut une sonde de trace (ex. ORBTrace Mini avec Orbuculum, qui sert le flux brut en TCP) et une carte qui expose TRACECLK/TRACED0-3. |
+
+`--etm-config` programme l'ETM (ID de trace 2, trace de tout le code), le TPIU en port
+parallèle 1/2/4 bits avec formateur, et avec `--stm32` les broches de trace (DBGMCU_CR).
+
+**Comment le décodeur a été validé sans matériel.**
+1. QEMU fournit le chemin réel instruction par instruction, exceptions comprises.
+2. L'encodeur produit le flux ETMv3 correspondant (un atome par instruction, adresse
+   seulement pour les branchements indirects et les exceptions, encodage alternatif des ETM-M).
+3. Deux décodeurs indépendants reconstruisent le chemin : celui de gdbtrace et **OpenCSD**,
+   le décodeur de référence d'ARM/Linaro (celui de perf).
+
+Les deux retrouvent exactement le chemin de QEMU :
+- firmware bare-metal : 604 706 instructions ;
+- firmware FreeRTOS : 1 477 998 instructions, avec SVC, SysTick, PendSV et 678 exceptions
+  enchaînées.
+
+Ce test tourne dans la suite (`tools/build_opencsd.sh` construit OpenCSD dans `.cache/`). Il
+reste à valider sur une vraie sonde de trace. Les ETMv4 (Cortex-M7, M33, M55) ne sont pas
+pris en charge.
+
 ### Console
 
 | Saisie | Effet |
@@ -148,6 +189,8 @@ faux serveur ; il reste à valider sur sonde réelle.
 | `t32.profile(2.0, per_task=True)` | PERF : profil statistique pendant 2 s (relance puis arrête la cible si besoin) |
 | `t32.itm(0)` | texte reçu sur le port ITM 0 |
 | `t32.swo_config(cpu_hz=180_000_000, swo_hz=2_000_000)` | programme ITM/DWT/TPIU (+ OpenOCD) |
+| `t32.trace_list(30)`, `t32.calls(40)`, `t32.coverage(20)` | Trace.List, flot d'appels, couverture (trace ETM) |
+| `t32.etm_config(port_width=4, stm32=True)` | programme l'ETM et le TPIU parallèle |
 | `!info breakpoints` | Commande CLI gdb brute |
 | `mon reset halt` | Commande `monitor` vers OpenOCD |
 
@@ -171,11 +214,18 @@ gdbtrace/
   trace/swo.py          sources SWO (TCP, fichier), session de trace, stats d'exceptions
   trace/config.py       programmation ITM/DWT/TPIU, commandes TPIU d'OpenOCD
   trace/profile.py      profil statistique et échantillonneur de PC
-  trace/manager.py      capture SWO d'une session (GUI et batch)
+  trace/manager.py      capture SWO/ETM d'une session (GUI et batch)
+  trace/etm/etm3.py     décodeur de paquets ETMv3 (Cortex-M)
+  trace/etm/flow.py     reconstruction du flot d'exécution (paquets + code de l'ELF)
+  trace/etm/image.py    image du code et classification Thumb-2 (capstone)
+  trace/etm/encoder.py  encodeur ETMv3 (ETM simulé, tests)
+  trace/etm/qemu_log.py chemin réel depuis le journal QEMU
+  trace/etm/trace.py    historique, couverture, flot d'appels
+  trace/etm/config.py   programmation ETM + TPIU parallèle
   core/scripting.py     API `t32` + console Python
   gui/                  fenêtre tkinter, vues détachables, pompe d'événements thread-safe
   views/                Source, Désassemblage, Registres, Mémoire, Watch, Périphériques, RTOS,
-                        Pile, Breakpoints, Console, ITM, Profil
+                        Pile, Breakpoints, Console, ITM, Profil, Trace
 examples/
   firmware/             firmware de démo Cortex-M3 (SysTick 1 kHz, timer CMSDK)
   freertos/             firmware de démo FreeRTOS V11.3.3 (noyau MIT inclus) : 7 tâches,
@@ -197,3 +247,5 @@ xvfb-run -a .venv/bin/python -m pytest
 Les tests lancent QEMU (`mps2-an385`) avec le firmware de démo. Sans `DISPLAY`, les tests GUI sont ignorés.
 Le client TCL OpenOCD est testé contre un faux serveur TCL ; il reste à valider sur une sonde réelle,
 comme le support RTOS d'OpenOCD (`--rtos`), la capture SWO et `DWT_PCSR` via OpenOCD.
+Les tests ETM comparent notre décodeur à OpenCSD si `tools/build_opencsd.sh` a été lancé
+(sinon ce test est ignoré) ; la trace ETM nécessite `pip install capstone` (extra `etm`).

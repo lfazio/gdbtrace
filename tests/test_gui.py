@@ -276,3 +276,51 @@ def test_itm_view_with_fake_swo_server(rtos_app, rtos_elf):
     iv.on_line(1, "gardé", 0)
     assert iv.contents() == "[1] gardé\n"
     app.trace.stop()
+
+
+# ====================================================================== trace ETM (simulée sous QEMU)
+@pytest.fixture
+def etm_app(elf, tmp_path):
+    from gdbtrace.gui.app import App
+    a = App(layout_file=str(tmp_path / "layout.json"))
+    s = Session()
+    s.connect(elf, QemuTarget(elf=elf, gdb_port=free_port(), etm_sim=True))
+    a.attach(s)
+    yield a
+    a.quit()
+
+
+def test_trace_view_with_simulated_etm(etm_app):
+    from gdbtrace.views.code import SourceView
+    from gdbtrace.views.trace import TraceView
+    app = etm_app
+    assert app.trace.etm is not None and app.trace.etm_sim is not None
+    tv = app.views.show(TraceView)
+    app.session.break_("fib")
+    app.go()
+    assert pump(app, lambda: app.current_frame is not None and app.current_frame.func == "fib")
+    assert pump(app, lambda: app.trace.etm.stats["instructions"] > 100 and not app.trace.etm_busy)
+    pump(app, lambda: False, timeout=0.3)
+    rows = tv.listing.get_children()
+    last = tv.listing.item(rows[-1], "values")
+    # dernière instruction tracée : dans fib, juste avant l'adresse du point d'arrêt
+    ins = app.trace.etm.image.instr(int(last[0], 16))
+    assert int(last[0], 16) + ins.size == app.current_frame.pc
+    flow = [tv.flow.item(i, "values")[0].strip() for i in tv.flow.get_children()]
+    assert flow[-1] == "→ fib" and "→ update_sensor" in flow
+    cov = {tv.cov.item(i, "text"): tv.cov.item(i, "values") for i in tv.cov.get_children()}
+    assert cov["peripherals_init"][1] == "100" and cov["Default_Handler"][1] == "0"
+    # double-clic sur une ligne du listing → source
+    tv.listing.focus(rows[-1])
+    tv._goto(tv.listing)
+    src = app.views.find(SourceView)
+    assert src.current_file.endswith("main.c")
+    # couverture dans la source : lignes de main() en vert
+    tv.cov_var.set(True)
+    tv._toggle_coverage()
+    main_line = app.symbols.line_at(app.symbols.function("main").start).line
+    assert "cov_hit" in src.text.tag_names(f"{main_line}.2")
+    # 2e exécution : la trace s'enrichit (ETM simulé à chaque arrêt)
+    n = app.trace.etm.stats["instructions"]
+    app.go()
+    assert pump(app, lambda: app.trace.etm.stats["instructions"] > n and not app.trace.etm_busy)

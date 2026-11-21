@@ -51,12 +51,26 @@ class Session:
         self.stop_reason: dict = {}
         self._stopped = threading.Event()
         self._listeners: list[EventFn] = []
+        self._resume_hooks: list[Callable[[], None]] = []
         self._reg_names: list[str] = []
 
     # ------------------------------------------------------------------ événements
     def on_event(self, fn: EventFn) -> None:
         """fn(kind, data) avec kind ∈ stopped, running, output, breakpoints, disconnected."""
         self._listeners.append(fn)
+
+    def add_resume_hook(self, fn: Callable[[], None]) -> None:
+        """fn() est appelée juste AVANT chaque reprise de la cible (go, step, next, finish,
+        until), quel que soit l'appelant (GUI, console, script) : ex. démarrer une trace
+        sans perdre les premières instructions."""
+        self._resume_hooks.append(fn)
+
+    def _before_resume(self) -> None:
+        for fn in list(self._resume_hooks):
+            try:
+                fn()
+            except Exception:  # noqa: BLE001 - une trace en échec n'empêche pas d'exécuter
+                pass
 
     def _emit(self, kind: str, data: dict) -> None:
         for fn in list(self._listeners):
@@ -128,6 +142,7 @@ class Session:
     # ------------------------------------------------------------------ run-control
     def go(self) -> None:
         self._stopped.clear()
+        self._before_resume()
         self.gdb.command("-exec-continue")
 
     def halt(self, wait: float = 5.0) -> None:
@@ -150,6 +165,7 @@ class Session:
 
     def go_until(self, location: str, timeout: float | None = None) -> None:  # Go <addr>
         self._stopped.clear()
+        self._before_resume()
         self.gdb.command(f"-exec-until {location}")
         if timeout is not None:
             self.wait_stopped(timeout)
@@ -178,6 +194,7 @@ class Session:
 
     def _sync(self, cmd: str, timeout: float = 30.0) -> None:
         self._stopped.clear()
+        self._before_resume()
         self.gdb.command(cmd)
         self.wait_stopped(timeout)
 

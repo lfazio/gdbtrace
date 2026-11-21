@@ -99,6 +99,57 @@ class ScriptAPI:
                 print(f"  tâche {r.name:<12} {r.percent:5.1f} %")
         return prof
 
+    # trace d'instructions ETM
+    def _etm(self):
+        if self.trace is None or self.trace.etm is None:
+            raise RuntimeError("pas de trace ETM (--etm-sim sous QEMU, --trace/--trace-file sur matériel)")
+        self.trace.wait_etm()
+        return self.trace.etm
+
+    def trace_list(self, n: int = 30):
+        """Trace.List : les `n` dernières instructions exécutées (et exceptions)."""
+        from ..trace.etm.qemu_log import ExcEntry, ExcReturn
+        from ..trace.itm import exception_name
+        etm = self._etm()
+        events = etm.last(n)
+        sym = self._symbols()
+        for i, e in enumerate(events):
+            idx = i - len(events)
+            if isinstance(e, ExcEntry):
+                print(f"{idx:>6}  ── exception {exception_name(e.number)} ({e.number}) → {e.handler:08x}")
+            elif isinstance(e, ExcReturn):
+                print(f"{idx:>6}  ── retour d'exception")
+            else:
+                ins = etm.image.instr(e.addr)
+                f = sym.function_at(e.addr) if sym else None
+                le = sym.line_at(e.addr) if sym else None
+                loc = f"{le.file.rsplit('/', 1)[-1]}:{le.line}" if le and f else ""
+                print(f"{idx:>6}  {e.addr:08x}  {f.name if f else '':<22} {ins.text if ins else '?':<28} {loc}")
+        return events
+
+    def coverage(self, top: int | None = 20):
+        """Couverture de code par fonction d'après la trace ETM."""
+        rows = self._etm().coverage()
+        for c in rows[:top]:
+            print(f"  {c.percent:5.1f} %  {c.executed:>5}/{c.total:<5} {c.name}")
+        return rows
+
+    def calls(self, n: int = 40):
+        """Flot des appels, retours et exceptions (dernières transitions)."""
+        rows = self._etm().call_flow()[-n:]
+        icons = {"call": "→", "return": "←", "exception": "⚡", "exc-return": "↩", "start": "•", "branch": "↷"}
+        for r in rows:
+            label = "retour d'exception" if r.kind == "exc-return" else r.func
+            print(f"{r.index:>8}  {'  ' * r.depth}{icons.get(r.kind, '')} {label}")
+        return rows
+
+    def etm_config(self, **kw) -> None:
+        """Programme l'ETM et le TPIU parallèle (port_width=4, trace_id=2, stm32=False...)."""
+        from ..trace.etm.config import EtmConfig
+        cfg = EtmConfig(**kw)
+        cfg.apply(self.s)
+        print(cfg.summary())
+
     def itm(self, port: int = 0) -> str:
         """Texte reçu sur un port ITM (capture SWO en cours ou terminée)."""
         if self.trace is None:

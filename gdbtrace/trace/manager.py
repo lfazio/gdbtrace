@@ -59,8 +59,24 @@ class TraceManager:
         for fn in list(self.etm_listeners):
             self.post(fn)
 
+    def attach_session(self, session) -> None:
+        """Branche la simulation ETM sur la session : journal activé avant chaque reprise,
+        converti à chaque arrêt."""
+        session.add_resume_hook(self.on_target_running)
+        session.on_event(lambda kind, data: self.on_target_stopped() if kind == "stopped" else None)
+
+    def wait_etm(self, timeout: float = 30.0) -> bool:
+        """Attend la fin de la conversion de la trace de la dernière exécution."""
+        import time
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if not self.etm_busy and (self.etm_sim is None or self.etm_sim.path is None):
+                return True
+            time.sleep(0.02)
+        return False
+
     def on_target_running(self) -> None:
-        if self.etm_sim is not None:
+        if self.etm_sim is not None and self.etm_sim.path is None:
             try:
                 self.etm_sim.start_run()
             except Exception as exc:  # noqa: BLE001
@@ -73,7 +89,6 @@ class TraceManager:
         import threading
 
         def work():
-            self.etm_busy = True
             try:
                 self.etm_sim.end_run()
             except Exception as exc:  # noqa: BLE001
@@ -81,6 +96,7 @@ class TraceManager:
             finally:
                 self.etm_busy = False
             self._etm_changed()
+        self.etm_busy = True          # avant le thread : wait_etm() ne peut pas le manquer
         threading.Thread(target=work, name="etm-sim", daemon=True).start()
 
     def configure_etm(self, cfg, session) -> list[str]:
