@@ -123,3 +123,11 @@ def test_program_other_elf(session, rtos_elf):
     session.break_("worker_step", temporary=True)       # symbole du nouveau programme
     session.go()
     assert session.wait_stopped(10) and session.frame().func == "worker_step"
+
+
+def test_download_progress_not_echoed(session):
+    """Les enregistrements de progression `+download` de gdb ne sont pas de la sortie console."""
+    out = []
+    session.on_event(lambda kind, data: out.append(data.get("text", "")) if kind == "output" else None)
+    session.program(session.elf, verify=False)
+    assert not any("+download" in t for t in out)

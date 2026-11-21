@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import itertools
 import queue
+import re
 import subprocess
 import threading
 from typing import Any, Callable
@@ -20,6 +21,8 @@ from pygdbmi.gdbmiparser import parse_response
 
 Listener = Callable[[dict], None]
 
+
+_STATUS_RECORD = re.compile(r"^\d*\+")       # enregistrement asynchrone de statut GDB/MI
 
 class GdbError(RuntimeError):
     """gdb a répondu ^error à une commande."""
@@ -137,6 +140,8 @@ class GdbMI:
             line = line.rstrip("\n")
             if not line or line.strip() == "(gdb)":
                 continue
+            if _STATUS_RECORD.match(line):
+                continue                        # progression (`+download,{...}`) : sans intérêt ici
             try:
                 rec = parse_response(line)
             except Exception:
