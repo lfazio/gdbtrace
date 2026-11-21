@@ -220,3 +220,59 @@ def test_rtos_view(rtos_app):
     assert pump(app, lambda: any(v.tasks.item(i, "values")[5] for i in v.tasks.get_children()))
     app.halt()
     assert pump(app, lambda: app.session.state == "stopped")
+
+
+# ====================================================================== trace : profil et ITM
+def test_profile_view_live_per_task(rtos_app):
+    from gdbtrace.views.profile import ProfileView
+    app = rtos_app
+    run_to(app, "worker_step")
+    pv = app.views.show(ProfileView)
+    pv.start()
+    assert pv.running_source == "Live"
+    app.go()
+    assert pump(app, lambda: pv.profile.total > 300, timeout=8)
+    app.halt()
+    assert pump(app, lambda: app.session.state == "stopped")
+    pv.stop()
+    funcs = [pv.funcs.item(i, "text") for i in pv.funcs.get_children()]
+    assert funcs[0] == "prvTaskCheckFreeStackSpace"
+    pv.funcs.focus(funcs[0])
+    pv._show_lines()
+    first_line = pv.lines.get_children()[0]
+    assert pv.lines.item(first_line, "text").startswith("tasks.c:")
+    tasks = {pv.tasks.item(i, "text"): float(pv.tasks.item(i, "values")[1]) for i in pv.tasks.get_children()}
+    assert tasks["IDLE"] > 80
+    pv._goto_line()                                   # double-clic → source
+    from gdbtrace.views.code import SourceView
+    assert app.views.find(SourceView).current_file.endswith("tasks.c")
+
+
+def test_itm_view_with_fake_swo_server(rtos_app, rtos_elf):
+    from test_itm import SYNC, hw, stim
+    from test_swo import FakeSwoServer
+    from gdbtrace.views.itm import ItmView
+    from gdbtrace.views.profile import ProfileView
+    app = rtos_app
+    exc = hw(1, 15 | 1 << 12, 2) + bytes([0xC0, 100]) + hw(1, 15 | 2 << 12, 2)
+    payload = (SYNC + b"".join(stim(0, c) for c in b"consumer: commande 8\n") + stim(1, 42, 4)
+               + exc * 2)
+    srv = FakeSwoServer(payload)
+    srv.start()
+    iv = app.views.show(ItmView)
+    iv.addr_var.set(f"127.0.0.1:{srv.port}")
+    iv._connect()
+    assert pump(app, lambda: "0x0000002a" in iv.contents())
+    assert iv.contents() == "[0] consumer: commande 8\n[1] 0x0000002a\n"
+    assert app.api.itm(0) == "consumer: commande 8"
+    pv = app.views.find(ProfileView)
+    pv.render()
+    rows = {pv.excs.item(i, "text"): pv.excs.item(i, "values") for i in pv.excs.get_children()}
+    assert rows["SysTick (15)"] == ("2", "200", "100")
+    # filtre de ports : seul le port 1
+    iv.clear()
+    iv.ports_var.set("1")
+    iv.on_line(0, "ignoré", 0)
+    iv.on_line(1, "gardé", 0)
+    assert iv.contents() == "[1] gardé\n"
+    app.trace.stop()

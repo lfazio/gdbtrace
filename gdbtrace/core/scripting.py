@@ -48,6 +48,73 @@ class ScriptAPI:
         #: périphériques décrits par le SVD chargé (None sinon)
         self.device = device
         self._rtos: freertos.FreeRtosLayout | None = None
+        #: capture SWO/ITM (TraceManager), fournie par l'interface ou le mode batch
+        self.trace = None
+        #: table des symboles de l'ELF (chargée à la demande)
+        self.symbols = None
+
+    # trace et profilage
+    def _symbols(self):
+        if self.symbols is None and self.s.elf:
+            from .symbols import SymbolTable
+            self.symbols = SymbolTable(self.s.elf)
+        return self.symbols
+
+    def profile(self, seconds: float = 1.0, per_task: bool = False, show: int = 15):
+        """PERF : profil statistique pendant `seconds`. La cible est relancée si elle était
+        arrêtée (et arrêtée à nouveau à la fin). Échantillons SWO si une capture est en
+        cours, sinon PC lu en marche par le canal live. Retourne le `Profile`."""
+        import time
+        from ..trace.profile import PcSampler, Profile
+        prof = Profile(self._symbols())
+        use_swo = self.trace is not None and self.trace.active
+        sampler = None
+        was_stopped = self.s.state == "stopped"
+        if use_swo:
+            self.trace.set_profile(prof)
+        else:
+            if self.live is None:
+                raise RuntimeError("ni capture SWO ni canal live : impossible d'échantillonner le PC")
+            task_of = None
+            if per_task:
+                if self._rtos is None and was_stopped:
+                    self._rtos = freertos.FreeRtosLayout.from_session(self.s)
+                task_of = freertos.CurrentTaskReader(self._rtos) if self._rtos else None
+            sampler = PcSampler(self.live, prof, lambda: self.s.state == "running", task_of=task_of)
+            sampler.start()
+        try:
+            if was_stopped:
+                self.s.go()
+            time.sleep(seconds)
+            if was_stopped:
+                self.s.halt()
+        finally:
+            if sampler is not None:
+                sampler.stop()
+            if use_swo:
+                self.trace.set_profile(None)
+        if show:
+            print(prof.report(show))
+            for r in prof.task_rows():
+                print(f"  tâche {r.name:<12} {r.percent:5.1f} %")
+        return prof
+
+    def itm(self, port: int = 0) -> str:
+        """Texte reçu sur un port ITM (capture SWO en cours ou terminée)."""
+        if self.trace is None:
+            raise RuntimeError("pas de capture SWO (--swo, --swo-file ou vue ITM)")
+        return self.trace.text.text(port)
+
+    def swo_config(self, cpu_hz: int, **kw) -> None:
+        """Programme ITM/DWT/TPIU (cible arrêtée) ; avec OpenOCD, démarre aussi la capture."""
+        from ..trace.config import SwoConfig
+        cfg = SwoConfig(cpu_hz=cpu_hz, **kw)
+        if self.trace is not None:
+            for line in self.trace.configure_target(cfg, self.s, self.s.target):
+                print(line)
+        else:
+            cfg.apply(self.s)
+            print(cfg.summary())
 
     # RTOS (FreeRTOS)
     def rtos(self) -> freertos.RtosSnapshot:

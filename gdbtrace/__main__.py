@@ -36,6 +36,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--svd", metavar="FICHIER", help="description CMSIS-SVD des périphériques")
     p.add_argument("--rtos", nargs="?", const="auto", metavar="TYPE",
                    help="avec --openocd : support RTOS d'OpenOCD (tâches vues comme threads gdb)")
+    t = p.add_argument_group("trace SWO/ITM")
+    t.add_argument("--swo", metavar="HOST:PORT", help="capture SWO servie en TCP (OpenOCD, Orbuculum, J-Link)")
+    t.add_argument("--swo-file", metavar="FICHIER", help="rejouer une capture SWO brute")
+    t.add_argument("--swo-formatter", action="store_true", help="flux SWO avec formateur TPIU")
+    t.add_argument("--swo-config", action="store_true",
+                   help="programmer ITM/DWT/TPIU à la connexion (+ TPIU d'OpenOCD et capture)")
+    t.add_argument("--cpu-hz", type=int, default=25_000_000, help="fréquence du cœur (Hz)")
+    t.add_argument("--swo-hz", type=int, default=2_000_000, help="débit SWO (Hz)")
+    t.add_argument("--swo-port", type=int, default=3443, help="port TCP du SWO servi par OpenOCD")
     p.add_argument("--machine", default="mps2-an385", help="machine QEMU")
     p.add_argument("--gdb", default="gdb-multiarch", help="exécutable gdb")
     p.add_argument("--gdb-port", type=int, default=0)
@@ -48,18 +57,37 @@ def main(argv: list[str] | None = None) -> int:
     target = build_target(args)
     load = False if args.no_load else None
 
+    def setup_trace(trace, session) -> None:
+        """Options SWO : configuration de la cible puis démarrage de la capture."""
+        if args.swo_config:
+            from .trace.config import SwoConfig
+            cfg = SwoConfig(cpu_hz=args.cpu_hz, swo_hz=args.swo_hz, ports=0xFFFFFFFF)
+            for line in trace.configure_target(cfg, session, target, args.swo_port):
+                print(line)
+        if args.swo:
+            host, _, port = args.swo.rpartition(":")
+            trace.start_tcp(host or "127.0.0.1", int(port), args.swo_formatter)
+        elif args.swo_file:
+            trace.start_file(args.swo_file, args.swo_formatter)
+
     if args.batch:
         from .core.scripting import ScriptAPI
         from .core.session import Session
         from .core import svd
+        from .trace.manager import TraceManager
         device = svd.parse(args.svd) if args.svd else None
         s = Session(args.gdb)
         s.connect(os.path.abspath(args.elf), target, load)
         live = target.live_memory()
+        trace = TraceManager(on_error=print)
         try:
+            setup_trace(trace, s)
             if args.script:
-                ScriptAPI(s, live, device).run_script(args.script)
+                api = ScriptAPI(s, live, device)
+                api.trace = trace
+                api.run_script(args.script)
         finally:
+            trace.stop()
             if live:
                 live.close()
             s.disconnect()
@@ -67,10 +95,15 @@ def main(argv: list[str] | None = None) -> int:
 
     from .gui.app import App
     app = App(layout_file=args.layout)
+    app.cpu_hz = args.cpu_hz
     if args.svd:
         app.safe(app.load_svd, args.svd)
-    app.connect(os.path.abspath(args.elf), target, args.gdb, load,
-                then=(lambda: app.run_script(args.script)) if args.script else None)
+
+    def after_connect() -> None:
+        app.safe(setup_trace, app.trace, app.session)
+        if args.script:
+            app.run_script(args.script)
+    app.connect(os.path.abspath(args.elf), target, args.gdb, load, then=after_connect)
     app.mainloop()
     return 0
 

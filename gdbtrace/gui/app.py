@@ -14,6 +14,7 @@ from ..core.scripting import Console, ScriptAPI
 from ..core.session import Breakpoint, Frame, Session
 from ..core.symbols import SymbolTable
 from ..core.target import TargetServer
+from ..trace.manager import TraceManager
 from .event_pump import EventPump
 from .view_base import View, ViewManager
 
@@ -25,9 +26,11 @@ def view_classes() -> dict[str, type[View]]:
     from ..views.memory import MemoryView
     from ..views.peripherals import PeripheralsView
     from ..views.registers import RegistersView
+    from ..views.itm import ItmView
+    from ..views.profile import ProfileView
     from ..views.rtos import RtosView
     classes = [SourceView, DisasmView, RegistersView, WatchView, PeripheralsView, RtosView,
-               StackView, BreakpointsView, MemoryView, ConsoleView]
+               StackView, BreakpointsView, MemoryView, ConsoleView, ItmView, ProfileView]
     return {c.kind: c for c in classes}
 
 
@@ -42,6 +45,8 @@ DEFAULT_LAYOUT = [
     {"kind": "breakpoints", "where": "data"},
     {"kind": "console", "where": "bottom"},
     {"kind": "memory", "where": "bottom"},
+    {"kind": "itm", "where": "bottom"},
+    {"kind": "profile", "where": "bottom"},
 ]
 
 
@@ -69,6 +74,10 @@ class App:
         self.live: LiveMemory | None = None
         self.poller: LivePoller | None = None
         self.current_task: str | None = None   # tâche RTOS courante (vue RTOS)
+        self._rtos_layout = None               # disposition FreeRTOS (calculée à l'arrêt)
+        # trace SWO/ITM (capture, texte ITM, exceptions) et fréquence du cœur pour la configurer
+        self.trace = TraceManager(post=self.pump.post, on_error=self.report_error)
+        self.cpu_hz = 25_000_000
         # description des périphériques (CMSIS-SVD)
         self.device: svd.Device | None = None
         self.svd_path: str | None = None
@@ -167,6 +176,9 @@ class App:
             except Exception as exc:  # noqa: BLE001
                 self.report_error(f"lecture des symboles : {exc}")
         self.api.device = self.device
+        self.api.trace = self.trace
+        self.api.symbols = self.symbols
+        self._rtos_layout = None
         if session.target is not None and session.state != "disconnected":
             self._setup_live(session.target)
         if session.state == "stopped":
@@ -198,6 +210,10 @@ class App:
             self.save_layout()
         except Exception:  # noqa: BLE001
             pass
+        for v in list(self.views.views):          # arrête les échantillonneurs (vue Profil)
+            if hasattr(v, "stop") and v.kind == "profile":
+                self.safe(v.stop)
+        self.trace.stop()
         self._teardown_live()
         if self.session and self.session.state != "disconnected":
             try:
@@ -232,6 +248,15 @@ class App:
         self.poller = self.live = None
         if self.api:
             self.api.live = None
+
+    def rtos_layout(self):
+        """Disposition FreeRTOS partagée (vue RTOS, profilage par tâche), calculée une fois
+        via gdb quand la cible est arrêtée ; None sans FreeRTOS."""
+        from ..core.rtos import freertos as fr
+        if self._rtos_layout is None and fr.detect(self.symbols) and \
+                self.session is not None and self.session.state == "stopped":
+            self._rtos_layout = fr.FreeRtosLayout.from_session(self.session, self.symbols)
+        return self._rtos_layout
 
     def load_svd(self, path: str) -> None:
         self.device = svd.parse(path)
@@ -280,6 +305,8 @@ class App:
         elif kind == "disconnected":
             self.current_frame = None
             self.views.disconnected_all()
+            self.trace.stop()
+            self._rtos_layout = None
             self._teardown_live()
             self.status.set("Déconnecté")
         self.update_status()

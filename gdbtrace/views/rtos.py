@@ -89,10 +89,9 @@ class RtosView(View):
         if not fr.detect(self.app.symbols):
             self._status("pas de FreeRTOS dans l'ELF")
             return False
-        if not self.stopped:
-            return False   # la disposition se calcule via gdb, cible arrêtée
-        self.layout = fr.FreeRtosLayout.from_session(self.session, self.app.symbols)
-        return True
+        # disposition partagée avec le profilage par tâche ; calculée via gdb, cible arrêtée
+        self.layout = self.app.rtos_layout()
+        return self.layout is not None
 
     def _status(self, extra: str) -> None:
         s = self.snap
