@@ -7,3 +7,5 @@ dist/
 examples/**/*.elf
 gdbtrace-layout.json
 .pytest_cache/
+.cache/
+*.ppl

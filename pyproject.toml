@@ -10,7 +10,8 @@ requires-python = ">=3.10"
 dependencies = ["pygdbmi>=0.11", "pyelftools>=0.30"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+etm = ["capstone>=5.0"]          # trace d'instructions ETM (désassemblage Thumb-2)
+dev = ["pytest>=7", "capstone>=5.0"]
 
 [project.scripts]
 gdbtrace = "gdbtrace.__main__:main"
