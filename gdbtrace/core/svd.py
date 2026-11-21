@@ -15,8 +15,14 @@ from dataclasses import dataclass, field
 READ_ONLY, WRITE_ONLY, READ_WRITE = "read-only", "write-only", "read-write"
 
 
+_SCALE = {"k": 1 << 10, "m": 1 << 20, "g": 1 << 30, "t": 1 << 40}
+
+
 def parse_int(text: str | None, default: int | None = None) -> int | None:
-    """Entier SVD : décimal, 0x.., #binaire (x = indifférent, pris à 0)."""
+    """Entier SVD (scaledNonNegativeInteger) : 0x.. hexadécimal, #binaire
+    (x = indifférent, pris à 0), sinon décimal -- zéros en tête permis :
+    le SVD STM32F746 de ST écrit `00000010`, que int(t, 0) refusait --
+    et un suffixe k/m/g/t optionnel."""
     if text is None:
         return default
     t = text.strip().lower()
@@ -26,7 +32,12 @@ def parse_int(text: str | None, default: int | None = None) -> int | None:
         return int(t[1:].replace("x", "0"), 2)
     if t.startswith("0b"):
         return int(t[2:].replace("x", "0"), 2)
-    return int(t, 0)
+    if t.startswith("+"):
+        t = t[1:]
+    scale = 1
+    if t[-1] in _SCALE and not t.startswith("0x"):
+        scale, t = _SCALE[t[-1]], t[:-1]
+    return (int(t, 16) if t.startswith("0x") else int(t, 10)) * scale
 
 
 @dataclass

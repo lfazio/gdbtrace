@@ -6,6 +6,20 @@ from gdbtrace.core import svd
 from gdbtrace.core.scripting import ScriptAPI
 
 
+def test_parse_int_svd_forms():
+    # scaledNonNegativeInteger : 0x hexadécimal, #binaire, sinon décimal --
+    # zéros en tête compris (le SVD STM32F746 de ST écrit `00000010`)
+    assert svd.parse_int("0x10") == 16
+    assert svd.parse_int("0X1F") == 31
+    assert svd.parse_int("00000010") == 10
+    assert svd.parse_int("0") == 0
+    assert svd.parse_int("#1x1") == 5
+    assert svd.parse_int("4k") == 4096
+    assert svd.parse_int("+8") == 8
+    assert svd.parse_int(None, 3) == 3
+    assert svd.parse_int("  ", 7) == 7
+
+
 def test_parse_demo_svd():
     dev = svd.parse(SVD)
     assert dev.name == "MPS2_AN385"
