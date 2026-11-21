@@ -74,6 +74,35 @@ def rtos_session(rtos_elf):
     s.disconnect()
 
 
+M0_DIR = os.path.join(ROOT, "examples", "m0plus")
+M0_ELF = os.path.join(M0_DIR, "demo.elf")
+
+
+@pytest.fixture(scope="session")
+def m0_elf():
+    """Démo compilée pour Cortex-M0+ (ARMv6-M), pour QEMU `-M microbit`."""
+    if not shutil.which("arm-none-eabi-gcc"):
+        pytest.skip("arm-none-eabi-gcc absent")
+    subprocess.run(["make", "-s", "-C", M0_DIR], check=True)
+    return M0_ELF
+
+
+@pytest.fixture(scope="session")
+def m0_path(tmp_path_factory, m0_elf):
+    """Chemin d'exécution réel de la démo M0+ sous QEMU microbit : (CodeImage, événements)."""
+    if not shutil.which("qemu-system-arm"):
+        pytest.skip("QEMU absent")
+    pytest.importorskip("capstone")
+    from gdbtrace.trace.etm import qemu_log as ql
+    from gdbtrace.trace.etm.image import CodeImage
+    count = 250_000
+    log = str(tmp_path_factory.mktemp("qemu") / "m0.log")
+    ql.record(m0_elf, 60, log, machine="microbit", instructions=count)
+    events = ql.head(ql.parse_file(log), count)
+    assert len(ql.steps(events)) == count, "m0 : journal QEMU trop court"
+    return CodeImage(m0_elf), events
+
+
 @pytest.fixture(scope="session")
 def qemu_paths(tmp_path_factory, elf, rtos_elf):
     """Chemins d'exécution réels (journal QEMU instruction par instruction) des deux

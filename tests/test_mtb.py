@@ -185,10 +185,25 @@ def _events_equal(a, b):
 @needs_qemu
 @pytest.mark.parametrize("name", ["bare", "rtos"])
 def test_real_paths_roundtrip(qemu_paths, name):
+    """Cortex-M3 (Thumb-2, blocs IT) : démo bare-metal et FreeRTOS."""
+    _roundtrip(*qemu_paths[name])
+
+
+@needs_qemu
+def test_cortex_m0plus_path_roundtrip(m0_path):
+    """Code ARMv6-M réel (démo compilée pour Cortex-M0+, QEMU microbit)."""
+    img, events = m0_path
+    sizes = {img.instr(e.addr).size for e in events if isinstance(e, Step)}
+    assert sizes == {2, 4}                       # Thumb-1 + BL / MSR / DMB : pas de Thumb-2 large
+    texts = {img.instr(e.addr).text.split()[0] for e in events if isinstance(e, Step)}
+    assert not any(t.startswith("it") for t in texts)
+    _roundtrip(img, events)
+
+
+def _roundtrip(img, events):
     """Chemin QEMU → paquets MTB → décodage == chemin réel, issues des branchements comprises ;
     tampon circulaire : le décodage des derniers paquets est la fin du décodage complet."""
     from gdbtrace.trace.etm.cycles import successors
-    img, events = qemu_paths[name]
     pk = mtb.encode(events, img)
     first = next(i for i, e in enumerate(events)
                  if isinstance(e, Step) and e.addr == pk[0].src)    # source du 1er paquet
