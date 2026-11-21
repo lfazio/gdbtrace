@@ -69,7 +69,9 @@ class SymbolTable:
                         self.functions.append(Function(sym.name, sym["st_value"] & ~1, sym["st_size"]))
                     elif kind == "STT_OBJECT":
                         self.objects[sym.name] = (sym["st_value"], sym["st_size"])
-            self.functions.sort(key=lambda f: f.start)
+            # à adresse égale, l'alias qui a une taille en dernier : c'est lui que trouve
+            # function_at() (ex. __aeabi_uidiv, taille 0, alias de __udivsi3)
+            self.functions.sort(key=lambda f: (f.start, f.size))
             self.mapping.sort()
             if elf.has_dwarf_info():
                 self._load_lines(elf)

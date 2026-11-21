@@ -12,3 +12,12 @@ def test_symbols(elf):
     assert le.file.endswith("main.c") and le.line == FIB_LINE
     assert t.objects["sensors"][0] == 0x20000000
     assert any(f.endswith("startup.c") for f in t.source_files())
+
+
+def test_function_at_prefers_sized_alias(m0_elf):
+    """libgcc ARMv6-M : __aeabi_uidiv (taille 0) et __udivsi3 partagent leur adresse."""
+    from gdbtrace.core.symbols import SymbolTable
+    sym = SymbolTable(m0_elf)
+    start = sym.function("__udivsi3").start
+    assert sym.function("__aeabi_uidiv").start == start
+    assert sym.function_at(start + 2).name == "__udivsi3"
