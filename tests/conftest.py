@@ -72,3 +72,20 @@ def rtos_session(rtos_elf):
     s.wait_stopped(5)
     yield s
     s.disconnect()
+
+
+@pytest.fixture(scope="session")
+def qemu_paths(tmp_path_factory, elf, rtos_elf):
+    """Chemins d'exécution réels (journal QEMU instruction par instruction) des deux
+    firmwares de démo, enregistrés une fois par session : {nom: (CodeImage, événements)}."""
+    if not shutil.which("qemu-system-arm"):
+        pytest.skip("QEMU absent")
+    pytest.importorskip("capstone")
+    from gdbtrace.trace.etm import qemu_log as ql
+    from gdbtrace.trace.etm.image import CodeImage
+    out = {}
+    for name, path, secs in (("bare", elf, 0.4), ("rtos", rtos_elf, 1.0)):
+        log = str(tmp_path_factory.mktemp("qemu") / f"{name}.log")
+        ql.record(path, secs, log)
+        out[name] = (CodeImage(path), ql.parse_file(log))
+    return out

@@ -256,9 +256,14 @@ def test_profile_view_live_per_task(rtos_app):
     assert pv.lines.item(first_line, "text").startswith("tasks.c:")
     tasks = {pv.tasks.item(i, "text"): float(pv.tasks.item(i, "values")[1]) for i in pv.tasks.get_children()}
     assert tasks["IDLE"] > 80
-    pv._goto_line()                                   # double-clic → source
+    # double-clic sur la ligne la plus chaude → source (la vue Source ne suit plus le PC)
+    pv.lines.focus(first_line)
+    pv._goto_line()
     from gdbtrace.views.code import SourceView
-    assert app.views.find(SourceView).current_file.endswith("tasks.c")
+    src = app.views.find(SourceView)
+    hot_line = int(pv.lines.item(first_line, "text").split(":")[1])
+    assert src.current_file.endswith("tasks.c") and not src.follow.get()
+    assert pump(app, lambda: src.text.bbox(f"{hot_line}.0") is not None, timeout=3)  # ligne visible
 
 
 def test_itm_view_with_fake_swo_server(rtos_app, rtos_elf):

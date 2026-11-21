@@ -123,18 +123,6 @@ def test_garbage_before_sync_is_dropped():
 
 
 # ====================================================================== chemins réels
-@pytest.fixture(scope="module")
-def qemu_paths(tmp_path_factory, elf, rtos_elf):
-    if not shutil.which("qemu-system-arm"):
-        pytest.skip("QEMU absent")
-    out = {}
-    for name, path, secs in (("bare", elf, 0.4), ("rtos", rtos_elf, 1.0)):
-        log = str(tmp_path_factory.mktemp("qemu") / f"{name}.log")
-        ql.record(path, secs, log)
-        out[name] = (CodeImage(path), ql.parse_file(log))
-    return out
-
-
 def as_tuples(events):
     out = []
     for e in events:
@@ -252,7 +240,7 @@ def test_coverage_and_call_flow(qemu_paths, elf):
     main_c = sym.line_at(sym.function("fib").start).file
     lines = trace.line_coverage(main_c)
     assert lines and all(lines.values())                      # toutes les lignes de main.c exécutées
-    flow = trace.call_flow(5000)
+    flow = trace.call_flow(50_000)          # > une itération de la boucle principale (~7000 instr.)
     kinds = {r.kind for r in flow}
     assert {"call", "return", "exception", "exc-return"} <= kinds
     calls = [r for r in flow if r.kind == "call" and r.func == "fib"]

@@ -211,7 +211,9 @@ class TimingAnalyzer:
                 ret = top.ret
                 self._close(len(self.stack) - 1)
                 self._push(addr, ret, partial=False)
-            elif prev is not None and prev.ins.ret and not returned:
+            elif (prev is not None and prev.ins.ret and not returned
+                  and addr != prev.addr + prev.ins.size):
+                # (un retour conditionnel non exécuté, ex. `it eq; bx lr`, continue en séquence)
                 # retour vers un appelant absent de la pile (cadre racine commencé avant la
                 # trace) : le cadre se termine, l'appelant devient la nouvelle racine
                 self._close(len(self.stack) - 1)
@@ -246,7 +248,10 @@ class TimingAnalyzer:
             self.t += e.cycles
             self.prev = None
             return
-        self.stack[k].self_c += e.cycles        # latence de sortie
+        # le handler (et ce qu'il appelle) se termine avec son instruction de retour ;
+        # la latence de sortie n'appartient qu'au cadre de l'exception
+        self._close(k + 1)
+        self.stack[k].self_c += e.cycles
         self.t += e.cycles
         saved = self.stack[k].saved_prev
         self._close(k)
