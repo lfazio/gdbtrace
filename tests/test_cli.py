@@ -38,3 +38,29 @@ def test_program_argument_errors(elf, rtos_elf):
     assert r.returncode != 0 and "un ELF est nécessaire" in r.stderr
     r = run(os.path.join(ROOT, "nope.elf"), "--batch")
     assert r.returncode != 0 and "ELF introuvable" in r.stderr
+
+
+@needs_qemu
+def test_coverage_campaigns(elf, tmp_path):
+    """--coverage écrit la couverture à la fin d'un --batch ; --coverage-merge cumule les
+    campagnes (COVerage.LOAD /Add)."""
+    import json
+    script = os.path.join(ROOT, "examples", "scripts", "coverage.py")
+    run1, merged, html = tmp_path / "run1.json", tmp_path / "all.json", tmp_path / "cov.html"
+    r = run(elf, "--etm-sim", "--batch", "--script", script, "--coverage", str(run1),
+            "--coverage", str(html), timeout=180)
+    assert r.returncode == 0, r.stderr
+    assert "couverture exportée (json)" in r.stdout and "instructions" in r.stdout
+    assert html.exists() and "Couverture de code" in html.read_text()
+    r = run(elf, "--etm-sim", "--batch", "--script", script, "--coverage-merge", str(run1),
+            "--coverage", str(merged), timeout=180)
+    assert r.returncode == 0, r.stderr
+    one, both = json.load(open(run1)), json.load(open(merged))
+    reset = "0x50"                                        # Reset_Handler : une fois par campagne
+    assert int(both["e"][reset]) == 2 * int(one["e"][reset])
+    assert set(one["e"]) <= set(both["e"])
+
+
+def test_coverage_needs_etm(elf, tmp_path):
+    r = run(elf, "--batch", "--coverage", str(tmp_path / "c.html"))
+    assert r.returncode != 0 and "pas de trace ETM" in r.stderr

@@ -110,6 +110,7 @@ class CoverageDB:
         self._lock = threading.Lock()
         self._universe: list[tuple[list, list[InstrInfo]]] | None = None
         self._by_addr: dict[int, InstrInfo] | None = None
+        self._by_line: dict[tuple[str | None, int | None], list[InstrInfo]] = {}
 
     # ------------------------------------------------------------------ alimentation
     def add(self, events) -> None:
@@ -153,8 +154,10 @@ class CoverageDB:
             f = funcs[0]
             instrs: list[InstrInfo] = []
             addr, it_left = f.start, 0
+            prev, prev_in_it = None, False
             while addr < f.end:
                 if sym.is_data(addr):            # literal pool : données au milieu du code
+                    _drop_padding(instrs)
                     addr += 2
                     continue
                 ins = self.image.instr(addr)
@@ -165,14 +168,24 @@ class CoverageDB:
                 it_left = len(mnem) - 1 if mnem.startswith("it") and len(mnem) <= 4 and \
                     set(mnem[2:]) <= {"t", "e"} else max(0, it_left - 1)
                 branch = ins.kind in (DIRECT, INDIRECT) and (ins.cond or in_it) and not ins.call
+                if mnem == "nop" and prev is not None and prev.kind in (DIRECT, INDIRECT) \
+                        and not prev.cond and not prev_in_it and not prev.call:
+                    prev, prev_in_it = ins, in_it    # alignement après un saut : inatteignable
+                    addr += ins.size
+                    continue
+                prev, prev_in_it = ins, in_it
                 le = sym.line_at(addr)
                 instrs.append(InstrInfo(addr, ins.size, ins.text, branch,
                                         le.file if le else None, le.line if le else None))
                 addr += ins.size
+            _drop_padding(instrs)
             if instrs:
                 out.append((funcs, instrs))
         self._universe = out
         self._by_addr = {i.addr: i for _f, ins in out for i in ins}
+        for _f, ins in out:
+            for i in ins:
+                self._by_line.setdefault((i.file, i.line), []).append(i)
         return out
 
     def code_hash(self) -> str:
@@ -244,7 +257,9 @@ class CoverageDB:
         return out
 
     def instructions(self, path: str, line: int) -> list[InstrInfo]:
-        return [i for _f, ins in self.universe() for i in ins if i.file == path and i.line == line]
+        """Instructions de la ligne `line` de `path` (code objet de la ligne)."""
+        self.universe()
+        return self._by_line.get((path, line), [])
 
     def total(self) -> tuple[Counts, int, int]:
         """(totaux du programme, fonctions entrées, fonctions)."""
@@ -293,3 +308,11 @@ class CoverageDB:
 
 def line_of_function(db: CoverageDB, name: str) -> FuncCov | None:
     return next((f for f in db.functions() if name in f.name.split(" = ")), None)
+
+
+def _drop_padding(instrs: list[InstrInfo]) -> None:
+    """Retire les `nop` d'alignement placés par le compilateur avant un literal pool ou en
+    fin de fonction : jamais exécutables, ils fausseraient la couverture."""
+    while len(instrs) > 1 and instrs[-1].text.split()[0].split(".")[0] == "nop" \
+            and not instrs[-1].branch:
+        instrs.pop()

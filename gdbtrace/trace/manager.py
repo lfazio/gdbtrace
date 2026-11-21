@@ -98,6 +98,10 @@ class TraceManager:
         return False
 
     def on_target_running(self) -> None:
+        """Avant chaque reprise : journal QEMU de la nouvelle exécution. Si la trace de la
+        précédente est encore en conversion, on l'attend : sinon cette exécution serait perdue."""
+        if self.etm_sim is not None and self.etm_busy:
+            self.wait_etm()
         if self.etm_sim is not None and self.etm_sim.path is None:
             try:
                 self.etm_sim.start_run()

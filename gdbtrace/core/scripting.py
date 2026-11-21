@@ -39,6 +39,64 @@ def hexdump(data: bytes, base: int, width: int = 16) -> str:
     return "\n".join(lines)
 
 
+class CoverageAPI:
+    """COVerage : couverture de code mesurée par la trace ETM, sans instrumentation.
+
+        t32.cov.summary()                    # instructions, branches, fonctions
+        t32.cov.list(20)                     # COVerage.ListFunc (les moins couvertes d'abord)
+        t32.cov.files()                      # COVerage.ListModule
+        t32.cov.export("cov.html")           # COVerage.EXPORT : .html, .info (LCOV), .json
+        t32.cov.save("run1.json"); t32.cov.load("run2.json")   # SAVE / LOAD /Add
+        t32.cov.reset()                      # COVerage.RESet
+    """
+
+    def __init__(self, api: "ScriptAPI"):
+        self._api = api
+
+    @property
+    def db(self):
+        return self._api._etm().cov
+
+    def summary(self) -> str:
+        s = self.db.summary()
+        print(s)
+        return s
+
+    def list(self, top: int | None = 20, file: str | None = None):
+        """Fonctions, les moins couvertes d'abord (puis par nom)."""
+        rows = [f for f in self.db.functions() if file is None or (f.file or "").endswith(file)]
+        rows.sort(key=lambda f: (f.percent, f.branch_percent if f.branch_percent is not None else 101, f.name))
+        print(f"  {'état':<8} {'instr.':>7} {'branches':>9} {'entrées':>8}  fonction")
+        for f in rows[:top]:
+            br = f"{f.branch_percent:7.1f} %" if f.branch_percent is not None else f"{'—':>9}"
+            print(f"  {f.status:<8} {f.percent:6.1f} % {br} {f.entries:>8}  {f.name}")
+        return rows
+
+    def files(self):
+        rows = self.db.files()
+        for m in rows:
+            br = f"{m.branch_percent:6.1f} %" if m.branch_percent is not None else "     —"
+            print(f"  {m.status:<8} {m.percent:6.1f} % {br}  {m.path}")
+        return rows
+
+    def reset(self) -> None:
+        self.db.reset()
+
+    def save(self, path: str) -> None:
+        self.db.save(path)
+
+    def load(self, path: str, merge: bool = True) -> None:
+        self.db.load(path, merge)
+
+    def export(self, path: str) -> str:
+        from ..trace.coverage_report import export
+        tm = self._api.trace
+        note = "ETM simulé (QEMU)" if tm is not None and tm.etm_sim is not None else "trace ETM"
+        fmt = export(self.db, path, note)
+        print(f"couverture exportée ({fmt}) : {path}")
+        return fmt
+
+
 class ScriptAPI:
     def __init__(self, session: Session, live: LiveMemory | None = None,
                  device: svd.Device | None = None):
@@ -56,6 +114,8 @@ class ScriptAPI:
         self.cpu_hz = 25_000_000
         #: appelé après chaque programmation avec le chemin de l'ELF (l'interface s'y recâble)
         self.on_program: Callable[[str], None] | None = None
+        #: COVerage : couverture de code depuis la trace ETM
+        self.cov = CoverageAPI(self)
 
     def program(self, elf: str | None = None, verify: bool = True, quiet: bool = False):
         """FLASH.ReProgram : programme `elf` dans la cible (par défaut l'ELF courant, par ex.
@@ -149,11 +209,8 @@ class ScriptAPI:
         return events
 
     def coverage(self, top: int | None = 20):
-        """Couverture de code par fonction d'après la trace ETM."""
-        rows = self._etm().coverage()
-        for c in rows[:top]:
-            print(f"  {c.percent:5.1f} %  {c.executed:>5}/{c.total:<5} {c.name}")
-        return rows
+        """Couverture de code par fonction d'après la trace ETM (voir aussi `t32.cov`)."""
+        return self.cov.list(top)
 
     def calls(self, n: int = 40):
         """Flot des appels, retours et exceptions (dernières transitions)."""

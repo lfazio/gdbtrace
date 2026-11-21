@@ -104,8 +104,10 @@ class Session:
         if t == "notify" and msg == "stopped":
             self.state = "stopped"
             self.stop_reason = payload or {}
-            self._stopped.set()
+            # abonnés d'abord (ex. la trace ETM se marque « en conversion ») : quand halt() ou
+            # wait_stopped() rendent la main, leur réaction à l'arrêt est déjà engagée
             self._emit("stopped", self.stop_reason)
+            self._stopped.set()
         elif t == "notify" and msg == "running":
             self.state = "running"
             self._stopped.clear()

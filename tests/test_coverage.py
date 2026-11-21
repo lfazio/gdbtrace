@@ -10,7 +10,7 @@ from gdbtrace.trace.etm.qemu_log import Step
 
 
 # ====================================================================== programme factice
-def I(addr, kind=NORMAL, size=2, target=None, cond=False, text="nop", ret=False):
+def I(addr, kind=NORMAL, size=2, target=None, cond=False, text="adds r0, #1", ret=False):
     return Instr(addr, size, kind, target, cond, False, ret, text)
 
 
@@ -138,6 +138,10 @@ def test_real_trace_coverage(qemu_paths, elf):
     for name in ("fib", "delay", "update_sensor", "main"):
         assert funcs[name].status in (OK, PARTIAL) and funcs[name].percent == 100, name
     assert funcs["fib"].status == OK and funcs["fib"].branches >= 1     # boucle : deux issues vues
+    # les `nop` d'alignement avant les literal pools ne comptent pas
+    assert funcs["animate"].status == OK and funcs["SysTick_Handler"].status == OK
+    padding = {0x272, 0x2AA}                     # avant les literal pools d'animate et SysTick
+    assert not padding & {i.addr for _f, ins in db.universe() for i in ins}
     assert funcs["HardFault_Handler"].status == NEVER
     fadd = next(f for n, f in funcs.items() if "__addsf3" in n)
     assert fadd.status == PARTIAL and fadd.branch_percent < 100       # cas NaN/infini jamais vus
@@ -149,3 +153,38 @@ def test_real_trace_coverage(qemu_paths, elf):
     trace = EtmTrace(img, sym)
     trace.feed(encode(events, img))
     assert {c.name: c.executed for c in trace.coverage()} == {f.name: f.covered for f in funcs.values()}
+
+
+@needs_qemu
+def test_exports(qemu_paths, elf, tmp_path):
+    """COVerage.EXPORT : LCOV (lignes, fonctions, branches), HTML annoté, JSON rechargeable."""
+    from gdbtrace.core.symbols import SymbolTable
+    from gdbtrace.trace.coverage_report import export
+    from gdbtrace.trace.etm.encoder import encode
+    from gdbtrace.trace.etm.flow import decode
+    img, events = qemu_paths["bare"]
+    sym = SymbolTable(elf)
+    db = CoverageDB(img, sym)
+    db.add(decode(encode(events, img), img)[0])
+    assert export(db, str(tmp_path / "c.info")) == "lcov"
+    recs = (tmp_path / "c.info").read_text().split("end_of_record\n")
+    main_c = next(r for r in recs if r.startswith("TN:\nSF:") and r.split("\n")[1].endswith("main.c"))
+    rows = main_c.splitlines()
+    assert "FN:33,fib" in rows and any(r.startswith("FNDA:") and r.endswith(",fib") for r in rows)
+    da = dict(r[3:].split(",") for r in rows if r.startswith("DA:"))
+    assert int(da["34"]) > 0 and "39" not in da               # « } » de la boucle : pas de code
+    brda = [r for r in rows if r.startswith("BRDA:35,")]       # for (...; i < n; ...)
+    assert len(brda) == 2 and all(int(r.split(",")[-1]) > 0 for r in brda)
+    lf = int(next(r for r in rows if r.startswith("LF:"))[3:])
+    lh = int(next(r for r in rows if r.startswith("LH:"))[3:])
+    assert lf == len(da) and lh <= lf
+    assert export(db, str(tmp_path / "c.html")) == "html"
+    page = (tmp_path / "c.html").read_text()
+    assert "<title>Couverture demo.elf</title>" in page and "firmware/main.c" in page
+    assert "✘ jamais" in page and "uint32_t a = 0, b = 1;" in page
+    assert export(db, str(tmp_path / "c.json")) == "json"
+    again = CoverageDB(img, sym)
+    again.load(str(tmp_path / "c.json"))
+    assert again.e == db.e and again.n == db.n
+    with pytest.raises(ValueError, match="extension"):
+        export(db, str(tmp_path / "c.txt"))

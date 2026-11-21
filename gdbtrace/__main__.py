@@ -72,6 +72,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="programmer l'ELF dans la cible à la connexion : reset, écriture, vérification, "
                          "reset (ELF par défaut : celui de la ligne de commande)")
     g2.add_argument("--no-verify", action="store_true", help="ne pas vérifier la programmation")
+    c = p.add_argument_group("couverture de code (trace ETM)")
+    c.add_argument("--coverage", action="append", default=[], metavar="FICHIER",
+                   help="--batch : écrire la couverture à la fin (.html, .info LCOV, .json) ; répétable")
+    c.add_argument("--coverage-merge", action="append", default=[], metavar="FICHIER.json",
+                   help="ajouter une couverture enregistrée (campagnes précédentes) ; répétable")
     g2.add_argument("--go", action="store_true",
                     help="lancer le programme après la connexion (et la programmation)")
     p.add_argument("--script", help="script Python exécuté après connexion (objet `t32`)")
@@ -82,6 +87,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.elf and os.path.abspath(args.elf) != os.path.abspath(args.program):
             p.error("deux ELF différents : l'ELF de la ligne de commande et celui de --program")
         args.elf = args.program
+    if args.coverage and not (args.etm_sim or args.trace or args.trace_file or args.coverage_merge):
+        p.error("--coverage : pas de trace ETM (--etm-sim sous QEMU, --trace/--trace-file sur matériel)")
     program = args.program is not None
     verify = not args.no_verify
     if args.elf is None and (args.batch or program):
@@ -140,17 +147,26 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 trace.enable_qemu_sim(live)
                 trace.attach_session(s)
+        api = ScriptAPI(s, live, device)
+        api.trace = trace
+        api.symbols = symbols
+        api.cpu_hz = args.cpu_hz
+        api.on_program = lambda e: trace.retarget(e, api._symbols(), args.etm_cycle_accurate)
         try:
             setup_trace(trace, s)
+            for path in args.coverage_merge:
+                api.cov.load(path)
             if args.script:
-                api = ScriptAPI(s, live, device)
-                api.trace = trace
-                api.symbols = symbols
-                api.cpu_hz = args.cpu_hz
-                api.on_program = lambda e: trace.retarget(e, api._symbols(), args.etm_cycle_accurate)
                 api.run_script(args.script)
+            for path in args.coverage:
+                api.cov.export(path)
+            if args.coverage:
+                api.cov.summary()
             if args.go and s.state == "stopped":
                 s.go()                          # le programme continue après gdbtrace
+        except (RuntimeError, ValueError, OSError) as exc:
+            print(f"erreur : {exc}", file=sys.stderr)
+            rc = 1
         finally:
             trace.close()
             if live:
