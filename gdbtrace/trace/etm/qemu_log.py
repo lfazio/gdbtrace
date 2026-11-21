@@ -27,9 +27,11 @@ _NEWPC = re.compile(r"\.\.\.loaded new PC 0x([0-9a-f]+)")
 
 @dataclass(frozen=True)
 class Step:
-    """Instruction exécutée."""
+    """Instruction atteinte. `executed` : atome E de l'ETM (exécutée, ou branchement pris) ;
+    False pour un atome N (condition fausse, ou branchement conditionnel non pris)."""
     addr: int
     cycles: int = field(default=0, compare=False)
+    executed: bool = field(default=True, compare=False)
 
 
 @dataclass(frozen=True)

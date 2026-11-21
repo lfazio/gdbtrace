@@ -2,13 +2,12 @@
 
 - historique : les N dernières instructions et exceptions (Trace.List : « ce qui s'est passé
   avant l'arrêt ») ;
-- couverture : ensemble des instructions exécutées au moins une fois, ramené aux fonctions
-  et aux lignes source ;
+- couverture : base de couverture (`trace/coverage.py`) alimentée en continu : instructions,
+  branches prises / non prises, ramenées aux lignes et aux fonctions ;
 - flot d'appels : appels, retours, exceptions, reconstruits depuis l'historique.
 """
 from __future__ import annotations
 
-import bisect
 import threading
 from collections import deque
 from dataclasses import dataclass
@@ -50,11 +49,11 @@ class EtmTrace:
         self.packets = Etm3Decoder(cycle_accurate=cycle_accurate)
         self.flow = FlowDecoder(image, cycle_accurate)
         self.history: deque[Event] = deque(maxlen=history)
-        self.executed: set[int] = set()
+        from ..coverage import CoverageDB
+        self.cov = CoverageDB(image, symbols)
         self.bytes = 0
         self.generation = 0          # incrémenté à chaque ajout (rafraîchissement des vues)
         self._lock = threading.Lock()
-        self._func_instrs: dict[str, list[int]] = {}
 
     def feed(self, data: bytes) -> int:
         """Ajoute des octets de trace ETM ; retourne le nombre d'instructions décodées."""
@@ -62,20 +61,15 @@ class EtmTrace:
             self.bytes += len(data)
             events = self.flow.feed(self.packets.feed(data))
             self.history.extend(events)
-            n = 0
-            for e in events:
-                if isinstance(e, Step):
-                    self.executed.add(e.addr)
-                    n += 1
+            self.cov.add(events)
             self.generation += 1
-            return n
+            return sum(1 for e in events if isinstance(e, Step))
 
     def reset(self) -> None:
         with self._lock:
             self.packets = Etm3Decoder(cycle_accurate=self.cycle_accurate)
             self.flow = FlowDecoder(self.image, self.cycle_accurate)
             self.history.clear()
-            self.executed.clear()
             self.bytes = 0
             self.generation += 1
 
@@ -100,72 +94,22 @@ class EtmTrace:
         return self.flow.timing
 
     # ------------------------------------------------------------------ couverture
-    def _instructions_of(self, func) -> list[int]:
-        cached = self._func_instrs.get(func.name)
-        if cached is None:
-            cached, addr = [], func.start
-            while addr < func.end:
-                if self.symbols.is_data(addr):      # literal pool : fin du code utile
-                    addr += 2
-                    continue
-                ins = self.image.instr(addr)
-                if ins is None:
-                    break
-                cached.append(addr)
-                addr += ins.size
-            self._func_instrs[func.name] = cached
-        return cached
+    @property
+    def executed(self) -> set[int]:
+        return self.cov.executed()
 
     def coverage(self) -> list[FuncCoverage]:
-        """Couverture par fonction (instructions exécutées / total), fonctions de l'ELF."""
+        """Couverture par fonction (instructions couvertes / total), fonctions de l'ELF."""
         if self.symbols is None:
             return []
-        with self._lock:
-            executed = set(self.executed)
-        by_start: dict[int, list] = {}
-        for f in self.symbols.functions:          # alias (même adresse) : une seule ligne
-            if f.size:
-                by_start.setdefault(f.start, []).append(f)
-        out = []
-        for funcs in by_start.values():
-            f = max(funcs, key=lambda x: x.size)
-            instrs = self._instructions_of(f)
-            if instrs:
-                name = " = ".join(sorted({x.name for x in funcs}, key=lambda n: (n.startswith("_"), n)))
-                out.append(FuncCoverage(name, sum(a in executed for a in instrs), len(instrs)))
+        out = [FuncCoverage(f.name, f.covered, f.instrs) for f in self.cov.functions()]
         return sorted(out, key=lambda c: (-c.percent, c.name))
 
     def line_coverage(self, path: str) -> dict[int, bool]:
-        """{ligne: exécutée ?} pour les lignes de `path` qui portent du code."""
+        """{ligne: au moins une instruction couverte ?} pour les lignes de code de `path`."""
         if self.symbols is None:
             return {}
-        with self._lock:
-            executed = set(self.executed)
-        lines: dict[int, bool] = {}
-        for e in self.symbols.lines:
-            if e.file != path:
-                continue
-            f = self.symbols.function_at(e.address)
-            if f is None:
-                continue
-            # toutes les instructions de la plage d'adresses de cette entrée de ligne
-            hit = any(a in executed for a in self._range_of(e.address))
-            lines[e.line] = lines.get(e.line, False) or hit
-        return lines
-
-    def _range_of(self, addr: int) -> list[int]:
-        """Instructions de la plage [addr, entrée de ligne suivante)."""
-        sym = self.symbols
-        idx = bisect.bisect_right(sym._line_addrs, addr)
-        end = sym.lines[idx].address if idx < len(sym.lines) else addr + 2
-        out = []
-        while addr < end:
-            ins = self.image.instr(addr)
-            if ins is None:
-                break
-            out.append(addr)
-            addr += ins.size
-        return out
+        return {ln: c.covered > 0 for ln, c in self.cov.lines(path).items()}
 
     # ------------------------------------------------------------------ flot d'appels
     def call_flow(self, n: int = 20_000) -> list[FlowRow]:

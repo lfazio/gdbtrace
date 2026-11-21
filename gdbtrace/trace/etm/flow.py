@@ -94,7 +94,7 @@ class FlowDecoder:
         executed = atom == "E"
         taken = executed and ins.kind in (DIRECT, INDIRECT)
         c = self._take(cycles_of(ins, executed, taken))
-        out.append(Step(self.addr, cycles=c))
+        out.append(Step(self.addr, cycles=c, executed=executed))
         self.stats.instructions += 1
         self.stats.cycles += c
         if not executed:
