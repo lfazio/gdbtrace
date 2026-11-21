@@ -16,6 +16,7 @@ Interface en **tkinter**.
 | 6. Trace ETM | Trace d'instructions ETMv3 (Cortex-M3/M4) : listing avant l'arrêt, flot d'appels, couverture ; ETM simulé sous QEMU ; décodage validé contre OpenCSD | ✅ |
 | 7. Analyse temporelle | Durées par fonction et par exception (appels, brut, net, min/max/moy), chronogramme des appels ; ETM cycle-accurate (validé contre OpenCSD) ou modèle de cycles | ✅ |
 | 8. Couverture de code | Couverture du code objet par la trace ETM, sans instrumentation : instructions, branches prises / non prises, lignes, fonctions ; cumul et fusion de campagnes ; rapports HTML et LCOV | ✅ |
+| 9. MTB et ETM par SWO | Trace MTB des Cortex-M0+ (décodage validé sur chemins QEMU, démo M0+, MTB simulée) ; ETM d'un M3/M4 par la broche SWO, sans sonde de trace | ✅ (à valider sur carte) |
 
 ## Installation
 
@@ -40,6 +41,9 @@ make -C examples/freertos && .venv/bin/python -m gdbtrace examples/freertos/free
 .venv/bin/python -m gdbtrace fw.elf --swo-file capture.bin        # rejouer une capture SWO
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf --etm-sim  # trace ETM simulée (QEMU)
 .venv/bin/python -m gdbtrace fw.elf --openocd … --etm-config --stm32 --trace 127.0.0.1:PORT  # ETM réel
+.venv/bin/python -m gdbtrace fw.elf --openocd … --etm-config --etm-port swo --cpu-hz 4000000  # ETM par SWO
+make -C examples/m0plus && .venv/bin/python -m gdbtrace examples/m0plus/demo.elf --machine microbit --mtb-sim  # M0+ + MTB
+.venv/bin/python -m gdbtrace fw.elf --openocd … --mtb --mtb-probe  # MTB d'un vrai Cortex-M0+
 ```
 
 ### Programmer la cible
@@ -197,6 +201,7 @@ Sources de trace :
 |---|---|---|
 | ETM simulé (QEMU) | `--etm-sim` | QEMU n'a pas d'ETM : son journal d'exécution est activé à chaque Go, puis converti à l'arrêt en flux ETMv3, tel que l'émettrait un ETM-M, et décodé comme une vraie capture. QEMU tourne plus lentement (une instruction par bloc TCG). |
 | Port de trace parallèle | `--etm-config [--etm-width 4] [--stm32]` puis `--trace HOST:PORT` ou `--trace-file F` | flux TPIU formaté : ETM (ID 2) et ITM (ID 1) séparés automatiquement. Il faut une sonde de trace (ex. ORBTrace Mini avec Orbuculum, qui sert le flux brut en TCP) et une carte qui expose TRACECLK/TRACED0-3. |
+| Broche SWO | `--etm-config --etm-port swo --cpu-hz N [--swo-hz N] [--stm32]` (OpenOCD) ou `--swo HOST:PORT` / `--swo-file F` | même flux formaté, sur la broche SWO, capturé par la sonde de débogage (ST-Link, J-Link...). Faible débit : voir ci-dessous. |
 
 `--etm-config` programme l'ETM (ID de trace 2, trace de tout le code), le TPIU en port
 parallèle 1/2/4 bits avec formateur, et avec `--stm32` les broches de trace (DBGMCU_CR).
@@ -311,6 +316,77 @@ d'un bloc IT était vraie. Elle est comptée exécutée, alors qu'un vrai ETM do
 Les branchements conditionnels, eux, sont exacts. Il s'agit de couverture du code objet. La couverture MC/DC (conditions d'une décision) demande une analyse du source,
 hors de portée de la trace seule.
 
+### ETM par SWO (sans sonde de trace)
+
+La sonde de débogage d'une Nucleo (ST-Link) ne lit pas le port de trace parallèle, mais elle
+capture le SWO. Avec `--etm-port swo`, le TPIU de la cible formate l'ETM (ID 2) et l'ITM
+(ID 1) sur cette broche ; OpenOCD sert le flux en TCP et GdbTrace le décode comme une capture
+parallèle. Mesuré sur les démos, l'ETMv3 produit 0,65 à 0,76 bit par instruction, soit
+environ 1 bit par instruction sur le fil (codage UART 10 bits/octet, formateur 15/16). À
+1,6 cycle par instruction, il faut ≈ 0,63 Mbit/s par MHz de cœur :
+
+| Capture du SWO | Débit | Cœur tracé sans perte |
+|---|---|---|
+| ST-Link V2-1 (Nucleo-64/144 anciennes) | 2,25 Mbit/s | ≈ 3,5 MHz |
+| STLINK-V3 (jusqu'à 24 MHz dans OpenOCD ; 12 à 16 constatés) | 12–24 Mbit/s | ≈ 20–35 MHz |
+| Relais USART → USB d'une autre Nucleo (L072 : 4 Mbaud ; L476 : ~10 Mbaud mais USB FS à câbler) | 4–8 Mbit/s | ≈ 6–12 MHz |
+
+Au-delà, la FIFO de l'ETM déborde : la trace a des trous (resynchronisés). La couverture
+cumulée reste une borne basse juste ; Timing et Trace.List deviennent incomplets. Baisser
+l'horloge du cœur pendant les tests, ou utiliser le port parallèle. `--etm-config` affiche la
+fréquence tenable.
+
+Une Nucleo comme sonde du **port parallèle** : celui-ci sort 4 bits sur les deux fronts de
+TRACECLK (≈ 4 × HCLK bit/s). Aucun MCU ne l'échantillonne seul. Avec une bascule externe
+(4 bits figés sur le front descendant), une interface parallèle sur un seul front (DCMI,
+PSSI) reçoit 8 bits par front montant. Une F746 capte ainsi en rafale dans sa RAM (quelques
+ms, sortie USB FS seulement) ; une N6 (USB HS à PHY intégré) pourrait streamer, mais c'est un
+firmware à part entière. La solution mûre reste une sonde FPGA (ORBTrace Mini). L'ETMv4 des
+Cortex-M7 (F746) n'est pas décodé par GdbTrace ; `--etm-config` le refuse.
+
+### Trace MTB (Cortex-M0+)
+
+Le Cortex-M0+ n'a ni ETM ni ITM/SWO. Sa trace d'instructions optionnelle, la **MTB** (Micro
+Trace Buffer), écrit dans la SRAM de la puce un paquet de 8 octets à chaque changement non
+séquentiel du PC : adresse source et destination, bit A (exception, ou PC modifié par le
+débogueur), bit S (début de trace). Entre deux paquets l'exécution est séquentielle : avec le
+code de l'ELF, GdbTrace retrouve chaque instruction et l'issue de chaque branchement
+(non pris : traversé sans paquet). Trace.List, flot d'appels, couverture (instructions et
+branches) et Timing (durées estimées par le modèle de cycles) fonctionnent comme avec l'ETM.
+
+Le tampon est circulaire (2^n octets, aligné sur sa taille) : c'est un **enregistreur de
+vol**, les derniers branchements avant l'arrêt. GdbTrace le lit à chaque arrêt, puis remet le
+pointeur à zéro. Le firmware doit réserver le tampon, la MTB l'écrase :
+
+```c
+__attribute__((section(".mtb"), aligned(1024), used))
+unsigned char __mtb_buffer__[1024];      /* 128 paquets ; section NOLOAD de l'édition de liens */
+```
+
+| Option | Effet |
+|---|---|
+| `--mtb [ADRESSE]` | active la MTB : registres trouvés par les tables ROM CoreSight (pièce 0x932), sinon aux adresses connues (SAM D21/L21 : 0x41006000, Kinetis KL : 0xF0000000), ou à ADRESSE |
+| `--mtb-buffer ADRESSE:TAILLE` | tampon, à défaut du symbole `__mtb_buffer__` / `mtb_buffer` / `__MTB_BUFFER` |
+| `--mtb-probe` | liste les composants CoreSight de la cible : pour savoir si la puce a une MTB |
+| `--mtb-sim [TAILLE]` | QEMU : MTB simulée (taille du firmware, 1024 par défaut ; 0 = illimitée) |
+
+`examples/m0plus` compile la démo pour Cortex-M0+ (QEMU `-M microbit`, Cortex-M0) avec ce
+tampon. Validation sans matériel : chemins réels de QEMU (Cortex-M3 bare-metal et FreeRTOS,
+Cortex-M0+) → paquets MTB → décodage identique au chemin, issues des branchements comprises,
+y compris exception prise au milieu d'un bloc IT, enchaînements et changements de tâche.
+
+À savoir :
+- **à valider sur carte** : la sémantique des paquets vient de la documentation publique
+  (pas de MTB dans QEMU) ; un point n'est pas confirmé par écrit, l'adresse source d'une
+  entrée d'exception (prise comme l'adresse de retour, instruction non exécutée). Le
+  décodeur compte toute incohérence (`erreurs` dans la vue Trace) ;
+- la MTB est optionnelle : les STM32L0 (L031, L072), à notre connaissance, n'en ont pas
+  (`--mtb-probe` tranche) ; on la trouve sur SAM D21/L21, Kinetis KL, LPC800... ;
+- pour la couverture, un enregistreur de vol ne garde que la fin de chaque exécution.
+  `--mtb-sim 0` montre ce que donne une trace complète. Sur carte, le mode AUTOHALT de la MTB
+  (arrêt du cœur quand le tampon est plein, vidage, reprise) donnerait une trace complète au
+  prix de nombreux arrêts : non implémenté.
+
 ### Console
 
 | Saisie | Effet |
@@ -327,7 +403,8 @@ hors de portée de la trace seule.
 | `gdbtrace.trace_list(30)`, `gdbtrace.calls(40)` | Trace.List, flot d'appels (trace ETM) |
 | `gdbtrace.cov.summary()`, `gdbtrace.cov.list(20)`, `gdbtrace.cov.files()` | couverture : résumé, COVerage.ListFunc, ListModule |
 | `gdbtrace.cov.export("cov.html")`, `gdbtrace.cov.save(f)`, `gdbtrace.cov.load(f)`, `gdbtrace.cov.reset()` | rapports (.html, .info LCOV, .json), cumul de campagnes, RàZ |
-| `gdbtrace.etm_config(port_width=4, stm32=True)` | programme l'ETM et le TPIU parallèle |
+| `gdbtrace.etm_config(port_width=4, stm32=True)` | programme l'ETM et le TPIU (parallèle, ou `port="swo", cpu_hz=…`) |
+| `gdbtrace.mtb(20)`, `gdbtrace.mtb_probe()` | paquets MTB bruts du dernier arrêt, symbolisés ; composants CoreSight de la cible |
 | `gdbtrace.program("fw.elf")`, `gdbtrace.program()` | FLASH.ReProgram : écrit, vérifie et reset (ELF courant par défaut) |
 | `gdbtrace.timing(20, unit="us")`, `gdbtrace.timeline(30)` | durées par fonction / derniers appels (trace ETM) |
 | `!info breakpoints` | Commande CLI gdb brute |
@@ -362,7 +439,9 @@ gdbtrace/
   trace/etm/trace.py    historique, flot d'appels ; alimente la base de couverture
   trace/coverage.py     base de couverture (E/N par adresse), lignes, fonctions, fusion
   trace/coverage_report.py  rapports HTML et LCOV
-  trace/etm/config.py   programmation ETM + TPIU parallèle
+  trace/mtb.py          MTB des Cortex-M0+ : paquets, registres, tables ROM, décodeur, encodeur
+  trace/mtb_capture.py  capture MTB (sonde, à chaque arrêt) et MTB simulée sous QEMU
+  trace/etm/config.py   programmation ETM + TPIU (port parallèle ou SWO)
   trace/etm/cycles.py   modèle de cycles Cortex-M3/M4 (durées estimées)
   trace/timing.py       analyse temporelle : pile d'appels, durées, chronogramme
   core/scripting.py     API `gdbtrace` + console Python
@@ -373,6 +452,7 @@ examples/
   firmware/             firmware de démo Cortex-M3 (SysTick 1 kHz, timer CMSDK)
   freertos/             firmware de démo FreeRTOS V11.3.3 (noyau MIT inclus) : 7 tâches,
                         queue, mutex, sémaphore, timer logiciel
+  m0plus/               la démo compilée pour Cortex-M0+ (QEMU microbit), tampon MTB réservé
   svd/mps2-an385.svd    SVD de démo (SysTick, SCB, TIMER0/1, UART0)
   scripts/demo.py       exemple de script
   scripts/rtos.py       exemple de script FreeRTOS

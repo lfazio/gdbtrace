@@ -19,6 +19,7 @@ Le développement avance par jalons (voir le tableau du README). Messages de com
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'   # dev = pytest + capstone (ETM)
 make -C examples/firmware        # demo.elf (Cortex-M3, QEMU mps2-an385)
 make -C examples/freertos        # freertos.elf
+make -C examples/m0plus          # demo.elf Cortex-M0+ (QEMU -M microbit), tampon MTB réservé
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf               # GUI sur QEMU
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf --etm-sim     # + trace ETM simulée
 .venv/bin/python -m gdbtrace fw.elf --batch --script s.py             # sans GUI
@@ -102,6 +103,13 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
   fond (`qemu_log.py` → `encoder.py` → même décodeur). `TraceManager.wait_etm()` attend la
   fin de la conversion. Piège documenté dans `qemu_log.py` : une ligne « Trace » suivie de
   « Stopped execution of TB chain » désigne une instruction non exécutée.
+- MTB (Cortex-M0+, `trace/mtb.py`, `trace/mtb_capture.py`) : paquets source|A /
+  destination|S lus en SRAM à chaque arrêt (sonde : `MtbCapture`, tampon remis à zéro) ou
+  simulés depuis le même journal QEMU (`QemuMtbSim`) ; décodés en `Step` / `ExcEntry` /
+  `ExcReturn` et versés dans la même `EtmTrace` (`feed_events`). `TraceManager` gère ETM
+  simulé, MTB simulée et MTB réelle sur le même cycle reprise / arrêt ; `source_label()`
+  pour les vues. Validation : chemin QEMU → `mtb.encode` → `MtbDecoder` == chemin réel
+  (`tests/test_mtb.py`, bare, rtos, m0).
 - Validation sans matériel : chemin réel QEMU → encodeur → notre décodeur **et** OpenCSD
   (`tests/opencsd.py`) doivent retrouver exactement le même chemin. Toute modification de
   l'encodeur ou du décodeur doit garder ces tests verts (`bare` et `rtos`).
@@ -119,7 +127,11 @@ synchronisés.
 - Le gdbstub de QEMU ignore les écritures du débogueur dans les périphériques (RAM/ROM
   seulement) ; QEMU n'émule ni ITM ni SWO.
 - Non validé sur sonde réelle : `--rtos`, capture SWO, `DWT_PCSR` via OpenOCD, trace ETM
-  matérielle. ETMv4 (M7, M33, M55) non pris en charge.
+  matérielle, ETM par SWO, MTB (dont le sens de l'adresse source d'une entrée d'exception :
+  prise comme adresse de retour). ETMv4 (M7, M33, M55) non pris en charge.
+- `cycles.outcome()` ignore le contexte IT : un `bxeq lr` non pris dans un bloc IT est
+  encodé « exécuté » par l'ETM simulé (la MTB, elle, le décode non pris). À corriger en
+  suivant l'état IT dans l'encodeur ETM, sans casser l'identité avec OpenCSD.
 - OpenOCD 0.12 recopie dans son journal (stderr, et console gdb cible en marche) le
   résultat de chaque commande TCL : passer par `OpenOcdTcl.query()`, jamais `command()`,
   pour tout ce qui renvoie des données. Le stderr des serveurs doit rester drainé
