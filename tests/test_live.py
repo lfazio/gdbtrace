@@ -76,6 +76,7 @@ class FakeOpenOcd(threading.Thread):
         self.sock.listen(1)
         self.port = self.sock.getsockname()[1]
         self.commands = []
+        self.words: dict[int, int] = {}      # mots 32 bits écrits/préchargés
 
     def run(self):
         conn, _ = self.sock.accept()
@@ -91,15 +92,20 @@ class FakeOpenOcd(threading.Thread):
                 self.commands.append(cmd)
                 conn.sendall(self.reply(cmd).encode() + b"\x1a")
 
-    @staticmethod
-    def reply(cmd):
+    def reply(self, cmd):
+        w = re.search(r"write_memory (\S+) 32 \{(0x[0-9a-fA-F]+)\}", cmd)
+        if w:
+            self.words[int(w.group(1), 16)] = int(w.group(2), 16)
+            return "OK"
         m = re.search(r"read_memory (\S+) (\d+) (\d+)", cmd)
         if not m:
             return "invalid command name"
         addr, width, count = int(m.group(1), 16), int(m.group(2)), int(m.group(3))
-        if addr >= 0xDEAD0000:
+        if 0xDEAD0000 <= addr < 0xDEAE0000:
             return "ERR read_memory: failed to read memory"
         step = width // 8
+        if width == 32 and count == 1 and addr in self.words:
+            return hex(self.words[addr])
         return " ".join(hex((addr + i * step) & ((1 << width) - 1)) for i in range(count))
 
 
@@ -118,6 +124,22 @@ def test_openocd_tcl_client():
             tcl.read(0xDEAD0000, 4)
         # le client reste utilisable après une erreur
         assert len(tcl.read(0x1000, 4)) == 4
+    finally:
+        tcl.close()
+
+
+def test_openocd_pcsr_sampling():
+    srv = FakeOpenOcd()
+    srv.words = {0xE000EDFC: 0x00000000, 0xE000101C: 0x08000ABC}
+    srv.start()
+    tcl = OpenOcdTcl("127.0.0.1", srv.port)
+    try:
+        assert tcl.sample_pc() == 0x08000ABC
+        assert srv.words[0xE000EDFC] == 1 << 24              # DEMCR.TRCENA activé une fois
+        n = len(srv.commands)
+        srv.words[0xE000101C] = 0xFFFFFFFF                   # pas d'échantillon (cœur arrêté)
+        assert tcl.sample_pc() is None
+        assert len(srv.commands) == n + 1                    # TRCENA n'est plus relu
     finally:
         tcl.close()
 

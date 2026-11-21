@@ -342,6 +342,28 @@ def _free_stack(read: Reader, base: int, limit: int) -> int:
     return free
 
 
+class CurrentTaskReader:
+    """Nom de la tâche courante (`pxCurrentTCB`), pour le profilage par tâche.
+
+    Une lecture de 4 octets par appel ; le nom de chaque TCB n'est lu qu'une fois.
+    """
+
+    def __init__(self, layout: FreeRtosLayout):
+        self.L = layout
+        self.names: dict[int, str] = {}
+
+    def __call__(self, read: Reader) -> str | None:
+        L = self.L
+        tcb = _u(read(L.current_tcb, L.ptr), 0, L.ptr)
+        if not tcb:
+            return None
+        name = self.names.get(tcb)
+        if name is None:
+            raw = read(tcb + L.tcb_name, L.name_len)
+            name = self.names[tcb] = raw.split(b"\0", 1)[0].decode("latin-1")
+        return name
+
+
 def snapshot(L: FreeRtosLayout, read: Reader, prev: RtosSnapshot | None = None,
              current_sp: int | None = None, scan_stacks: bool = True,
              attempts: int = 1) -> RtosSnapshot:

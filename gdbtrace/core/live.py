@@ -34,8 +34,17 @@ class LiveMemory:
     def read(self, addr: int, length: int) -> bytes:
         raise NotImplementedError
 
+    def sample_pc(self) -> int | None:
+        """Un échantillon du PC, cible en marche, sans l'arrêter (profilage statistique)."""
+        raise LiveMemoryError(f"{self.name} : échantillonnage du PC non disponible")
+
     def close(self) -> None:
         pass
+
+
+DEMCR = 0xE000EDFC
+DEMCR_TRCENA = 1 << 24
+DWT_PCSR = 0xE000101C
 
 
 # ====================================================================== OpenOCD
@@ -98,6 +107,26 @@ class OpenOcdTcl(LiveMemory):
             raise LiveMemoryError(f"read_memory {addr:#x} : {len(words)} valeurs au lieu de {count}")
         size = width // 8
         return b"".join(w.to_bytes(size, "little") for w in words)
+
+    def write_u32(self, addr: int, value: int) -> None:
+        reply = self.command(
+            f"if {{[catch {{write_memory {addr:#x} 32 {{{value:#x}}}}} r]}} "
+            f"{{set r \"ERR $r\"}} else {{set r OK}}").strip()
+        if reply != "OK":
+            raise LiveMemoryError(f"write_memory {addr:#x} : {reply}")
+
+    def sample_pc(self) -> int | None:
+        """Lecture de DWT_PCSR par l'AHB-AP : PC récent, cœur non arrêté (Cortex-M3/M4/M7).
+
+        DEMCR.TRCENA doit être à 1 (activé au premier appel). 0xFFFFFFFF : pas d'échantillon
+        (cœur arrêté ou en sommeil). Les Cortex-M0/M0+ n'ont pas de PCSR."""
+        if not getattr(self, "_trcena", False):
+            demcr = int.from_bytes(self.read(DEMCR, 4), "little")
+            if not demcr & DEMCR_TRCENA:
+                self.write_u32(DEMCR, demcr | DEMCR_TRCENA)
+            self._trcena = True
+        pc = int.from_bytes(self.read(DWT_PCSR, 4), "little")
+        return None if pc == 0xFFFFFFFF else pc
 
     def _close_locked(self) -> None:
         if self._sock is not None:
@@ -165,6 +194,15 @@ class QemuQmp(LiveMemory):
             except (OSError, ValueError) as exc:
                 self._close_locked()
                 raise LiveMemoryError(f"QMP {self.host}:{self.port} : {exc}") from exc
+
+    def sample_pc(self) -> int | None:
+        """PC de la vCPU lu par le moniteur pendant l'exécution : l'équivalent émulé de la
+        lecture de DWT_PCSR (QEMU n'émule ni le DWT ni le SWO)."""
+        out = self.hmp("info registers")
+        k = out.find("R15=")
+        if k < 0:
+            raise LiveMemoryError(f"info registers : PC introuvable ({out.strip()[:60]})")
+        return int(out[k + 4:k + 12], 16)
 
     def hmp(self, command: str) -> str:
         """Commande du moniteur humain (HMP) via QMP ; retourne sa sortie texte."""
