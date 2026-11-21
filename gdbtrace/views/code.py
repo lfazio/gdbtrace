@@ -19,6 +19,8 @@ class _CodeText(tk.Text):
         self.tag_configure("bp", foreground="#d00000")
         self.tag_configure("gutter", foreground="#909090")
         self.tag_configure("func", foreground="#3050a0", font=(font.actual("family"), font.actual("size"), "bold"))
+        self.tag_configure("src", foreground="#2f6f3f", background="#f4f7f2")       # List.Mix : ligne C
+        self.tag_configure("srcno", foreground="#7a9a80", background="#f4f7f2")
         self.configure(state="disabled", cursor="arrow")
 
 
@@ -146,9 +148,25 @@ class SourceView(View):
             self.show_file(state["file"])
 
 
+_SOURCE_CACHE: dict[str, list[str]] = {}
+
+
+def source_lines(path: str) -> list[str]:
+    """Lignes d'un fichier source (mises en cache) ; liste vide s'il est introuvable."""
+    if path not in _SOURCE_CACHE:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                _SOURCE_CACHE[path] = fh.read().splitlines()
+        except OSError:
+            _SOURCE_CACHE[path] = []
+    return _SOURCE_CACHE[path]
+
+
 class DisasmView(View):
+    """List.Asm / List.Mix : désassemblage, avec option source C intercalée."""
     title = "Désassemblage"
     kind = "disasm"
+    MAX_GAP = 6          # lignes C sans code (déclarations, commentaires) montrées en plus
 
     def __init__(self, master, app, **kw):
         super().__init__(master, app, **kw)
@@ -161,6 +179,9 @@ class DisasmView(View):
         e.bind("<Return>", lambda _e: self._goto())
         self.follow = tk.BooleanVar(value=True)
         ttk.Checkbutton(bar, text="Suivre PC", variable=self.follow).pack(side="left", padx=6)
+        self.mixed = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bar, text="Source mêlée", variable=self.mixed,
+                        command=self._toggle_mixed).pack(side="left", padx=6)
         self.text = _CodeText(self, self.mono)
         sb = ttk.Scrollbar(self, orient="vertical", command=self.text.yview)
         self.text.configure(yscrollcommand=sb.set)
@@ -168,7 +189,14 @@ class DisasmView(View):
         sb.pack(side="right", fill="y")
         self.text.bind("<Double-1>", self._toggle_bp)
         self.line_addr: dict[int, int] = {}
+        self.line_src: dict[int, tuple[str, int]] = {}     # ligne de texte -> (fichier, ligne C)
         self.window: tuple[int, int] | None = None
+        self._center: int | None = None
+
+    def _toggle_mixed(self) -> None:
+        self.window = None
+        if self._center is not None and self.stopped:
+            self._show(self._center)
 
     def _goto(self) -> None:
         s = self.addr_var.get().strip()
@@ -188,13 +216,17 @@ class DisasmView(View):
             start, end = f.start, f.end
         else:
             start, end = max(0, center - 32), center + 64
+        self._center = center
         if self.window != (start, end):
             insns = self.session.disassemble(start, end)
+            mixed = self.mixed.get() and syms is not None and bool(syms.lines)
             t = self.text
             t.configure(state="normal")
             t.delete("1.0", "end")
             self.line_addr.clear()
+            self.line_src.clear()
             last_func = None
+            last_src: tuple[str, int] | None = None
             n = 1
             for ins in insns:
                 fn = ins.get("func-name")
@@ -202,6 +234,20 @@ class DisasmView(View):
                     t.insert("end", f"{fn}:\n", "func")
                     n += 1
                     last_func = fn
+                if mixed:
+                    le = syms.line_at(ins["address"])
+                    if le is not None and (le.file, le.line) != last_src:
+                        first = le.line
+                        if last_src and last_src[0] == le.file and 0 < le.line - last_src[1] <= self.MAX_GAP:
+                            first = last_src[1] + 1          # lignes intermédiaires sans code
+                        src = source_lines(le.file)
+                        for ln in range(first, le.line + 1):
+                            text = src[ln - 1].rstrip() if 0 < ln <= len(src) else ""
+                            t.insert("end", f"  {os.path.basename(le.file)}:{ln:<5}", "srcno")
+                            t.insert("end", f" {text}\n", "src")
+                            self.line_src[n] = (le.file, ln)
+                            n += 1
+                        last_src = (le.file, le.line)
                 t.insert("end", "  ", "gutter")
                 t.insert("end", f"{ins['address']:08x}  {ins.get('opcodes', ''):<12} {ins['inst'].replace(chr(9), ' ')}\n")
                 self.line_addr[n] = ins["address"]
@@ -245,4 +291,13 @@ class DisasmView(View):
         line = int(self.text.index(f"@{event.x},{event.y}").split(".")[0])
         if line in self.line_addr and self.connected:
             self.app.toggle_breakpoint_at(addr=self.line_addr[line])
+        elif line in self.line_src and self.connected:          # ligne C : breakpoint source
+            file, ln = self.line_src[line]
+            self.app.toggle_breakpoint_at(file=file, line=ln)
         return "break"
+
+    def get_state(self) -> dict:
+        return {"mixed": self.mixed.get()}
+
+    def set_state(self, state: dict) -> None:
+        self.mixed.set(state.get("mixed", True))

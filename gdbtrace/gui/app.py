@@ -29,14 +29,16 @@ def view_classes() -> dict[str, type[View]]:
     from ..views.itm import ItmView
     from ..views.profile import ProfileView
     from ..views.rtos import RtosView
+    from ..views.files import FilesView
     from ..views.timing import TimingView
     from ..views.trace import TraceView
-    classes = [SourceView, DisasmView, TraceView, TimingView, RegistersView, WatchView, PeripheralsView,
+    classes = [FilesView, SourceView, DisasmView, TraceView, TimingView, RegistersView, WatchView, PeripheralsView,
                RtosView, StackView, BreakpointsView, MemoryView, ConsoleView, ItmView, ProfileView]
     return {c.kind: c for c in classes}
 
 
 DEFAULT_LAYOUT = [
+    {"kind": "files", "where": "left"},
     {"kind": "source", "where": "code"},
     {"kind": "disasm", "where": "code"},
     {"kind": "trace", "where": "code"},
@@ -142,11 +144,14 @@ class App:
         outer = ttk.PanedWindow(self.root, orient="vertical")
         outer.pack(fill="both", expand=True)
         upper = ttk.PanedWindow(outer, orient="horizontal")
-        nb_code, nb_data, nb_bottom = ttk.Notebook(upper), ttk.Notebook(upper), ttk.Notebook(outer)
+        nb_left, nb_code, nb_data = ttk.Notebook(upper, width=230), ttk.Notebook(upper), ttk.Notebook(upper)
+        nb_bottom = ttk.Notebook(outer)
+        upper.add(nb_left, weight=0)
         upper.add(nb_code, weight=3)
         upper.add(nb_data, weight=2)
         outer.add(upper, weight=3)
         outer.add(nb_bottom, weight=1)
+        self.views.register_notebook("left", nb_left)
         self.views.register_notebook("code", nb_code)
         self.views.register_notebook("data", nb_data)
         self.views.register_notebook("bottom", nb_bottom)
@@ -425,9 +430,13 @@ class App:
 
     def show_source(self, file: str, line: int) -> None:
         from ..views.code import SourceView
+        from ..views.files import FilesView
         v = self.views.show(SourceView, "code")
         v.follow.set(False)
         v.show_file(file, line)
+        fv = self.views.find(FilesView)
+        if fv is not None:
+            fv.reveal(file)
 
     # ================================================================== console
     def execute(self, line: str, done: Callable[[bool], None] | None = None) -> None:
@@ -493,7 +502,10 @@ class App:
             try:
                 with open(self.layout_file, encoding="utf-8") as fh:
                     data = json.load(fh)
-                layout = data.get("views", DEFAULT_LAYOUT)
+                layout = list(data.get("views", DEFAULT_LAYOUT))
+                # vues apparues depuis la sauvegarde : ajoutées à leur place par défaut
+                known = set(data.get("known_kinds", [e.get("kind") for e in layout]))
+                layout += [e for e in DEFAULT_LAYOUT if e["kind"] not in known]
                 if data.get("geometry"):
                     self.root.geometry(data["geometry"])
             except Exception:  # noqa: BLE001
@@ -510,7 +522,8 @@ class App:
     def save_layout(self) -> None:
         if not self.layout_file:
             return
-        data = {"geometry": self.root.geometry(), "views": self.views.layout()}
+        data = {"geometry": self.root.geometry(), "views": self.views.layout(),
+                "known_kinds": sorted(view_classes())}
         with open(self.layout_file, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2)
 

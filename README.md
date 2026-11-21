@@ -8,7 +8,7 @@ Interface en **tkinter**.
 
 | Jalon | Contenu | État |
 |---|---|---|
-| 1. Run-control | Go/Break/Step/Over/Out/Asm/Reset, breakpoints (logiciels, matériels, watchpoints), vues Source, Désassemblage, Registres, Mémoire, Watch, Pile, Breakpoints | ✅ |
+| 1. Run-control | Go/Break/Step/Over/Out/Asm/Reset, breakpoints (logiciels, matériels, watchpoints), vues Fichiers, Source, Désassemblage (source C mêlée), Registres, Mémoire, Watch, Pile, Breakpoints | ✅ |
 | 2. Scripting | Console Python avec l'objet `t32`, scripts `--script`, mode `--batch` | ✅ |
 | 3. Vues en direct | Mémoire, Watch et périphériques rafraîchis cible en marche (OpenOCD TCL / QEMU QMP), vue Périphériques CMSIS-SVD | ✅ |
 | 4. RTOS | Vue FreeRTOS (tâches, piles, CPU, queues/mutex/sémaphores), contexte et pile d'appels de chaque tâche, en direct | ✅ |
@@ -43,9 +43,19 @@ make -C examples/freertos && .venv/bin/python -m gdbtrace examples/freertos/free
 
 Raccourcis : `F5` Go, `F8` Break, `F11` Step, `F10` Over, `Shift+F11` Out, `F7` Step assembleur.
 Un double-clic dans la marge de la vue Source ou Désassemblage pose ou retire un breakpoint.
+- **Fichiers** (panneau de gauche) : les fichiers sources du programme (table des lignes DWARF),
+  par dossier, les bibliothèques de la chaîne sous « Externes ». Chaque fichier se déplie sur ses
+  fonctions ; double-clic : la source s'ouvre. Le filtre cherche dans les noms de fichiers et de
+  fonctions. Le fichier où s'est arrêté le PC est en gras.
+- **Désassemblage** : « Source mêlée » (List.Mix, actif par défaut) intercale chaque ligne C
+  avant ses instructions ; un double-clic sur une ligne C pose un breakpoint source, sur une
+  instruction un breakpoint à l'adresse.
+- **Watch** : une expression ajoutée cible en marche est évaluée à l'arrêt suivant ; une locale
+  hors de portée est réévaluée à chaque arrêt.
 Un double-clic sur un registre, un octet mémoire ou une variable Watch permet d'en modifier la valeur.
 Clic droit sur un onglet : détacher la vue dans une fenêtre flottante, ou la déplacer.
-Le layout est enregistré dans `gdbtrace-layout.json`.
+Le layout est enregistré dans `gdbtrace-layout.json` ; les vues ajoutées depuis la sauvegarde
+apparaissent à leur place par défaut.
 
 ### Vues en direct (cible en marche)
 
@@ -269,7 +279,7 @@ gdbtrace/
   trace/timing.py       analyse temporelle : pile d'appels, durées, chronogramme
   core/scripting.py     API `t32` + console Python
   gui/                  fenêtre tkinter, vues détachables, pompe d'événements thread-safe
-  views/                Source, Désassemblage, Registres, Mémoire, Watch, Périphériques, RTOS,
+  views/                Fichiers, Source, Désassemblage, Registres, Mémoire, Watch, Périphériques, RTOS,
                         Pile, Breakpoints, Console, ITM, Profil, Trace, Timing
 examples/
   firmware/             firmware de démo Cortex-M3 (SysTick 1 kHz, timer CMSDK)

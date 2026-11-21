@@ -447,3 +447,66 @@ def test_watch_added_while_running_or_out_of_scope(app):
     run_to(app, "fib")
     assert pump(app, lambda: rows()["n"].isdigit())               # locale de fib, enfin visible
     assert int(rows()["n"]) == int(app.session.evaluate("n"))
+
+
+def test_files_view(app):
+    """Arborescence des fichiers : fichiers du projet, fonctions, filtre, ouverture."""
+    from gdbtrace.views.code import SourceView
+    from gdbtrace.views.files import EXTERNAL, FilesView, build_tree
+    fv = app.views.find(FilesView)
+    assert fv is not None and app.views.where(fv) == "left"
+    top = [fv.tree.item(i, "text") for i in fv.tree.get_children()]
+    assert top[:2] == ["main.c", "startup.c"] and top[-1] == EXTERNAL
+    main = fv.file_item[os.path.normpath(app.symbols.line_at(app.symbols.function("fib").start).file)]
+    fv.tree.focus(main)
+    fv.tree.item(main, open=True)
+    fv._expand(None)
+    funcs = [fv.tree.item(i, "text") for i in fv.tree.get_children(main)]
+    assert "fib()" in funcs and "main()" in funcs
+    fib = next(i for i in fv.tree.get_children(main) if fv.tree.item(i, "text") == "fib()")
+    fv.tree.focus(fib)
+    fv._activate()
+    src = app.views.find(SourceView)
+    assert src.current_file.endswith("main.c")
+    pump(app, lambda: False, timeout=0.2)
+    assert src.text.bbox(f"{FIB_LINE - 1}.0") is not None       # en-tête de fib() visible
+    # filtre sur un nom de fonction : seuls les fichiers qui la contiennent, dépliés
+    fv.filter_var.set("Reset_Handler")
+    files = list(fv.target.values())
+    assert [os.path.basename(f) for f, ln in files if ln == 0] == ["startup.c"]
+    assert any(ln > 0 for _f, ln in files)
+    fv.filter_var.set("")
+    # fichier courant en gras après un arrêt dans fib
+    run_to(app, "fib")
+    main_c = os.path.normpath(app.symbols.line_at(app.symbols.function("fib").start).file)
+    assert "current" in fv.tree.item(fv.file_item[main_c], "tags")
+    # fusion des dossiers à enfant unique
+    root, tree = build_tree(["/p/a/b/c/x.c", "/p/y.c", "/usr/lib/z.c"], "/p")
+    assert root == "/p" and set(tree) == {"a/b/c/", "y.c", EXTERNAL}
+
+
+def test_disasm_mixed_source(app):
+    """Désassemblage avec source C intercalée (List.Mix) ; breakpoint sur une ligne C."""
+    from gdbtrace.views.code import DisasmView
+    run_to(app, "fib")
+    dv = app.views.show(DisasmView)
+    pump(app, lambda: False, timeout=0.2)
+    assert dv.mixed.get()
+    text = dv.text.get("1.0", "end")
+    assert f"main.c:{FIB_LINE}" in text and "uint32_t a = 0, b = 1;" in text
+    # chaque ligne C précède ses instructions
+    src_rows = sorted(dv.line_src)
+    row = next(r for r in src_rows if dv.line_src[r][1] == FIB_LINE)
+    assert row + 1 in dv.line_addr
+    addr = dv.line_addr[row + 1]
+    assert app.symbols.line_at(addr).line == FIB_LINE
+    # double-clic sur une ligne C -> breakpoint source
+    dv.text.see(f"{row}.0")
+    pump(app, lambda: False, timeout=0.1)
+    x, y, _w, h = dv.text.bbox(f"{row}.2")
+    dv._toggle_bp(type("E", (), {"x": x, "y": y + h // 2})())
+    assert pump(app, lambda: any(bp.line == FIB_LINE for bp in app.cached_breakpoints))
+    # sans source mêlée : seulement l'assembleur
+    dv.mixed.set(False)
+    dv._toggle_mixed()
+    assert not dv.line_src and f"main.c:{FIB_LINE}" not in dv.text.get("1.0", "end")
