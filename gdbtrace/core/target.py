@@ -112,11 +112,16 @@ class OpenOcdTarget(TargetServer):
     telnet_port: int = 4444
     openocd: str = "openocd"
     extra: list[str] = field(default_factory=list)
+    #: support RTOS d'OpenOCD (« auto », « FreeRTOS »...) : gdb voit alors les tâches comme threads
+    rtos: str | None = None
 
     def command_line(self) -> list[str]:
         cmd = [self.openocd]
         for c in self.configs:
             cmd += ["-f", c]
+        if self.rtos:
+            # $_TARGETNAME est défini par les fichiers de configuration de la cible
+            cmd += ["-c", f"$_TARGETNAME configure -rtos {self.rtos}"]
         cmd += [
             "-c", f"gdb_port {self.gdb_port}",
             "-c", f"tcl_port {self.tcl_port}",

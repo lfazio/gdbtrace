@@ -6,6 +6,7 @@ Toutes les méthodes sont utilisables depuis n'importe quel thread.
 """
 from __future__ import annotations
 
+import re
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -333,6 +334,34 @@ class Session:
 
     def var_delete(self, name: str) -> None:
         self.gdb.command(f"-var-delete {name}")
+
+    # ------------------------------------------------------------------ threads (RTOS côté serveur)
+    def threads(self) -> list[dict]:
+        """Threads vus par gdb. Avec OpenOCD `-rtos`, chaque tâche RTOS est un thread."""
+        return self.gdb.command("-thread-info").get("threads", [])
+
+    def thread_for(self, task_name: str) -> str | None:
+        """Identifiant du thread gdb correspondant à une tâche, ou None (pas de support RTOS
+        côté serveur : QEMU, ou OpenOCD sans `-rtos`)."""
+        threads = self.threads()
+        if len(threads) <= 1:
+            return None
+        pattern = re.compile(rf"(^|\W){re.escape(task_name)}(\W|$)")
+        for t in threads:
+            text = " ".join(str(t.get(k, "")) for k in ("name", "details", "target-id"))
+            if pattern.search(text):
+                return t.get("id")
+        return None
+
+    def thread_context(self, thread_id: str) -> tuple[dict[str, int], list[Frame]]:
+        """Registres et pile d'appels d'un thread, puis retour au thread courant."""
+        current = self.gdb.command("-thread-info").get("current-thread-id")
+        self.gdb.command(f"-thread-select {thread_id}")
+        try:
+            return dict(self.registers()), self.backtrace()
+        finally:
+            if current:
+                self.gdb.command(f"-thread-select {current}")
 
     def symbol_at(self, addr: int) -> str:
         out = self.cli(f"info symbol {addr:#x}").strip()

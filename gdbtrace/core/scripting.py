@@ -23,7 +23,9 @@ import threading
 from typing import Callable
 
 from . import svd
+from .gdb_backend import GdbError
 from .live import LiveMemory
+from .rtos import freertos
 from .session import Session
 
 
@@ -45,6 +47,59 @@ class ScriptAPI:
         self.live = live
         #: périphériques décrits par le SVD chargé (None sinon)
         self.device = device
+        self._rtos: freertos.FreeRtosLayout | None = None
+
+    # RTOS (FreeRTOS)
+    def rtos(self) -> freertos.RtosSnapshot:
+        """TASK : instantané du noyau (via gdb à l'arrêt, via le canal live en marche)."""
+        if self._rtos is None:
+            if self.s.state != "stopped":
+                raise RuntimeError("arrêter la cible une première fois (disposition via gdb)")
+            try:
+                self._rtos = freertos.FreeRtosLayout.from_session(self.s)
+            except GdbError as exc:
+                raise RuntimeError(f"pas de FreeRTOS dans l'ELF ({exc})") from None
+        if self.s.state == "stopped":
+            return freertos.snapshot(self._rtos, self.s.read_memory,
+                                     current_sp=self.s.register("sp"))
+        snap = freertos.snapshot(self._rtos, self.live_read, attempts=8)
+        if snap.incoherent:
+            raise RuntimeError(f"instantané incohérent : {snap.incoherent}")
+        return snap
+
+    def tasks(self) -> list[freertos.Task]:
+        """TASK.List : affiche et retourne les tâches."""
+        snap = self.rtos()
+        print(f"{'tâche':<12} {'état':<10} {'prio':>4}  {'pile':>11}  {'max':>5}  {'CPU':>6}  attend")
+        for t in snap.tasks:
+            stack = f"{t.stack_used}/{t.stack_size}" if t.stack_used is not None else "?"
+            pct = f"{t.stack_percent:.0f}%" if t.stack_percent is not None else "?"
+            cpu = f"{t.cpu:.1f}%" if t.cpu is not None else ""
+            mark = "*" if t.current else " "
+            print(f"{mark}{t.name:<11} {t.state:<10} {t.priority:>4}  {stack:>11}  {pct:>5}  "
+                  f"{cpu:>6}  {t.waiting_on or ''}")
+        return snap.tasks
+
+    def queues(self) -> list[freertos.KernelObject]:
+        """TASK.Objects : queues, sémaphores et mutex du registre."""
+        objs = self.rtos().objects
+        for o in objs:
+            extra = f"pris par {o.holder}" if o.holder else f"{o.count}/{o.length}"
+            waiting = ", ".join(o.waiting_send + o.waiting_receive)
+            print(f"{o.name:<12} {o.kind:<20} {extra:<16} {waiting}")
+        return objs
+
+    def task(self, name: str) -> list:
+        """Contexte d'une tâche : registres et pile d'appels (cible arrêtée)."""
+        snap = self.rtos()
+        t = snap.task(name)
+        if t is None:
+            raise KeyError(f"tâche inconnue : {name}")
+        regs, frames = freertos.task_context(self.s, self._rtos, t)
+        print(f"{t.name} ({t.state})  pc={regs.get('pc', 0):08x} sp={regs.get('sp', 0):08x}")
+        for i, f in enumerate(frames):
+            print(f"  #{i} {f.pc:08x} {f.func or '??'} {f.file or ''}:{f.line or ''}")
+        return frames
 
     # run-control
     def go(self, until: str | None = None) -> None:

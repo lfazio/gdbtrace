@@ -25,8 +25,9 @@ def view_classes() -> dict[str, type[View]]:
     from ..views.memory import MemoryView
     from ..views.peripherals import PeripheralsView
     from ..views.registers import RegistersView
-    classes = [SourceView, DisasmView, RegistersView, WatchView, PeripheralsView, StackView,
-               BreakpointsView, MemoryView, ConsoleView]
+    from ..views.rtos import RtosView
+    classes = [SourceView, DisasmView, RegistersView, WatchView, PeripheralsView, RtosView,
+               StackView, BreakpointsView, MemoryView, ConsoleView]
     return {c.kind: c for c in classes}
 
 
@@ -36,6 +37,7 @@ DEFAULT_LAYOUT = [
     {"kind": "registers", "where": "data"},
     {"kind": "watch", "where": "data"},
     {"kind": "peripherals", "where": "data"},
+    {"kind": "rtos", "where": "data"},
     {"kind": "stack", "where": "data"},
     {"kind": "breakpoints", "where": "data"},
     {"kind": "console", "where": "bottom"},
@@ -66,6 +68,7 @@ class App:
         self.live_period_ms = 200
         self.live: LiveMemory | None = None
         self.poller: LivePoller | None = None
+        self.current_task: str | None = None   # tâche RTOS courante (vue RTOS)
         # description des périphériques (CMSIS-SVD)
         self.device: svd.Device | None = None
         self.svd_path: str | None = None
@@ -141,6 +144,8 @@ class App:
         self.state_label.pack(side="left")
         self.live_label = tk.Label(bar, width=6, text="LIVE", fg="white", bg="#aaaaaa")
         self.live_label.pack(side="left", padx=(2, 0))
+        self.task_label = ttk.Label(bar, text="", width=22)
+        self.task_label.pack(side="left", padx=(6, 0))
         ttk.Label(bar, textvariable=self.status).pack(side="left", padx=6)
 
     def _bind_keys(self) -> None:
@@ -242,6 +247,11 @@ class App:
         path = filedialog.askopenfilename(filetypes=[("CMSIS-SVD", "*.svd *.xml"), ("Tous", "*")])
         if path:
             self.safe(self.load_svd, path)
+
+    def set_current_task(self, name: str | None) -> None:
+        """Appelé par la vue RTOS : tâche courante affichée dans la barre d'état."""
+        self.current_task = name
+        self.task_label.configure(text=f"tâche : {name}" if name else "")
 
     def show_memory(self, addr: int) -> None:
         from ..views.memory import MemoryView

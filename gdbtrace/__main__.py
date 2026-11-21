@@ -18,7 +18,7 @@ def build_target(args) -> object:
         return t
     if args.openocd is not None:
         return OpenOcdTarget(configs=args.openocd or ["board/st_nucleo_f4.cfg"],
-                             gdb_port=args.gdb_port or 3333)
+                             gdb_port=args.gdb_port or 3333, rtos=args.rtos)
     return QemuTarget(elf=os.path.abspath(args.elf), machine=args.machine,
                       gdb_port=args.gdb_port or free_port())
 
@@ -34,6 +34,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--tcl", metavar="HOST:PORT",
                    help="avec --remote : port TCL d'un OpenOCD lancé à part (mémoire en direct)")
     p.add_argument("--svd", metavar="FICHIER", help="description CMSIS-SVD des périphériques")
+    p.add_argument("--rtos", nargs="?", const="auto", metavar="TYPE",
+                   help="avec --openocd : support RTOS d'OpenOCD (tâches vues comme threads gdb)")
     p.add_argument("--machine", default="mps2-an385", help="machine QEMU")
     p.add_argument("--gdb", default="gdb-multiarch", help="exécutable gdb")
     p.add_argument("--gdb-port", type=int, default=0)

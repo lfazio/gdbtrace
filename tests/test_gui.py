@@ -169,3 +169,54 @@ def test_internal_cli_output_not_in_console(app):
     assert "type =" not in con.out.get("1.0", "end")
     app.execute("!ptype ticks")                 # commande explicite : affichée
     assert pump(app, lambda: "type = volatile unsigned long" in con.out.get("1.0", "end"))
+
+
+# ====================================================================== vue RTOS (firmware FreeRTOS)
+@pytest.fixture
+def rtos_app(rtos_elf, tmp_path):
+    from gdbtrace.gui.app import App
+    a = App(layout_file=str(tmp_path / "layout.json"))
+    s = Session()
+    s.connect(rtos_elf, QemuTarget(elf=rtos_elf, gdb_port=free_port()))
+    a.attach(s)
+    yield a
+    a.quit()
+
+
+def test_rtos_view(rtos_app):
+    import tkinter as tk
+    from gdbtrace.views.rtos import RtosView
+    app = rtos_app
+    v = app.views.show(RtosView)
+    pump(app, lambda: False, timeout=0.2)
+    assert v.layout is not None and v.snap.tasks == []        # au reset : aucune tâche
+    assert "non démarré" in v.info.cget("text")
+
+    run_to(app, "worker_step")
+    names = {v.tasks.item(i, "text"): v.tasks.item(i, "values") for i in v.tasks.get_children()}
+    assert set(names) == {"producer", "consumer", "worker", "sleeper", "hog", "IDLE", "Tmr Svc"}
+    assert names["worker"][0] == "Running" and app.task_label.cget("text") == "tâche : worker"
+    assert names["consumer"][6] == "cmd_queue (réception)"
+    objs = {v.objects.item(i, "text"): v.objects.item(i, "values") for i in v.objects.get_children()}
+    assert objs["data_mutex"][1] == "pris par worker"
+
+    # fenêtre de contexte d'une tâche bloquée
+    cons = next(i for i in v.tasks.get_children() if v.tasks.item(i, "text") == "consumer")
+    v.tasks.focus(cons)
+    v._open_context()
+    wins = [w for w in v.winfo_children() if isinstance(w, tk.Toplevel)]
+    assert len(wins) == 1
+    frames = [wins[0].frames_tv.item(i, "values")[0] for i in wins[0].frames_tv.get_children()]
+    assert frames == ["xQueueReceive", "consumer_task"]
+    assert app.session.frame().func == "worker_step"           # registres restaurés
+    wins[0].destroy()
+
+    # en marche : mise à jour par le canal live
+    tick0 = v.snap.tick
+    app.go()
+    assert pump(app, lambda: v.snap.tick > tick0 + 50)
+    states = {v.tasks.item(i, "text"): v.tasks.item(i, "values")[0] for i in v.tasks.get_children()}
+    assert states["sleeper"] == "Suspended"
+    assert pump(app, lambda: any(v.tasks.item(i, "values")[5] for i in v.tasks.get_children()))
+    app.halt()
+    assert pump(app, lambda: app.session.state == "stopped")

@@ -90,11 +90,12 @@ def test_retry_recovers_from_transient_incoherence():
     mem = build(Mem(), L)
     calls = {"n": 0}
 
-    def flaky(addr, n):                                       # 1re lecture de la liste : fausse
-        calls["n"] += 1
+    def flaky(addr, n):                       # 1re lecture des listes du noyau : compteur faux
         data = mem.read(addr, n)
-        if calls["n"] == 1:
-            return b"\x63" + data[1:]
+        if addr == L.ready:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return b"\x63" + data[1:]
         return data
     assert fr.snapshot(L, flaky, attempts=1).incoherent
     calls["n"] = 0
@@ -188,6 +189,27 @@ def test_task_context_and_backtrace_restore_registers(rtos):
     assert funcs[-1] == "consumer_task"                  # artefact de pile initiale retiré
     assert {r: s.register(r) for r in fr.CORE_REGS} == before
     assert s.frame().func == "worker_step"
+
+
+@needs_qemu
+def test_script_api(rtos_session, capsys):
+    from gdbtrace.core.scripting import ScriptAPI
+    t32 = ScriptAPI(rtos_session, rtos_session.target.live_memory())
+    try:
+        names = [t.name for t in t32.tasks()]
+        assert set(names) == set(EXPECTED)
+        out = capsys.readouterr().out
+        assert "*worker" in out and "Suspended" in out
+        assert {o.name for o in t32.queues()} >= {"cmd_queue", "data_mutex"}
+        assert "pris par worker" in capsys.readouterr().out
+        frames = t32.task("hog")
+        assert [f.func for f in frames][-1] == "hog_task"
+        # en marche : même API, via le canal live
+        rtos_session.go()
+        time.sleep(0.1)
+        assert {t.name for t in t32.tasks()} == set(EXPECTED)
+    finally:
+        t32.live.close()
 
 
 @needs_qemu

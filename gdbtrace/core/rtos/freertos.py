@@ -110,7 +110,16 @@ class FreeRtosLayout:
             return int(session.evaluate(expr).split()[0], 0)
 
         def off(typ: str, fld: str) -> int:
-            return ev(f"(unsigned long)&(({typ} *)0)->{fld}")
+            """Offset d'un champ. `fld` peut lister des variantes « a|b » : les noms changent
+            selon la version de FreeRTOS et les alias de compatibilité (pxContainer est
+            pvContainer dans le DWARF quand configENABLE_BACKWARD_COMPATIBILITY le renomme)."""
+            last: Exception | None = None
+            for name in fld.split("|"):
+                try:
+                    return ev(f"(unsigned long)&(({typ} *)0)->{name}")
+                except GdbError as exc:
+                    last = exc
+            raise last
 
         def opt(fn, *a):
             try:
@@ -122,7 +131,7 @@ class FreeRtosLayout:
         L.ptr = ev("sizeof(void *)")
         L.tcb_size = ev("sizeof(TCB_t)")
         L.tcb_top = off("TCB_t", "pxTopOfStack")
-        L.tcb_state = off("TCB_t", "xStateListItem")
+        L.tcb_state = off("TCB_t", "xStateListItem|xGenericListItem")   # avant V9 : xGeneric...
         L.tcb_event = off("TCB_t", "xEventListItem")
         L.tcb_prio = off("TCB_t", "uxPriority")
         L.tcb_stack = off("TCB_t", "pxStack")
@@ -137,7 +146,7 @@ class FreeRtosLayout:
 
         L.li_next = off("ListItem_t", "pxNext")
         L.li_owner = off("ListItem_t", "pvOwner")
-        L.li_container = off("ListItem_t", "pxContainer")
+        L.li_container = off("ListItem_t", "pxContainer|pvContainer")
         L.li_size = ev("sizeof(ListItem_t)")
         L.list_size = ev("sizeof(List_t)")
         L.list_count = off("List_t", "uxNumberOfItems")
@@ -166,7 +175,7 @@ class FreeRtosLayout:
             L.q_length = off("Queue_t", "uxLength")
             L.q_item_size = off("Queue_t", "uxItemSize")
             L.q_type = opt(off, "Queue_t", "ucQueueType")
-            L.q_holder = opt(off, "Queue_t", "u.xSemaphore.xMutexHolder")
+            L.q_holder = opt(off, "Queue_t", "u.xSemaphore.xMutexHolder|pxMutexHolder")
         L.registry = opt(addr, "xQueueRegistry")
         if L.registry is not None:
             L.reg_item_size = ev("sizeof(xQueueRegistry[0])")
@@ -349,9 +358,12 @@ def snapshot(L: FreeRtosLayout, read: Reader, prev: RtosSnapshot | None = None,
 
 def _snapshot(L, read, prev, current_sp, scan_stacks) -> RtosSnapshot:
     mem = _Mem(L, read)
+    current = _u(read(L.current_tcb, L.ptr), 0, L.ptr)
+    if current == 0:
+        # aucune tâche créée : les listes du noyau ne sont même pas initialisées
+        return RtosSnapshot([], [], 0, None, False)
     # --- phase critique : le moins de lectures possible
     mem.preload_lists()
-    current = _u(read(L.current_tcb, L.ptr), 0, L.ptr)
     found: list[tuple[int, str, str]] = []      # (TCB, liste, état)
     for list_name, list_addr, state in L.kernel_lists():
         for tcb_addr in _walk(mem, list_addr, L.tcb_state):
@@ -507,6 +519,24 @@ def task_registers(L: FreeRtosLayout, task: Task, read: Reader) -> dict[str, int
 CORE_REGS = ["r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12",
              "sp", "lr", "pc"]
 TASK_EXIT_ARTIFACTS = {"prvTaskExitError", "pxPortInitialiseStack"}
+
+
+def task_context(session, layout: FreeRtosLayout, task: Task) -> tuple[dict[str, int], list]:
+    """(registres, frames) d'une tâche, cible arrêtée.
+
+    - tâche courante : registres réels du cœur ;
+    - avec OpenOCD `--rtos`, gdb connaît les tâches comme threads : on sélectionne le thread
+      (chemin non testé faute de sonde) ;
+    - sinon : contexte relu sur la pile de la tâche, pile d'appels par chargement
+      temporaire de ses registres (toujours restaurés).
+    """
+    if task.current:
+        return dict(session.registers()), session.backtrace()
+    thread = session.thread_for(task.name)
+    if thread is not None:
+        return session.thread_context(thread)
+    regs = task_registers(layout, task, session.read_memory)
+    return regs, task_backtrace(session, regs)
 
 
 def task_backtrace(session, regs: dict[str, int]) -> list:
