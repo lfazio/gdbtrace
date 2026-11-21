@@ -1,4 +1,9 @@
-"""Point d'entrée : python -m gdbtrace firmware.elf [--qemu | --openocd CFG... | --remote HOST:PORT]."""
+"""Point d'entrée : python -m gdbtrace firmware.elf [--qemu | --openocd CFG... | --remote HOST:PORT].
+
+Programmation : `--program [ELF]` écrit l'ELF dans la cible à la connexion (reset, load,
+vérification, reset) ; avec `--batch` et sans script, gdbtrace programme puis quitte
+(code de retour 1 si la vérification échoue), `--go` laisse alors le programme tourner.
+"""
 from __future__ import annotations
 
 import argparse
@@ -8,7 +13,7 @@ import sys
 from .core.target import OpenOcdTarget, QemuTarget, RemoteTarget, free_port
 
 
-def build_target(args) -> object:
+def build_target(args, elf: str) -> object:
     if args.remote:
         host, _, port = args.remote.rpartition(":")
         t = RemoteTarget(host=host or "127.0.0.1", gdb_port=int(port))
@@ -19,13 +24,14 @@ def build_target(args) -> object:
     if args.openocd is not None:
         return OpenOcdTarget(configs=args.openocd or ["board/st_nucleo_f4.cfg"],
                              gdb_port=args.gdb_port or 3333, rtos=args.rtos)
-    return QemuTarget(elf=os.path.abspath(args.elf), machine=args.machine,
+    return QemuTarget(elf=os.path.abspath(elf), machine=args.machine,
                       gdb_port=args.gdb_port or free_port(), etm_sim=args.etm_sim)
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="gdbtrace", description="Débogueur Cortex-M à la Trace32, sur gdb")
-    p.add_argument("elf", help="firmware ELF avec symboles DWARF")
+    p.add_argument("elf", nargs="?",
+                   help="firmware ELF avec symboles DWARF (facultatif en GUI : Fichier › Programmer un ELF…)")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--qemu", action="store_true", help="cible QEMU (défaut)")
     g.add_argument("--openocd", nargs="*", metavar="CFG",
@@ -61,13 +67,31 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--gdb", default="gdb-multiarch", help="exécutable gdb")
     p.add_argument("--gdb-port", type=int, default=0)
     p.add_argument("--no-load", action="store_true", help="ne pas flasher l'ELF à la connexion")
+    g2 = p.add_argument_group("programmation")
+    g2.add_argument("--program", nargs="?", const="", metavar="ELF",
+                    help="programmer l'ELF dans la cible à la connexion : reset, écriture, vérification, "
+                         "reset (ELF par défaut : celui de la ligne de commande)")
+    g2.add_argument("--no-verify", action="store_true", help="ne pas vérifier la programmation")
+    g2.add_argument("--go", action="store_true",
+                    help="lancer le programme après la connexion (et la programmation)")
     p.add_argument("--script", help="script Python exécuté après connexion (objet `t32`)")
     p.add_argument("--batch", action="store_true", help="sans GUI : exécute --script puis quitte")
     p.add_argument("--layout", default="gdbtrace-layout.json", help="fichier de layout des fenêtres")
     args = p.parse_args(argv)
+    if args.program:
+        if args.elf and os.path.abspath(args.elf) != os.path.abspath(args.program):
+            p.error("deux ELF différents : l'ELF de la ligne de commande et celui de --program")
+        args.elf = args.program
+    program = args.program is not None
+    verify = not args.no_verify
+    if args.elf is None and (args.batch or program):
+        p.error("un ELF est nécessaire (argument ou --program ELF)")
+    elf = os.path.abspath(args.elf) if args.elf else None
+    if elf and not os.path.isfile(elf):
+        p.error(f"ELF introuvable : {elf}")
 
-    target = build_target(args)
-    load = False if args.no_load else None
+    target = build_target(args, elf) if elf else None
+    load = False if (args.no_load or program) else None
 
     def setup_trace(trace, session) -> None:
         """Options SWO : configuration de la cible puis démarrage de la capture."""
@@ -99,12 +123,17 @@ def main(argv: list[str] | None = None) -> int:
         from .trace.manager import TraceManager
         device = svd.parse(args.svd) if args.svd else None
         s = Session(args.gdb)
-        s.connect(os.path.abspath(args.elf), target, load)
+        s.connect(elf, target, load)
+        rc = 0
+        if program:
+            res = s.program(elf, verify)
+            print(res.summary())
+            rc = 1 if res.mismatched else 0
         live = target.live_memory()
         trace = TraceManager(on_error=print)
         from .core.symbols import SymbolTable
-        symbols = SymbolTable(os.path.abspath(args.elf))
-        msg = trace.setup_etm(os.path.abspath(args.elf), symbols, cycle_accurate=args.etm_cycle_accurate)
+        symbols = SymbolTable(elf)
+        msg = trace.setup_etm(elf, symbols, cycle_accurate=args.etm_cycle_accurate)
         if args.etm_sim:
             if msg:
                 print(msg)
@@ -118,26 +147,42 @@ def main(argv: list[str] | None = None) -> int:
                 api.trace = trace
                 api.symbols = symbols
                 api.cpu_hz = args.cpu_hz
+                api.on_program = lambda e: trace.retarget(e, api._symbols(), args.etm_cycle_accurate)
                 api.run_script(args.script)
+            if args.go and s.state == "stopped":
+                s.go()                          # le programme continue après gdbtrace
         finally:
             trace.close()
             if live:
                 live.close()
-            s.disconnect()
-        return 0
+            s.disconnect(halt=not args.go)
+        return rc
 
     from .gui.app import App
     app = App(layout_file=args.layout)
     app.cpu_hz = args.cpu_hz
     app.etm_cycle_accurate = args.etm_cycle_accurate
+    app.gdb_path = args.gdb
+    app.verify_program = verify
+    app.verify_var.set(verify)
+    app.target_factory = lambda e: build_target(args, e)     # Fichier › Programmer un ELF…
     if args.svd:
         app.safe(app.load_svd, args.svd)
 
-    def after_connect() -> None:
+    def after_connect(_res=None) -> None:
         app.safe(setup_trace, app.trace, app.session)
         if args.script:
             app.run_script(args.script)
-    app.connect(os.path.abspath(args.elf), target, args.gdb, load, then=after_connect)
+        if args.go:
+            app.go()
+    if elf is None:
+        app.status.set("Pas d'ELF : Fichier › Programmer un ELF… (Ctrl+O) lance la cible")
+    elif program:
+        app.connect(elf, target, args.gdb, load,
+                    then=lambda: app.program_elf(elf, verify, then=after_connect))
+    else:
+        app._remember_elf(elf)
+        app.connect(elf, target, args.gdb, load, then=after_connect)
     app.mainloop()
     return 0
 

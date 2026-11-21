@@ -86,6 +86,11 @@ class App:
         self.cpu_hz = 25_000_000
         self.coverage_in_source = False        # couverture ETM affichée dans la vue Source
         self.etm_cycle_accurate = False        # ETM matériel en mode cycle-accurate (ETMCR bit 12)
+        # programmation : exécutable gdb, fabrique de cible (ligne de commande), ELF récents
+        self.gdb_path = "gdb-multiarch"
+        self.target_factory: Callable[[str], TargetServer] | None = None
+        self.verify_program = True
+        self.recent_elfs: list[str] = []
         # description des périphériques (CMSIS-SVD)
         self.device: svd.Device | None = None
         self.svd_path: str | None = None
@@ -105,9 +110,16 @@ class App:
     def _build_menu(self) -> None:
         mb = tk.Menu(self.root)
         m = tk.Menu(mb, tearoff=False)
+        m.add_command(label="Programmer un ELF…", command=self._ask_program, accelerator="Ctrl+O")
+        m.add_command(label="Reprogrammer l'ELF courant", command=self.reprogram, accelerator="Ctrl+R")
+        self.recent_menu = tk.Menu(m, tearoff=False, postcommand=self._fill_recent_menu)
+        m.add_cascade(label="ELF récents", menu=self.recent_menu)
+        self.verify_var = tk.BooleanVar(value=True)
+        m.add_checkbutton(label="Vérifier après programmation", variable=self.verify_var,
+                          command=lambda: setattr(self, "verify_program", self.verify_var.get()))
+        m.add_separator()
         m.add_command(label="Exécuter un script…", command=self._ask_script)
         m.add_command(label="Charger un SVD…", command=self._ask_svd)
-        m.add_command(label="Recharger l'ELF (load)", command=lambda: self.run_action(self.session.load))
         m.add_separator()
         m.add_command(label="Enregistrer le layout", command=self.save_layout)
         m.add_command(label="Déconnecter", command=self.disconnect)
@@ -170,7 +182,8 @@ class App:
 
     def _bind_keys(self) -> None:
         keys = {"<F5>": self.go, "<F8>": self.halt, "<F11>": self.step, "<F10>": self.over,
-                "<Shift-F11>": self.out, "<F7>": self.stepi}
+                "<Shift-F11>": self.out, "<F7>": self.stepi, "<Control-o>": self._ask_program,
+                "<Control-r>": self.reprogram}
         for k, fn in keys.items():
             self.root.bind_all(k, lambda _e, f=fn: (f(), "break")[1])
 
@@ -182,17 +195,12 @@ class App:
         self.api.cpu_hz = self.cpu_hz
         self.console = Console(self.api, lambda s: self.pump.post(self.write_console, s, ""))
         session.on_event(lambda kind, data: self.pump.post(self._on_event, kind, data))
-        if session.elf and os.path.exists(session.elf):
-            try:
-                self.symbols = SymbolTable(session.elf)
-            except Exception as exc:  # noqa: BLE001
-                self.report_error(f"lecture des symboles : {exc}")
         self.api.device = self.device
         self.api.trace = self.trace
-        self.api.symbols = self.symbols
+        self.api.on_program = lambda elf: self.pump.post(self._program_changed, elf)
         self._rtos_layout = None
-        if session.elf and self.symbols is not None:
-            self.trace.setup_etm(session.elf, self.symbols, cycle_accurate=self.etm_cycle_accurate)
+        if session.elf and os.path.exists(session.elf):
+            self._program_changed(session.elf, refresh=False)
         if session.target is not None and session.state != "disconnected":
             self._setup_live(session.target)
         if session.state == "stopped":
@@ -202,17 +210,106 @@ class App:
     def connect(self, elf: str, target: TargetServer, gdb: str = "gdb-multiarch",
                 load: bool | None = None, then: Callable[[], None] | None = None) -> None:
         session = Session(gdb)
+        self.gdb_path = gdb
         self.attach(session)
         self.status.set(f"Connexion à {target.remote}…")
 
         def done(_r):
-            if session.elf and not self.symbols:
-                self.symbols = SymbolTable(session.elf)
+            if session.elf and (self.symbols is None or self.symbols.path != session.elf):
+                self._program_changed(session.elf, refresh=False)
             self._setup_live(target)
             self.refresh_all()
             if then:
                 then()
         self.pump.background(session.connect, elf, target, load, then=done)
+
+    # ================================================================== programmation
+    def program_elf(self, path: str, verify: bool | None = None,
+                    then: Callable[[Any], None] | None = None) -> None:
+        """Programme l'ELF `path` dans la cible (flash, ou RAM sous QEMU), vérifie, reset ;
+        symboles, vues et trace passent au nouveau programme. Sans cible connectée, la cible
+        de la ligne de commande est lancée avec cet ELF."""
+        path = os.path.abspath(path)
+        if not os.path.isfile(path):
+            self.report_error(f"ELF introuvable : {path}")
+            return
+        verify = self.verify_program if verify is None else verify
+        self._remember_elf(path)
+        s = self.session
+        name = os.path.basename(path)
+        if s is not None and s.state != "disconnected":
+            self.status.set(f"Programmation de {name}…")
+
+            def done(res) -> None:
+                msg = res.summary()
+                self.write_console(msg + "\n", "err" if res.mismatched else "gdb")
+                self.status.set(msg)
+                if res.mismatched:
+                    self.report_error(msg)
+                if then:
+                    then(res)
+            self.run_action(lambda: self.api.program(path, verify, quiet=True), then=done)
+            return
+        if self.target_factory is None:
+            self.status.set("Pas de cible : lancer gdbtrace avec --qemu, --openocd ou --remote")
+            return
+        # cible de la ligne de commande lancée avec cet ELF, puis programmation
+        self.connect(path, self.target_factory(path), self.gdb_path, load=False,
+                     then=lambda: self.program_elf(path, verify, then))
+
+    def reprogram(self) -> None:
+        """Reprogramme l'ELF courant (après une recompilation)."""
+        elf = (self.session.elf if self.session and self.session.elf
+               else self.recent_elfs[0] if self.recent_elfs else None)
+        if elf:
+            self.program_elf(elf)
+        else:
+            self._ask_program()
+
+    def _ask_program(self) -> None:
+        cur = self.session.elf if self.session and self.session.elf else \
+            (self.recent_elfs[0] if self.recent_elfs else None)
+        path = filedialog.askopenfilename(
+            title="ELF à programmer dans la cible",
+            initialdir=os.path.dirname(cur) if cur else os.getcwd(),
+            filetypes=[("Exécutables ELF", "*.elf *.axf *.out"), ("Tous", "*")])
+        if path:
+            self.program_elf(path)
+
+    def _fill_recent_menu(self) -> None:
+        self.recent_menu.delete(0, "end")
+        if not self.recent_elfs:
+            self.recent_menu.add_command(label="(aucun)", state="disabled")
+        for path in self.recent_elfs:
+            self.recent_menu.add_command(label=path, command=lambda p=path: self.program_elf(p))
+
+    def _elf_name(self) -> str:
+        elf = self.session.elf if self.session else None
+        return f"{os.path.basename(elf)} : " if elf else ""
+
+    def _remember_elf(self, path: str) -> None:
+        self.recent_elfs = [path] + [p for p in self.recent_elfs if p != path][:7]
+
+    def _program_changed(self, elf: str, refresh: bool = True) -> None:
+        """Le programme de la cible a changé : symboles, trace ETM, caches des vues."""
+        from ..views.code import clear_source_cache
+        try:
+            self.symbols = SymbolTable(elf)
+        except Exception as exc:  # noqa: BLE001
+            self.symbols = None
+            self.report_error(f"lecture des symboles : {exc}")
+        if self.api:
+            self.api.symbols = self.symbols
+        self._rtos_layout = None
+        clear_source_cache()
+        if self.symbols is not None:            # décodage ETM (et ETM simulé) sur le nouveau code
+            self.trace.retarget(elf, self.symbols, cycle_accurate=self.etm_cycle_accurate)
+        for v in list(self.views.views):
+            if hasattr(v, "on_program_changed"):
+                self.safe(v.on_program_changed)
+        if refresh:
+            self.refresh_all()
+            self.breakpoints_changed()
 
     def disconnect(self) -> None:
         if self.session:
@@ -368,9 +465,9 @@ class App:
         fr = self.current_frame
         if fr and state == "stopped":
             where = f"{fr.func or '??'}  {os.path.basename(fr.file or '')}:{fr.line or ''}"
-            self.root.title(f"gdbtrace — {where}  PC={fr.pc:#010x}")
+            self.root.title(f"gdbtrace — {self._elf_name()}{where}  PC={fr.pc:#010x}")
         else:
-            self.root.title("gdbtrace")
+            self.root.title(f"gdbtrace — {self._elf_name()}".rstrip(" —:"))
 
     # ================================================================== actions
     def run_action(self, fn: Callable[[], Any], then: Callable[[Any], None] | None = None) -> None:
@@ -503,6 +600,7 @@ class App:
                 with open(self.layout_file, encoding="utf-8") as fh:
                     data = json.load(fh)
                 layout = list(data.get("views", DEFAULT_LAYOUT))
+                self.recent_elfs = [p for p in data.get("recent_elfs", []) if isinstance(p, str)]
                 # vues apparues depuis la sauvegarde : ajoutées à leur place par défaut
                 known = set(data.get("known_kinds", [e.get("kind") for e in layout]))
                 layout += [e for e in DEFAULT_LAYOUT if e["kind"] not in known]
@@ -523,7 +621,7 @@ class App:
         if not self.layout_file:
             return
         data = {"geometry": self.root.geometry(), "views": self.views.layout(),
-                "known_kinds": sorted(view_classes())}
+                "known_kinds": sorted(view_classes()), "recent_elfs": self.recent_elfs}
         with open(self.layout_file, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2)
 

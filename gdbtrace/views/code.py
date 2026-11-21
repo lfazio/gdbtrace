@@ -139,6 +139,12 @@ class SourceView(View):
         self.app.toggle_breakpoint_at(file=self.current_file, line=line)
         return "break"
 
+    def on_program_changed(self) -> None:
+        self._populate_files()
+        path, self.current_file = self.current_file, None       # relu : il a pu changer
+        if path:
+            self.show_file(path)
+
     def get_state(self) -> dict:
         return {"file": self.current_file, "follow": self.follow.get()}
 
@@ -149,6 +155,11 @@ class SourceView(View):
 
 
 _SOURCE_CACHE: dict[str, list[str]] = {}
+
+
+def clear_source_cache() -> None:
+    """Après une recompilation, les sources ont pu changer."""
+    _SOURCE_CACHE.clear()
 
 
 def source_lines(path: str) -> list[str]:
@@ -295,6 +306,10 @@ class DisasmView(View):
             file, ln = self.line_src[line]
             self.app.toggle_breakpoint_at(file=file, line=ln)
         return "break"
+
+    def on_program_changed(self) -> None:
+        self.window = None
+        self._center = None
 
     def get_state(self) -> dict:
         return {"mixed": self.mixed.get()}

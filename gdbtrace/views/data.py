@@ -272,6 +272,20 @@ class WatchView(View):
             self.app.poller.unsubscribe(self)
         super().destroy()
 
+    def on_program_changed(self) -> None:
+        """Nouveau programme : les varobjs (types, adresses) sont recréés au prochain arrêt."""
+        for item, name in list(self.varobj.items()):
+            if not self.tree.parent(item) and self.stopped:
+                try:
+                    self.session.var_delete(name)
+                except Exception:  # noqa: BLE001 - varobj déjà invalide
+                    pass
+        exprs = list(self.exprs)
+        self.on_disconnected()
+        self.exprs = exprs
+        for e in exprs:
+            self._set_root_row(e, "<évaluée au prochain arrêt>", "", ("disabled",))
+
     def _subtree(self, item: str) -> list[str]:
         out = [item]
         for c in self.tree.get_children(item):

@@ -47,6 +47,23 @@ class TraceManager:
             return f"trace ETM indisponible : {exc}"
         return None
 
+    def retarget(self, elf: str, symbols, cycle_accurate: bool = False) -> str | None:
+        """Le programme de la cible a changé : décodage ETM (et simulation QEMU, si elle était
+        active) sur le nouveau code. La trace de l'ancien programme est abandonnée."""
+        sim = self.etm_sim
+        if sim is not None:
+            try:
+                sim.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self.etm_sim = None
+        msg = self.setup_etm(elf, symbols, cycle_accurate)
+        if sim is not None and self.etm is not None:
+            self.enable_qemu_sim(sim.qmp)
+        for fn in list(self.etm_listeners):
+            fn()
+        return msg
+
     def enable_qemu_sim(self, qmp) -> None:
         from .etm.qemu_sim import QemuEtmSim
         from .etm.trace import EtmTrace

@@ -510,3 +510,59 @@ def test_disasm_mixed_source(app):
     dv.mixed.set(False)
     dv._toggle_mixed()
     assert not dv.line_src and f"main.c:{FIB_LINE}" not in dv.text.get("1.0", "end")
+
+
+def test_program_elf_from_menu(app, rtos_elf):
+    """Fichier › Programmer un ELF… : nouvel ELF dans la cible, symboles et vues suivent."""
+    from gdbtrace.views.data import WatchView
+    from gdbtrace.views.files import FilesView
+    w = app.views.show(WatchView)
+    w.add("ticks")
+    app.go()
+    assert pump(app, lambda: app.session.state == "running")
+    app.program_elf(rtos_elf)                                   # cible en marche : arrêtée d'abord
+    assert pump(app, lambda: "vérifié" in app.status.get(), timeout=30), app.status.get()
+    pump(app, lambda: False, timeout=0.3)
+    assert app.session.elf == rtos_elf and app.symbols.path == rtos_elf
+    assert app.current_frame.func == "Reset_Handler" and app.recent_elfs[0] == rtos_elf
+    assert app.root.title().startswith("gdbtrace — freertos.elf : Reset_Handler")
+    fv = app.views.find(FilesView)
+    assert "FreeRTOS-Kernel/" in [fv.tree.item(i, "text") for i in fv.tree.get_children()]
+    rows = {w.tree.item(i, "text"): w.tree.set(i, "value") for i in w.tree.get_children()}
+    assert "ticks" in rows and "hors de portée" in rows["ticks"]     # absent du nouveau programme
+    run_to(app, "worker_step")                                  # le nouveau programme tourne
+    # Reprogrammer : même ELF, la cible repart du reset
+    app.reprogram()
+    assert pump(app, lambda: app.current_frame is not None
+                and app.current_frame.func == "Reset_Handler", timeout=30)
+
+
+def test_program_elf_without_connection(elf, tmp_path):
+    """Sans cible connectée, Programmer lance la cible de la ligne de commande avec l'ELF."""
+    from gdbtrace.gui.app import App
+    a = App(layout_file=str(tmp_path / "layout.json"))
+    try:
+        a.target_factory = lambda e: QemuTarget(elf=e, gdb_port=free_port())
+        a.program_elf(elf)
+        assert pump(a, lambda: a.session is not None and "vérifié" in a.status.get(), timeout=30), \
+            a.status.get()
+        assert a.current_frame.func == "Reset_Handler" and a.symbols.path == elf
+        a.save_layout()
+        import json
+        assert json.load(open(tmp_path / "layout.json"))["recent_elfs"] == [elf]
+    finally:
+        close_app(a)
+
+
+def test_program_elf_retargets_simulated_etm(etm_app, rtos_elf):
+    """ETM simulé : après programmation, la trace est décodée avec le code du nouvel ELF."""
+    app = etm_app
+    app.program_elf(rtos_elf)
+    assert pump(app, lambda: "vérifié" in app.status.get(), timeout=30), app.status.get()
+    etm = app.trace.etm
+    assert etm.image is not None and app.trace.etm_sim is not None and etm.stats["instructions"] == 0
+    run_to(app, "worker_step")
+    assert pump(app, lambda: etm.stats["instructions"] > 1000 and not app.trace.etm_busy), \
+        etm_diagnostics(app)
+    assert etm.stats["erreurs"] == 0 and etm.stats["code inconnu"] == 0
+    assert "→ worker_step" in [f"→ {r.func}" for r in etm.call_flow(5000) if r.kind == "call"]

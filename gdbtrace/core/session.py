@@ -137,9 +137,11 @@ class Session:
         self._reg_names = self.gdb.command("-data-list-register-names").get("register-names", [])
         self._emit("stopped", {"reason": "connected"})
 
-    def disconnect(self) -> None:
+    def disconnect(self, halt: bool = True) -> None:
+        """Ferme gdb et le serveur. `halt=False` : la cible continue de tourner (une sonde
+        n'arrête pas le cœur quand on la quitte)."""
         try:
-            if self.state == "running":
+            if self.state == "running" and halt:
                 self.halt()
             self.gdb.stop()
         finally:

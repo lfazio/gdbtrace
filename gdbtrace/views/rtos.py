@@ -163,6 +163,9 @@ class RtosView(View):
         self._status("")
         self.app.set_current_task(snap.current.name if snap.current else None)
 
+    def on_program_changed(self) -> None:
+        self.on_disconnected()
+
     def on_disconnected(self) -> None:
         if self.app.poller:
             self.app.poller.unsubscribe(self)

@@ -221,6 +221,10 @@ class FilesView(View):
         if self.app.symbols is not self._symbols:
             self.populate()
 
+    def on_program_changed(self) -> None:
+        self._current = None
+        self.populate()
+
     def get_state(self) -> dict:
         return {"filter": self.filter_var.get()}
 

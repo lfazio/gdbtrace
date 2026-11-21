@@ -54,6 +54,25 @@ class ScriptAPI:
         self.symbols = None
         #: fréquence du cœur (conversion cycles → µs de l'analyse temporelle)
         self.cpu_hz = 25_000_000
+        #: appelé après chaque programmation avec le chemin de l'ELF (l'interface s'y recâble)
+        self.on_program: Callable[[str], None] | None = None
+
+    def program(self, elf: str | None = None, verify: bool = True, quiet: bool = False):
+        """FLASH.ReProgram : programme `elf` dans la cible (par défaut l'ELF courant, par ex.
+        après une recompilation), vérifie, puis reset : la cible est arrêtée au vecteur de
+        reset. Retourne le `ProgramResult`."""
+        import os
+        elf = os.path.abspath(elf) if elf else self.s.elf
+        if not elf:
+            raise RuntimeError("aucun ELF à programmer")
+        res = self.s.program(elf, verify)
+        self.symbols = None                     # rechargés à la demande
+        self._rtos = None
+        if self.on_program is not None:
+            self.on_program(elf)
+        if not quiet:
+            print(res.summary())
+        return res
 
     # trace et profilage
     def _symbols(self):

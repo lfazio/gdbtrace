@@ -41,7 +41,37 @@ make -C examples/freertos && .venv/bin/python -m gdbtrace examples/freertos/free
 .venv/bin/python -m gdbtrace fw.elf --openocd … --etm-config --stm32 --trace 127.0.0.1:PORT  # ETM réel
 ```
 
-Raccourcis : `F5` Go, `F8` Break, `F11` Step, `F10` Over, `Shift+F11` Out, `F7` Step assembleur.
+### Programmer la cible
+
+**Fichier › Programmer un ELF…** (`Ctrl+O`) écrit un ELF dans la cible, sans relancer le
+débogueur. La séquence : arrêt, reset, écriture (`load` : en flash avec OpenOCD, J-Link ou
+pyOCD, en RAM sous QEMU), vérification (`compare-sections`), puis reset. La cible reste
+arrêtée au vecteur de reset. Symboles, vues, Watch et trace ETM passent au nouveau programme.
+**Reprogrammer l'ELF courant** (`Ctrl+R`) sert après une recompilation. **ELF récents**
+garde les 8 derniers, enregistrés avec le layout. Sans ELF sur la ligne de commande, la GUI
+démarre sans cible : choisir l'ELF lance la cible (`--qemu`, `--openocd`… ) puis la programme.
+
+| Option | Effet |
+|---|---|
+| `--program [ELF]` | programme l'ELF à la connexion (par défaut celui de la ligne de commande) |
+| `--no-verify` | sans vérification |
+| `--go` | lance le programme ensuite |
+| `--batch` sans `--script` | programme puis quitte : code de retour 1 si la vérification échoue |
+
+```bash
+.venv/bin/python -m gdbtrace --program build/fw.elf --openocd configs/nucleo-f429zi.cfg --batch --go  # flasher et lancer
+.venv/bin/python -m gdbtrace --program build/fw.elf --openocd configs/nucleo-f429zi.cfg              # flasher puis déboguer
+.venv/bin/python -m gdbtrace --openocd configs/nucleo-f429zi.cfg     # GUI : choisir l'ELF par le menu
+```
+
+Depuis un script : `t32.program("build/fw.elf")`, ou `t32.program()` pour l'ELF courant.
+
+Sous QEMU, **Reset** est un vrai reset de la machine (`system_reset` sur un second port QMP) :
+périphériques, NVIC et mode du cœur repartent à neuf. Un ELF programmé depuis le lancement est
+réécrit après le reset, car QEMU recharge l'image passée au démarrage.
+
+Raccourcis : `F5` Go, `F8` Break, `F11` Step, `F10` Over, `Shift+F11` Out, `F7` Step assembleur,
+`Ctrl+O` Programmer un ELF, `Ctrl+R` Reprogrammer.
 Un double-clic dans la marge de la vue Source ou Désassemblage pose ou retire un breakpoint.
 - **Fichiers** (panneau de gauche) : les fichiers sources du programme (table des lignes DWARF),
   par dossier, les bibliothèques de la chaîne sous « Externes ». Chaque fichier se déplie sur ses
@@ -243,6 +273,7 @@ les changements de tâche par ITM lèverait cette limite (à faire).
 | `t32.swo_config(cpu_hz=180_000_000, swo_hz=2_000_000)` | programme ITM/DWT/TPIU (+ OpenOCD) |
 | `t32.trace_list(30)`, `t32.calls(40)`, `t32.coverage(20)` | Trace.List, flot d'appels, couverture (trace ETM) |
 | `t32.etm_config(port_width=4, stm32=True)` | programme l'ETM et le TPIU parallèle |
+| `t32.program("fw.elf")`, `t32.program()` | FLASH.ReProgram : écrit, vérifie et reset (ELF courant par défaut) |
 | `t32.timing(20, unit="us")`, `t32.timeline(30)` | durées par fonction / derniers appels (trace ETM) |
 | `!info breakpoints` | Commande CLI gdb brute |
 | `mon reset halt` | Commande `monitor` vers OpenOCD |

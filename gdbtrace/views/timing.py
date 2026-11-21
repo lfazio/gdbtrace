@@ -89,6 +89,15 @@ class TimingView(View):
         self._busy = False
         app.trace.etm_listeners.append(self._on_new_trace)
 
+    def on_program_changed(self) -> None:
+        self.result = None
+        self.color_of.clear()
+        self._generation = -1
+        self.table.delete(*self.table.get_children())
+        self.chart.result = None
+        self.chart.draw()
+        self.info.configure(text="")
+
     def destroy(self) -> None:
         if self._on_new_trace in self.app.trace.etm_listeners:
             self.app.trace.etm_listeners.remove(self._on_new_trace)
