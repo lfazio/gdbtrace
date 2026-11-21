@@ -4,6 +4,6 @@ __pycache__/
 *.egg-info/
 build/
 dist/
-examples/firmware/*.elf
+examples/**/*.elf
 gdbtrace-layout.json
 .pytest_cache/
