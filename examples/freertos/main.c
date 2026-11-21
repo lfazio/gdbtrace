@@ -41,6 +41,54 @@ static void record_hwm(int id)
     stack_hwm[id] = uxTaskGetStackHighWaterMark(NULL);
 }
 
+/* ---- Sortie ITM (printf sans UART, broche SWO), à la manière de CMSIS ITM_SendChar.
+ * Inerte tant que le débogueur n'a pas activé l'ITM et le port (ITM_TCR.ITMENA, ITM_TER) :
+ * c'est le cas sous QEMU, qui n'émule pas l'ITM (registres lus à 0). */
+#define ITM_PORT8(n)   (*(volatile uint8_t *)(0xE0000000u + 4u * (n)))
+#define ITM_PORT32(n)  (*(volatile uint32_t *)(0xE0000000u + 4u * (n)))
+#define ITM_TER        (*(volatile uint32_t *)0xE0000E00u)
+#define ITM_TCR        (*(volatile uint32_t *)0xE0000E80u)
+
+static int itm_enabled(unsigned port)
+{
+    return (ITM_TCR & 1u) && (ITM_TER & (1u << port));
+}
+
+static void itm_putc(unsigned port, char c)
+{
+    while (ITM_PORT32(port) == 0u) {}      /* FIFO du port prêt */
+    ITM_PORT8(port) = (uint8_t)c;
+}
+
+void itm_puts(unsigned port, const char *s)
+{
+    if (!itm_enabled(port)) {
+        return;
+    }
+    while (*s) {
+        itm_putc(port, *s++);
+    }
+}
+
+void itm_u32(unsigned port, uint32_t value)
+{
+    if (!itm_enabled(port)) {
+        return;
+    }
+    while (ITM_PORT32(port) == 0u) {}
+    ITM_PORT32(port) = value;
+}
+
+static char *u32_to_dec(uint32_t v, char *end)
+{
+    *--end = '\0';
+    do {
+        *--end = (char)('0' + v % 10u);
+        v /= 10u;
+    } while (v);
+    return end;
+}
+
 uint32_t worker_step(uint32_t n)
 {
     uint32_t a = 0, b = 1;
@@ -76,6 +124,10 @@ static void consumer_task(void *arg)
         if (xQueueReceive(cmd_queue, &cmd, portMAX_DELAY) == pdPASS) {
             consumed += cmd.arg;
             if ((cmd.seq % 8) == 0) {
+                char num[12];
+                itm_puts(0, "consumer: commande ");
+                itm_puts(0, u32_to_dec(cmd.seq, num + sizeof num));
+                itm_puts(0, "\n");
                 xSemaphoreGive(done_sem);
             }
         }
@@ -89,7 +141,7 @@ static void worker_task(void *arg)
     uint32_t n = 0;
     for (;;) {
         xSemaphoreTake(data_mutex, portMAX_DELAY);
-        worker_step(n++);
+        itm_u32(1, worker_step(n++));      /* valeur brute sur le port ITM 1 */
         xSemaphoreGive(data_mutex);
         record_hwm(ID_WORKER);
         vTaskDelay(pdMS_TO_TICKS(5));
