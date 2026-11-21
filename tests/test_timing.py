@@ -94,9 +94,27 @@ def test_context_switch_closes_frames_as_partial():
              S(0x300, 1), S(0x302, 3), S(0x206, 1)])   # reprise ailleurs : autre tâche
     s = r.stats
     assert r.context_switches == 1
-    assert (s["f"].calls, s["f"].partial) == (0, 2)     # coupé au changement, puis reprise partielle
+    assert (s["f"].calls, s["f"].partial) == (0, 2)     # mis de côté, jamais repris ; puis racine
     assert s["g"].partial == 1 and s["g"].min is None
     assert sum(x.net for x in s.values()) == r.total
+
+
+def test_preempted_task_resumes_its_call_stack():
+    """Tâche A dans f, préemptée (PendSV) par B, puis reprise : f reste un seul appel complet,
+    le temps de B et des deux PendSV est déduit de son brut."""
+    pendsv = [ExcEntry(14, 0x500, cycles=12), S(0x500, 4), S(0x502, 3), ExcReturn(cycles=10)]
+    r = run([S(0x100, 1), S(0x102, 3), S(0x200, 2)] + pendsv            # A : main → f
+            + [S(0x614, 1), S(0x616, 1), S(0x618, 1)] + pendsv          # B : dans u
+            + [S(0x202, 3), S(0x300, 1), S(0x302, 3), S(0x206, 1), S(0x208, 3), S(0x106, 1)])
+    s = r.stats
+    assert r.context_switches == 2 and sum(x.net for x in s.values()) == r.total == 79
+    assert (s["f"].calls, s["f"].partial, s["f"].gross, s["f"].net) == (1, 0, 13, 9)
+    assert (s["g"].calls, s["g"].gross) == (1, 4)
+    assert (s["u"].calls, s["u"].partial, s["u"].gross) == (0, 1, 3)   # jamais reprise
+    assert (s["[PendSV]"].calls, s["[PendSV]"].gross) == (2, 58)
+    # chronogramme : f en deux morceaux, coupé au changement de tâche puis repris
+    pieces = [(i.start, i.end, i.suspended, i.resumed) for i in r.intervals if i.name == "f"]
+    assert sorted(pieces) == [(4, 35, True, False), (67, 78, False, True)]
 
 
 def test_tail_chained_exceptions():
@@ -138,7 +156,8 @@ def test_bare_metal_identities(qemu_paths, elf):
     assert s["fib"].calls == s["update_sensor"].calls
     # seuls les cadres sans fin (Reset_Handler, main) ou coupés par la fin de trace sont partiels
     assert {n for n, x in s.items() if x.partial} <= {"Reset_Handler", "main", "delay", "animate",
-                                                      "update_sensor", "fib"}
+                                                      "update_sensor", "fib", "[SysTick]",
+                                                      "SysTick_Handler"}
     assert all(x.partial <= 1 for x in s.values())
 
 
@@ -150,6 +169,11 @@ def test_freertos_identities(qemu_paths, rtos_elf):
     assert r.context_switches > 10
     assert s["[PendSV]"].calls > 10 and s["[SysTick]"].calls > 10
     assert s["vTaskSwitchContext"].calls == s["[PendSV]"].calls    # un par PendSV
+    # piles par tâche : la boucle de prvTaskCheckFreeStackSpace, préemptée par SysTick, est
+    # reprise avec la pile de sa tâche et compte des appels complets ; ses appels complets
+    # durent plus qu'une période d'ordonnancement (le temps des autres tâches est déduit)
+    st = s["prvTaskCheckFreeStackSpace"]
+    assert st.calls > 10 and st.max > 0 and st.gross >= st.gross_complete
 
 
 @needs_qemu

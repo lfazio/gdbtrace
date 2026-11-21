@@ -53,6 +53,7 @@ class TraceManager:
         if self.etm is not None:
             if not self.etm.cycle_accurate:      # la simulation encode en cycle-accurate
                 self.etm = EtmTrace(self.etm.image, self.etm.symbols, cycle_accurate=True)
+            self.etm.simulated = True            # cycles du modèle : durées estimées
             self.etm_sim = QemuEtmSim(qmp, self.etm.image, self.etm)
 
     def _etm_feed(self, data: bytes) -> None:

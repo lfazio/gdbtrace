@@ -52,6 +52,8 @@ class ScriptAPI:
         self.trace = None
         #: table des symboles de l'ELF (chargée à la demande)
         self.symbols = None
+        #: fréquence du cœur (conversion cycles → µs de l'analyse temporelle)
+        self.cpu_hz = 25_000_000
 
     # trace et profilage
     def _symbols(self):
@@ -142,6 +144,48 @@ class ScriptAPI:
             label = "retour d'exception" if r.kind == "exc-return" else r.func
             print(f"{r.index:>8}  {'  ' * r.depth}{icons.get(r.kind, '')} {label}")
         return rows
+
+    def timing(self, top: int | None = 20, unit: str = "us", n: int | None = None, kind: str | None = None):
+        """Trace.STATistic.Func : durées par fonction et par exception sur les `n` derniers
+        événements de la trace ETM (tout l'historique par défaut). `unit` : "us" ou "cycles" ;
+        `kind` : "function" ou "exception" pour filtrer. Retourne le `TimingResult`."""
+        from ..trace.timing import TimingAnalyzer
+        etm = self._etm()
+        events = etm.last(n or etm.history.maxlen or 200_000)
+        r = TimingAnalyzer(etm.image, self._symbols()).analyze(events)
+        conv, u = self._time_unit(unit)
+        print(f"{conv(r.total):,.2f} {u} analysés — durées {etm.timing}"
+              + (f" — {r.context_switches} changements de tâche" if r.context_switches else ""))
+        print(f"  {'fonction':<24} {'appels':>7} {'partiels':>8} {'brut':>12} {'%':>6} "
+              f"{'min':>10} {'max':>10} {'moyenne':>10} {'net':>12}")
+        fmt = lambda c: "" if c is None else f"{conv(c):,.2f}"  # noqa: E731
+        for st in r.rows(kind)[:top]:
+            pct = 100 * st.gross / r.total if r.total else 0.0
+            print(f"  {st.name:<24} {st.calls:>7} {st.partial or '':>8} {fmt(st.gross):>12} {pct:>6.1f} "
+                  f"{fmt(st.min):>10} {fmt(st.max if st.calls else None):>10} {fmt(st.avg):>10} "
+                  f"{fmt(st.net):>12}")
+        return r
+
+    def timeline(self, n: int = 30, unit: str = "us", min_duration: float = 0.0):
+        """Trace.Chart.Func en texte : les `n` derniers appels (début, durée, profondeur),
+        en ignorant ceux plus courts que `min_duration` (dans l'unité choisie)."""
+        from ..trace.timing import TimingAnalyzer
+        etm = self._etm()
+        r = TimingAnalyzer(etm.image, self._symbols()).analyze(etm.last(etm.history.maxlen or 200_000))
+        conv, u = self._time_unit(unit)
+        rows = [iv for iv in r.intervals if conv(iv.duration) >= min_duration]
+        rows.sort(key=lambda iv: (iv.start, iv.depth))
+        for iv in rows[-n:]:
+            mark = " (partiel)" if iv.partial_start or iv.partial_end else ""
+            print(f"  {conv(iv.start):>12,.2f}  {conv(iv.duration):>10,.2f} {u}  {'  ' * iv.depth}{iv.name}{mark}")
+        return rows[-n:]
+
+    def _time_unit(self, unit: str):
+        if unit in ("us", "µs"):
+            return (lambda c: c * 1e6 / self.cpu_hz), "µs"
+        if unit == "cycles":
+            return (lambda c: c), "cycles"
+        raise ValueError(f"unité inconnue : {unit!r} (us ou cycles)")
 
     def etm_config(self, **kw) -> None:
         """Programme l'ETM et le TPIU parallèle (port_width=4, trace_id=2, stm32=False...)."""

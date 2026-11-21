@@ -4,7 +4,7 @@
 cycle-accurate, sinon estimés par le modèle), on reconstruit une pile d'appels fantôme et on
 mesure, pour chaque fonction et chaque exception :
 - appels complets (entrée et sortie vues dans la trace) et partiels (coupés par le début ou
-  la fin de la trace, ou par un changement de contexte RTOS) ;
+  la fin de la trace) ;
 - temps **brut** (de l'entrée à la sortie, interruptions déduites) ;
 - temps **net** (le temps passé dans la fonction elle-même : sans les appelés ni les
   interruptions) ; chaque cycle de la trace est attribué à exactement un temps net ;
@@ -15,12 +15,17 @@ Pile d'appels :
   quand l'exécution atteint une adresse de retour de la pile (robuste aux retours inhabituels) ;
 - un branchement non-appel vers le début d'une autre fonction est un appel terminal ;
 - une exception empile un cadre « [nom] » au-dessus du code interrompu ; son retour le dépile ;
-- un retour d'exception qui ne peut pas continuer le code interrompu (changement de tâche
-  d'un RTOS) ferme les cadres de l'ancien contexte comme partiels.
+- un retour d'exception qui ne peut pas continuer le code interrompu est un changement de
+  tâche d'un RTOS : la pile de la tâche sortante est **mise de côté** ; elle est restaurée
+  quand l'exécution reprend à une adresse qui suit sa dernière instruction. Si plusieurs
+  tâches attendent au même endroit (ex. toutes dans `vTaskDelay`), la décision est reportée
+  au premier retour : l'adresse de retour désigne la bonne pile. Le temps
+  passé dans les autres tâches est déduit du brut, comme une interruption : une fonction
+  préemptée reste un seul appel, dessiné en plusieurs morceaux dans le chronogramme.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .etm.image import DIRECT, INDIRECT
 from .etm.qemu_log import Event, ExcEntry, ExcReturn, Step
@@ -57,6 +62,8 @@ class Interval:
     partial_start: bool
     partial_end: bool
     entry: int | None
+    resumed: bool = False        # morceau qui commence à la reprise de la tâche
+    suspended: bool = False      # morceau qui s'arrête à un changement de tâche
 
     @property
     def duration(self) -> int:
@@ -89,6 +96,20 @@ class _Frame:
     irq: int = 0
     handler: int | None = None   # cadres d'exception : adresse du handler
     saved_prev: object = None    # cadres d'exception : dernière instruction du code interrompu
+    piece: int = -1              # début du morceau visible courant (reprises de tâche)
+    resumed: bool = False
+
+    def __post_init__(self):
+        if self.piece < 0:
+            self.piece = self.start
+
+
+@dataclass
+class _Suspended:
+    """Pile d'une tâche sortie par un changement de contexte."""
+    frames: list[_Frame]
+    prev: "_Prev"
+    at: int
 
 
 @dataclass
@@ -98,10 +119,11 @@ class _Prev:
 
 
 class TimingAnalyzer:
-    def __init__(self, image, symbols, max_intervals: int = 200_000):
+    def __init__(self, image, symbols, max_intervals: int = 200_000, max_tasks: int = 64):
         self.image = image
         self.symbols = symbols
         self.max_intervals = max_intervals
+        self.max_tasks = max_tasks
 
     # ------------------------------------------------------------------ API
     def analyze(self, events: list[Event]) -> TimingResult:
@@ -111,6 +133,8 @@ class TimingAnalyzer:
         self.t = 0
         self.prev: _Prev | None = None
         self.switches = 0
+        self.suspended: list[_Suspended] = []
+        self.after_exc = False                  # le pas suit un retour d'exception
         for e in events:
             if isinstance(e, Step):
                 self._step(e)
@@ -120,6 +144,9 @@ class TimingAnalyzer:
                 self._exc_return(e)
         while self.stack:                       # fin de trace : cadres encore ouverts
             self._close(len(self.stack) - 1, complete_end=False)
+        for susp in self.suspended:             # tâches jamais reprises
+            self._finish(susp)
+        self.suspended = []
         if len(self.intervals) > self.max_intervals:
             self.intervals = self.intervals[-self.max_intervals:]
         return TimingResult(self.stats, self.intervals, self.t, self.switches)
@@ -149,32 +176,117 @@ class TimingAnalyzer:
         while len(self.stack) > i:
             fr = self.stack.pop()
             dur = self.t - fr.start
-            gross = dur - fr.irq
             if fr.kind == EXCEPTION:            # l'interruption est déduite des cadres interrompus
                 for below in self.stack:
                     below.irq += dur
-            st = self.stats.get(fr.name)
-            if st is None:
-                st = self.stats[fr.name] = FuncStats(fr.name, fr.kind, entry=fr.entry)
-            complete = complete_end and not fr.partial_start and len(self.stack) >= i
-            st.gross += gross
-            st.net += fr.self_c
-            if complete:
-                st.calls += 1
-                st.gross_complete += gross
-                st.min = gross if st.min is None else min(st.min, gross)
-                st.max = max(st.max, gross)
-            else:
-                st.partial += 1
-            self.intervals.append(Interval(fr.start, self.t, fr.depth, fr.name, fr.kind,
-                                           fr.partial_start, not complete_end, fr.entry))
+            self._account(fr, self.t, complete_end and not fr.partial_start)
+            if self.t > fr.piece or fr.piece == fr.start:
+                self.intervals.append(Interval(fr.piece, self.t, fr.depth, fr.name, fr.kind,
+                                           fr.partial_start and not fr.resumed, not complete_end,
+                                           fr.entry, resumed=fr.resumed))
+
+    def _account(self, fr: _Frame, end: int, complete: bool) -> None:
+        gross = end - fr.start - fr.irq
+        st = self.stats.get(fr.name)
+        if st is None:
+            st = self.stats[fr.name] = FuncStats(fr.name, fr.kind, entry=fr.entry)
+        st.gross += gross
+        st.net += fr.self_c
+        if complete:
+            st.calls += 1
+            st.gross_complete += gross
+            st.min = gross if st.min is None else min(st.min, gross)
+            st.max = max(st.max, gross)
+        else:
+            st.partial += 1
+
+    # ------------------------------------------------------------------ tâches (RTOS)
+    def _suspend(self, base: int, prev: "_Prev") -> None:
+        """Changement de tâche : la pile du contexte sortant est mise de côté."""
+        frames = self.stack[base:]
+        del self.stack[base:]
+        for fr in frames:                       # morceau visible jusqu'au changement
+            self.intervals.append(Interval(fr.piece, self.t, fr.depth, fr.name, fr.kind,
+                                           fr.partial_start and not fr.resumed, False, fr.entry,
+                                           resumed=fr.resumed, suspended=True))
+        self.suspended.append(_Suspended(frames, prev, self.t))
+        if len(self.suspended) > self.max_tasks:
+            self._finish(self.suspended.pop(0))
+
+    def _finish(self, susp: _Suspended) -> None:
+        """Tâche jamais reprise : ses appels se terminent, partiels, à sa suspension."""
+        for fr in reversed(susp.frames):
+            self._account(fr, susp.at, False)
+
+    def _resume(self, addr: int) -> _Prev | None:
+        """Reprend la tâche suspendue dont la dernière instruction mène à `addr`."""
+        found: dict[int, list[_Suspended]] = {}
+        for susp in self.suspended:             # du plus ancien au plus récent
+            p, ins = susp.prev, susp.prev.ins
+            if addr == p.addr + ins.size or (ins.kind == DIRECT and addr == ins.target):
+                found.setdefault(2, []).append(susp)
+            elif ins.kind == INDIRECT and (any(fr.ret == addr for fr in susp.frames)
+                                           or self._name(addr)[1] == susp.frames[-1].func_start):
+                found.setdefault(1, []).append(susp)
+        if not found:
+            return None
+        cands = found[max(found)]
+        # plusieurs tâches arrêtées au même endroit : indiscernables ici, sauf si leurs piles
+        # sont identiques (même suite d'appels) ; sinon on attend le premier retour
+        if len({tuple((fr.name, fr.ret) for fr in c.frames) for c in cands}) > 1:
+            return None
+        self._restore(cands[0], self.t)
+        return cands[0].prev
+
+    def _restore(self, susp: _Suspended, resumed_at: int) -> None:
+        self.suspended.remove(susp)
+        away = resumed_at - susp.at             # temps passé dans les autres tâches
+        for fr in susp.frames:
+            fr.irq += away
+            fr.piece, fr.resumed = self.t, True
+            fr.depth = len(self.stack)
+            self.stack.append(fr)
+
+    def _late_resume(self, base: int, addr: int) -> bool:
+        """Une racine partielle (tâche reprise sans pile identifiée) retourne vers `addr` :
+        la tâche suspendue dont le sommet est la même fonction et retourne là est la bonne
+        (s'il y en a une seule, ou des piles identiques). La racine est fusionnée dans ce
+        sommet, qui se termine ici comme un appel complet."""
+        if len(self.stack) - base != 1:
+            return False
+        root = self.stack[-1]
+        if not root.partial_start or root.kind != FUNCTION:
+            return False
+        cands = [susp for susp in self.suspended
+                 if susp.frames[-1].ret == addr and susp.frames[-1].func_start == root.func_start]
+        if not cands or len({tuple((fr.name, fr.ret) for fr in c.frames) for c in cands}) > 1:
+            return False
+        susp = cands[0]
+        top = susp.frames[-1]
+        self.stack.pop()
+        self.intervals.append(Interval(root.piece, self.t, root.depth, root.name, root.kind,
+                                       False, False, root.entry, resumed=True))
+        self._restore(susp, root.start)
+        top.self_c += root.self_c
+        top.irq += root.irq
+        top.piece = self.t                      # déjà dessiné par le morceau de la racine
+        self._close(len(self.stack) - 1)
+        return True
 
     @staticmethod
-    def _plausible(prev: _Prev, addr: int) -> bool:
-        """`addr` peut-elle suivre `prev` dans le même contexte d'exécution ?"""
+    def _plausible(prev: _Prev, addr: int, ctx: list[_Frame] | None = None) -> bool:
+        """`addr` peut-elle suivre `prev` dans le même contexte d'exécution ? Après un retour
+        d'exception (`ctx` fourni), un retour de fonction interrompu ne peut reprendre qu'à une
+        adresse de retour connue de la pile (si elle en a une)."""
         ins = prev.ins
-        return (addr == prev.addr + ins.size or (ins.kind == DIRECT and addr == ins.target)
-                or ins.kind == INDIRECT)
+        if addr == prev.addr + ins.size or (ins.kind == DIRECT and addr == ins.target):
+            return True
+        if ins.kind != INDIRECT:
+            return False
+        if ctx and ins.ret:
+            rets = [fr.ret for fr in ctx if fr.ret is not None]
+            return not rets or addr in rets
+        return True
 
     # ------------------------------------------------------------------ événements
     def _step(self, e: Step) -> None:
@@ -182,19 +294,23 @@ class TimingAnalyzer:
         ins = self.image.instr(addr)
         base = self._ctx_base()
         prev = self.prev
-        # 1. retour : l'exécution atteint l'adresse de retour d'un cadre du contexte
+        # 1. reprise après exception qui ne continue pas le code interrompu : changement de
+        #    tâche ; la pile sortante est mise de côté, celle de la tâche reprise restaurée
+        after_exc, self.after_exc = self.after_exc, False
+        if prev is not None and not self._plausible(prev, addr, self.stack[base:] if after_exc else None):
+            had = len(self.stack) > base
+            if had:
+                self._suspend(base, prev)
+            prev = self._resume(addr)
+            if had or prev is not None:
+                self.switches += 1
+        # 2. retour : l'exécution atteint l'adresse de retour d'un cadre du contexte
         returned = False
         for i in range(len(self.stack) - 1, base - 1, -1):
             if self.stack[i].ret == addr:
                 self._close(i)
                 returned = True
                 break
-        # 2. reprise après exception qui ne continue pas le code interrompu : changement de tâche
-        if not returned and prev is not None and not self._plausible(prev, addr) \
-                and len(self.stack) > base:
-            self._close(base, complete_end=False)
-            self.switches += 1
-            prev = None
         ctx = self.stack[base:]
         name, fstart = self._name(addr)
         if not returned and prev is not None and prev.ins.call and addr != prev.addr + prev.ins.size:
@@ -215,10 +331,12 @@ class TimingAnalyzer:
                   and addr != prev.addr + prev.ins.size):
                 # (un retour conditionnel non exécuté, ex. `it eq; bx lr`, continue en séquence)
                 # retour vers un appelant absent de la pile (cadre racine commencé avant la
-                # trace) : le cadre se termine, l'appelant devient la nouvelle racine
-                self._close(len(self.stack) - 1)
-                if len(self.stack) <= base or self.stack[-1].func_start != fstart:
-                    self._push(addr, None, partial=True)
+                # trace) : le cadre se termine, l'appelant devient la nouvelle racine — sauf si
+                # c'est une tâche reprise dont la pile, en attente, contient cet appelant
+                if not self._late_resume(base, addr):
+                    self._close(len(self.stack) - 1)
+                    if len(self.stack) <= base or self.stack[-1].func_start != fstart:
+                        self._push(addr, None, partial=True)
             # sinon : saut ou débordement au milieu d'une autre fonction (code partagé, comme
             # dans la bibliothèque soft-float) : on reste dans le cadre courant, sinon son
             # adresse de retour serait perdue
@@ -256,6 +374,7 @@ class TimingAnalyzer:
         saved = self.stack[k].saved_prev
         self._close(k)
         self.prev = saved
+        self.after_exc = True
 
     def _last_exception(self) -> int | None:
         for i in range(len(self.stack) - 1, -1, -1):

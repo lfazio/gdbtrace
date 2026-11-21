@@ -354,3 +354,76 @@ def etm_diagnostics(app) -> str:
     return (f"état={app.session.state} frame={app.current_frame} busy={app.trace.etm_busy} "
             f"runs={sim and sim.runs} path={sim and sim.path} stats={app.trace.etm.stats} "
             f"erreurs={errors[-5:]}")
+
+
+def test_timing_view_with_simulated_etm(etm_app):
+    """Vue Timing : statistiques et chronogramme d'une exécution réelle (ETM simulé)."""
+    from gdbtrace.views.code import SourceView
+    from gdbtrace.views.timing import OTHER, SLOTS, TimingView
+    app = etm_app
+    tv = app.views.show(TimingView)
+    assert tv.result is None
+    app.go()
+    pump(app, lambda: False, timeout=0.4)
+    app.halt()
+    assert pump(app, lambda: app.session.state == "stopped")
+    assert pump(app, lambda: app.trace.etm.stats["instructions"] > 10_000 and not app.trace.etm_busy), \
+        etm_diagnostics(app)
+    assert pump(app, lambda: tv.result is not None and not tv._busy, timeout=30)
+    r = tv.result
+    assert sum(s.net for s in r.stats.values()) == r.total > 0
+    assert "estimé" in tv.info.cget("text")             # ETM simulé : cycles du modèle
+    # tableau : une ligne par fonction / exception, trié par temps brut décroissant
+    rows = tv.table.get_children()
+    assert {"delay", "[SysTick]", "SysTick_Handler"} <= set(rows)
+    assert tv.table.set("[SysTick]", "kind") == "exception"
+    gross = [r.stats[i].gross for i in rows]
+    assert gross == sorted(gross, reverse=True)
+    tv._sort("calls")                                    # tri par nombre d'appels
+    calls = [r.stats[i].calls for i in tv.table.get_children()]
+    assert calls == sorted(calls, reverse=True)
+    # unités : µs à 25 MHz, puis cycles
+    d = r.stats["delay"]
+    assert tv.table.set("delay", "max") == tv.fmt(d.max)
+    tv.unit_var.set("cycles")
+    tv._render()
+    assert tv.table.set("delay", "max") == f"{d.max:,}".replace(",", " ")
+    # couleurs : par identité, slots dans l'ordre, au plus 7, le reste en « Autres »
+    assert 0 < len(tv.color_of) <= 7 and set(tv.color_of.values()) <= set(SLOTS)
+    ranked = sorted(r.stats.values(), key=lambda s: (-s.gross, s.name))
+    assert [tv.color(s.name) for s in ranked[:7]] == SLOTS[:7]       # premier résultat : ordre fixe
+    assert len(ranked) <= 7 or tv.color(ranked[-1].name) == OTHER
+    # chronogramme : rectangles visibles, zoom, survol, clic → source
+    tv.tabs.select(1)
+    pump(app, lambda: False, timeout=0.3)
+    ch = tv.chart
+    n_all = len(ch.items)
+    assert n_all > 0
+    ch.reset_zoom()
+    # zoom sur un appel de update_sensor : il doit apparaître avec son nom
+    iv = next(i for i in r.intervals if i.name == "update_sensor" and not i.partial_start)
+    ch.v0, ch.v1 = iv.start - 10, iv.end + 10
+    ch.draw()
+    rid = next(k for k, idx in ch.items.items() if r.intervals[idx] is iv)
+    x0, y0, x1, y1 = ch.canvas.coords(rid)
+    labels = [ch.canvas.itemcget(t, "text") for t in ch.canvas.find_withtag("label")]
+    assert "update_sensor" in labels
+    assert ch.interval_at((x0 + x1) / 2, (y0 + y1) / 2) is iv
+    ch._motion(type("E", (), {"x": (x0 + x1) / 2, "y": (y0 + y1) / 2})())
+    tip = [ch.canvas.itemcget(t, "text") for t in ch.canvas.find_withtag("tip")
+           if ch.canvas.type(t) == "text"]
+    assert tip[0].endswith("cycles") and "update_sensor" in tip[1]   # la valeur d'abord
+    before = ch.v1 - ch.v0
+    ch.zoom((x0 + x1) / 2, 2.0)
+    assert ch.v1 - ch.v0 == pytest.approx(before / 2)
+    ch.v0, ch.v1 = iv.start - 10, iv.end + 10
+    ch.draw()
+    rid = next(k for k, idx in ch.items.items() if r.intervals[idx] is iv)
+    x0, y0, x1, y1 = ch.canvas.coords(rid)
+    ch._press(type("E", (), {"x": (x0 + x1) / 2, "y": (y0 + y1) / 2})())     # clic sans glisser
+    ch._release(type("E", (), {"x": (x0 + x1) / 2, "y": (y0 + y1) / 2})())
+    src = app.views.find(SourceView)
+    assert src.current_file.endswith("main.c")
+    line = app.symbols.line_at(iv.entry).line
+    pump(app, lambda: False, timeout=0.2)
+    assert src.text.bbox(f"{line}.0") is not None        # ligne d'entrée visible

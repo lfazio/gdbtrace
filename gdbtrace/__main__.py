@@ -53,6 +53,8 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--trace-file", metavar="FICHIER", help="rejouer une capture TPIU formatée")
     e.add_argument("--etm-config", action="store_true",
                    help="programmer l'ETM et le TPIU parallèle à la connexion")
+    e.add_argument("--etm-cycle-accurate", action="store_true",
+                   help="trace ETM cycle-accurate (durées mesurées pour l'analyse temporelle, ~8× plus de trace)")
     e.add_argument("--etm-width", type=int, default=4, choices=(1, 2, 4), help="largeur du port de trace")
     e.add_argument("--stm32", action="store_true", help="activer les broches de trace (DBGMCU_CR des STM32)")
     p.add_argument("--machine", default="mps2-an385", help="machine QEMU")
@@ -81,7 +83,8 @@ def main(argv: list[str] | None = None) -> int:
             trace.start_file(args.swo_file, args.swo_formatter)
         if args.etm_config:
             from .trace.etm.config import EtmConfig
-            for line in trace.configure_etm(EtmConfig(port_width=args.etm_width, stm32=args.stm32), session):
+            for line in trace.configure_etm(EtmConfig(port_width=args.etm_width, stm32=args.stm32,
+                                                           cycle_accurate=args.etm_cycle_accurate), session):
                 print(line)
         if args.trace:                       # port parallèle : formateur TPIU, ETM + ITM
             host, _, port = args.trace.rpartition(":")
@@ -101,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
         trace = TraceManager(on_error=print)
         from .core.symbols import SymbolTable
         symbols = SymbolTable(os.path.abspath(args.elf))
-        msg = trace.setup_etm(os.path.abspath(args.elf), symbols)
+        msg = trace.setup_etm(os.path.abspath(args.elf), symbols, cycle_accurate=args.etm_cycle_accurate)
         if args.etm_sim:
             if msg:
                 print(msg)
@@ -114,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
                 api = ScriptAPI(s, live, device)
                 api.trace = trace
                 api.symbols = symbols
+                api.cpu_hz = args.cpu_hz
                 api.run_script(args.script)
         finally:
             trace.close()
@@ -125,6 +129,7 @@ def main(argv: list[str] | None = None) -> int:
     from .gui.app import App
     app = App(layout_file=args.layout)
     app.cpu_hz = args.cpu_hz
+    app.etm_cycle_accurate = args.etm_cycle_accurate
     if args.svd:
         app.safe(app.load_svd, args.svd)
 

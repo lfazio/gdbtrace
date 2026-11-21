@@ -29,8 +29,9 @@ def view_classes() -> dict[str, type[View]]:
     from ..views.itm import ItmView
     from ..views.profile import ProfileView
     from ..views.rtos import RtosView
+    from ..views.timing import TimingView
     from ..views.trace import TraceView
-    classes = [SourceView, DisasmView, TraceView, RegistersView, WatchView, PeripheralsView,
+    classes = [SourceView, DisasmView, TraceView, TimingView, RegistersView, WatchView, PeripheralsView,
                RtosView, StackView, BreakpointsView, MemoryView, ConsoleView, ItmView, ProfileView]
     return {c.kind: c for c in classes}
 
@@ -39,6 +40,7 @@ DEFAULT_LAYOUT = [
     {"kind": "source", "where": "code"},
     {"kind": "disasm", "where": "code"},
     {"kind": "trace", "where": "code"},
+    {"kind": "timing", "where": "code"},
     {"kind": "registers", "where": "data"},
     {"kind": "watch", "where": "data"},
     {"kind": "peripherals", "where": "data"},
@@ -81,6 +83,7 @@ class App:
         self.trace = TraceManager(post=self.pump.post, on_error=self.report_error)
         self.cpu_hz = 25_000_000
         self.coverage_in_source = False        # couverture ETM affichée dans la vue Source
+        self.etm_cycle_accurate = False        # ETM matériel en mode cycle-accurate (ETMCR bit 12)
         # description des périphériques (CMSIS-SVD)
         self.device: svd.Device | None = None
         self.svd_path: str | None = None
@@ -171,6 +174,7 @@ class App:
         """Associe une session déjà connectée (ou en cours) à la GUI."""
         self.session = session
         self.api = ScriptAPI(session)
+        self.api.cpu_hz = self.cpu_hz
         self.console = Console(self.api, lambda s: self.pump.post(self.write_console, s, ""))
         session.on_event(lambda kind, data: self.pump.post(self._on_event, kind, data))
         if session.elf and os.path.exists(session.elf):
@@ -183,7 +187,7 @@ class App:
         self.api.symbols = self.symbols
         self._rtos_layout = None
         if session.elf and self.symbols is not None:
-            self.trace.setup_etm(session.elf, self.symbols)
+            self.trace.setup_etm(session.elf, self.symbols, cycle_accurate=self.etm_cycle_accurate)
         if session.target is not None and session.state != "disconnected":
             self._setup_live(session.target)
         if session.state == "stopped":

@@ -45,6 +45,8 @@ class EtmTrace:
         self.image = image
         self.symbols = symbols
         self.cycle_accurate = cycle_accurate
+        #: trace produite par l'ETM simulé : ses cycles viennent du modèle, pas du matériel
+        self.simulated = False
         self.packets = Etm3Decoder(cycle_accurate=cycle_accurate)
         self.flow = FlowDecoder(image, cycle_accurate)
         self.history: deque[Event] = deque(maxlen=history)
@@ -93,6 +95,8 @@ class EtmTrace:
     @property
     def timing(self) -> str:
         """Origine des durées : mesurées (cycle-accurate) ou estimées (modèle)."""
+        if self.simulated:
+            return "estimé (modèle de cycles, ETM simulé)"
         return self.flow.timing
 
     # ------------------------------------------------------------------ couverture

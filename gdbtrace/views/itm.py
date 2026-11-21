@@ -137,6 +137,8 @@ class ItmView(View):
         if not swo:
             return
         self.app.cpu_hz = cpu
+        if getattr(self.app, "api", None) is not None:
+            self.app.api.cpu_hz = cpu
         port = int(self.addr_var.get().rpartition(":")[2] or 3443)
         cfg = SwoConfig(cpu_hz=cpu, swo_hz=swo, ports=0xFFFFFFFF)
         log = self.app.safe(self.app.trace.configure_target, cfg, self.session,

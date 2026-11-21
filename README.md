@@ -14,6 +14,7 @@ Interface en **tkinter**.
 | 4. RTOS | Vue FreeRTOS (tâches, piles, CPU, queues/mutex/sémaphores), contexte et pile d'appels de chaque tâche, en direct | ✅ |
 | 5. Trace SWO/ITM | printf ITM, trace des exceptions, profilage statistique (fonctions, lignes, tâches) par SWO ou lecture du PC en marche | ✅ |
 | 6. Trace ETM | Trace d'instructions ETMv3 (Cortex-M3/M4) : listing avant l'arrêt, flot d'appels, couverture ; ETM simulé sous QEMU ; décodage validé contre OpenCSD | ✅ |
+| 7. Analyse temporelle | Durées par fonction et par exception (appels, brut, net, min/max/moy), chronogramme des appels ; ETM cycle-accurate (validé contre OpenCSD) ou modèle de cycles | ✅ |
 
 ## Installation
 
@@ -176,6 +177,47 @@ Ce test tourne dans la suite (`tools/build_opencsd.sh` construit OpenCSD dans `.
 reste à valider sur une vraie sonde de trace. Les ETMv4 (Cortex-M7, M33, M55) ne sont pas
 pris en charge.
 
+### Analyse temporelle (vue Timing)
+
+L'équivalent de Trace.STATistic.Func et Trace.Chart.Func, calculé depuis la trace ETM :
+- **Fonctions** : pour chaque fonction et chaque exception (`[SysTick]`, `[PendSV]`…), le
+  nombre d'appels complets et partiels, le temps **brut** (de l'entrée à la sortie,
+  interruptions déduites), le **net** (sans les appelés ni les interruptions), min / max /
+  moyenne du brut, % du temps. Tableau triable, double-clic : la source ;
+- **Chronogramme** : temps en x, profondeur d'appel en y, un rectangle par appel. Molette :
+  zoom, glisser : déplacer, survol : durée et nom, clic : source. Les 7 entités au plus gros
+  temps brut ont une couleur fixe (elle les suit d'une analyse à l'autre), les autres sont en
+  gris « Autres ». Pointillés : appel coupé par le début ou la fin de la trace.
+
+Unités : cycles ou µs (fréquence du cœur `--cpu-hz`, 25 MHz par défaut).
+
+**D'où viennent les durées** (toujours indiqué en haut de la vue) :
+
+| Source | Durées |
+|---|---|
+| ETM en mode *cycle-accurate* (`--etm-cycle-accurate`, ETMCR bit 12) | **mesurées** : chaque instruction porte ses cycles. Environ 8 fois plus de trace. |
+| ETM simulé sous QEMU, ou ETM matériel sans cycle-accurate | **estimées** par un modèle de cycles Cortex-M3/M4 : ALU 1, LDR 2, STR 1, LDM/STM/PUSH/POP 1+N, branchement pris 1+P (P = 2), TBB/TBH 2+P, SDIV/UDIV 7, entrée d'exception 12, sortie 10, enchaînement 6. Ni attentes mémoire ni flash : un ordre de grandeur, pas une mesure. |
+
+Le décodage cycle-accurate (formats de P-header, paquets de cycles, I-sync avec cycles) est
+validé contre OpenCSD, cycle par cycle, sur les mêmes chemins QEMU que la trace ETM.
+
+**Pile d'appels reconstruite.** Un appel (BL/BLX) empile son adresse de retour ; le cadre se
+ferme quand l'exécution l'atteint. Branchement vers le début d'une fonction : appel terminal.
+Une exception s'empile au-dessus du code interrompu, et sa durée est déduite des fonctions
+interrompues. Identités vérifiées par les tests : Σ net = durée totale de la trace,
+`delay()` a un brut constant une fois les interruptions déduites, brut = net + brut des
+appelés.
+
+**Sous RTOS.** Un retour d'exception qui ne reprend pas le code interrompu est un changement
+de tâche : la pile de la tâche sortante est mise de côté. Elle est restaurée quand
+l'exécution reprend après sa dernière instruction, et le temps passé dans les autres tâches
+est déduit du brut, comme une interruption. Une fonction préemptée reste donc un seul appel,
+dessiné en plusieurs morceaux. Limite : la trace d'instructions ne dit pas *quelle* tâche
+reprend. Si plusieurs tâches sont arrêtées au même endroit avec des piles différentes, la
+décision est reportée au premier retour. Si elle reste ambiguë, les morceaux sont comptés
+comme appels partiels plutôt que d'être attribués au hasard (le net reste exact). Tracer
+les changements de tâche par ITM lèverait cette limite (à faire).
+
 ### Console
 
 | Saisie | Effet |
@@ -191,6 +233,7 @@ pris en charge.
 | `t32.swo_config(cpu_hz=180_000_000, swo_hz=2_000_000)` | programme ITM/DWT/TPIU (+ OpenOCD) |
 | `t32.trace_list(30)`, `t32.calls(40)`, `t32.coverage(20)` | Trace.List, flot d'appels, couverture (trace ETM) |
 | `t32.etm_config(port_width=4, stm32=True)` | programme l'ETM et le TPIU parallèle |
+| `t32.timing(20, unit="us")`, `t32.timeline(30)` | durées par fonction / derniers appels (trace ETM) |
 | `!info breakpoints` | Commande CLI gdb brute |
 | `mon reset halt` | Commande `monitor` vers OpenOCD |
 
@@ -222,10 +265,12 @@ gdbtrace/
   trace/etm/qemu_log.py chemin réel depuis le journal QEMU
   trace/etm/trace.py    historique, couverture, flot d'appels
   trace/etm/config.py   programmation ETM + TPIU parallèle
+  trace/etm/cycles.py   modèle de cycles Cortex-M3/M4 (durées estimées)
+  trace/timing.py       analyse temporelle : pile d'appels, durées, chronogramme
   core/scripting.py     API `t32` + console Python
   gui/                  fenêtre tkinter, vues détachables, pompe d'événements thread-safe
   views/                Source, Désassemblage, Registres, Mémoire, Watch, Périphériques, RTOS,
-                        Pile, Breakpoints, Console, ITM, Profil, Trace
+                        Pile, Breakpoints, Console, ITM, Profil, Trace, Timing
 examples/
   firmware/             firmware de démo Cortex-M3 (SysTick 1 kHz, timer CMSDK)
   freertos/             firmware de démo FreeRTOS V11.3.3 (noyau MIT inclus) : 7 tâches,
