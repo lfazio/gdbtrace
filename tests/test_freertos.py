@@ -231,8 +231,14 @@ def test_live_snapshots_while_running(rtos):
         assert good[-1].tick > good[0].tick
         idle = [g.task("IDLE").runtime for g in good]
         assert idle[-1] > idle[0]                        # compteur de temps d'exécution
-        # % CPU entre deux snapshots : IDLE domine
+        # % CPU entre deux snapshots : IDLE domine. En marche, un snapshot peut rester
+        # incohérent après ses essais (listes modifiées pendant la lecture, et le poller lit
+        # en même temps) : on recommence ; la vue RTOS, elle, garde le précédent
+        deadline = time.monotonic() + 3
         delta = fr.snapshot(L, lm.read, prev=good[-1], attempts=4)
+        while delta.incoherent and time.monotonic() < deadline:
+            delta = fr.snapshot(L, lm.read, prev=good[-1], attempts=4)
+        assert not delta.incoherent, delta.incoherent
         assert delta.task("IDLE").cpu > 50
     finally:
         poller.stop()

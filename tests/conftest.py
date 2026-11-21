@@ -77,15 +77,21 @@ def rtos_session(rtos_elf):
 @pytest.fixture(scope="session")
 def qemu_paths(tmp_path_factory, elf, rtos_elf):
     """Chemins d'exécution réels (journal QEMU instruction par instruction) des deux
-    firmwares de démo, enregistrés une fois par session : {nom: (CodeImage, événements)}."""
+    firmwares de démo, enregistrés une fois par session : {nom: (CodeImage, événements)}.
+
+    Longueur fixée en instructions, pas en secondes : les seuils des tests (appels de
+    `delay`, de `prvTaskCheckFreeStackSpace`…) ne dépendent plus de la charge de la machine.
+    ~44 appels de `delay` en bare-metal, ~16 de `prvTaskCheckFreeStackSpace` sous FreeRTOS."""
     if not shutil.which("qemu-system-arm"):
         pytest.skip("QEMU absent")
     pytest.importorskip("capstone")
     from gdbtrace.trace.etm import qemu_log as ql
     from gdbtrace.trace.etm.image import CodeImage
     out = {}
-    for name, path, secs in (("bare", elf, 0.4), ("rtos", rtos_elf, 1.0)):
+    for name, path, count in (("bare", elf, 250_000), ("rtos", rtos_elf, 700_000)):
         log = str(tmp_path_factory.mktemp("qemu") / f"{name}.log")
-        ql.record(path, secs, log)
-        out[name] = (CodeImage(path), ql.parse_file(log))
+        ql.record(path, 60, log, instructions=count)
+        events = ql.head(ql.parse_file(log), count)
+        assert len(ql.steps(events)) == count, f"{name} : journal QEMU trop court"
+        out[name] = (CodeImage(path), events)
     return out

@@ -106,10 +106,16 @@ LOG_ITEMS = "exec,nochain,int"
 
 
 def record(elf: str, seconds: float, path: str, machine: str = "mps2-an385",
-           qemu: str = "qemu-system-arm") -> None:
+           qemu: str = "qemu-system-arm", instructions: int | None = None) -> None:
     """Exécute le firmware sous QEMU pendant `seconds` en journalisant chaque instruction.
     Le temps n'est compté qu'une fois le journal réellement alimenté : sur une machine
-    chargée, QEMU peut mettre du temps à démarrer."""
+    chargée, QEMU peut mettre du temps à démarrer.
+
+    Avec `instructions`, l'enregistrement s'arrête dès que le journal en compte au moins
+    autant (`seconds` n'est plus qu'un plafond). Pour une durée donnée, une machine chargée
+    exécute deux à trois fois moins d'instructions, et le firmware avance d'autant moins
+    (ticks, appels) : un nombre d'instructions donne des chemins comparables d'une fois sur
+    l'autre ; `head()` les ramène ensuite exactement à ce nombre."""
     import os
     import subprocess
     import time
@@ -124,14 +130,48 @@ def record(elf: str, seconds: float, path: str, machine: str = "mps2-an385",
             if os.path.exists(path) and os.path.getsize(path) > 0:
                 break
             time.sleep(0.02)
-        try:
-            proc.wait(timeout=seconds)
-        except subprocess.TimeoutExpired:
-            pass
+        if instructions is None:
+            try:
+                proc.wait(timeout=seconds)
+            except subprocess.TimeoutExpired:
+                pass
+        elif os.path.exists(path):
+            # +2 % : quelques lignes « Trace » sont des instructions non exécutées (préemptées)
+            _wait_instructions(proc, path, instructions + instructions // 50,
+                               time.monotonic() + seconds)
     finally:
         if proc.poll() is None:
             proc.terminate()
             proc.wait(timeout=5)
+
+
+def _wait_instructions(proc, path: str, count: int, deadline: float) -> None:
+    """Attend que le journal compte `count` lignes « Trace » (ou la fin de QEMU, ou l'échéance)."""
+    import time
+    marker = b"\nTrace "
+    seen, tail = 0, b""
+    with open(path, "rb") as fh:
+        while seen < count and time.monotonic() < deadline and proc.poll() is None:
+            chunk = fh.read(1 << 20)
+            if not chunk:
+                time.sleep(0.02)
+                continue
+            data = tail + chunk
+            seen += data.count(marker)
+            tail = data[-(len(marker) - 1):]     # trop court pour contenir un marqueur déjà compté
+
+
+def head(events: Iterable[Event], instructions: int) -> list[Event]:
+    """Les événements jusqu'à la `instructions`-ième instruction exécutée, incluse."""
+    out: list[Event] = []
+    n = 0
+    for e in events:
+        if isinstance(e, Step):
+            if n == instructions:
+                break
+            n += 1
+        out.append(e)
+    return out
 
 
 def parse_file(path: str) -> list[Event]:
