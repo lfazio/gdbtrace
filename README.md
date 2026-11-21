@@ -11,7 +11,7 @@ Interface en **tkinter**.
 | 1. Run-control | Go/Break/Step/Over/Out/Asm/Reset, breakpoints (logiciels, matériels, watchpoints), vues Source, Désassemblage, Registres, Mémoire, Watch, Pile, Breakpoints | ✅ |
 | 2. Scripting | Console Python avec l'objet `t32`, scripts `--script`, mode `--batch` | ✅ |
 | 3. Vues en direct | Mémoire, Watch et périphériques rafraîchis cible en marche (OpenOCD TCL / QEMU QMP), vue Périphériques CMSIS-SVD | ✅ |
-| 4. RTOS | Threads, vues FreeRTOS (tâches, piles) | à faire |
+| 4. RTOS | Vue FreeRTOS (tâches, piles, CPU, queues/mutex/sémaphores), contexte et pile d'appels de chaque tâche, en direct | ✅ |
 | 5. Trace SWO/ITM | printf ITM, profilage statistique par échantillonnage du PC (DWT) | à faire |
 | 6. Trace ETM | Capture ORBTrace, historique d'exécution, couverture de code | à faire |
 
@@ -31,6 +31,8 @@ make -C examples/firmware                                        # firmware de d
 .venv/bin/python -m gdbtrace fw.elf --remote 127.0.0.1:2331      # J-Link GDB Server, pyOCD...
 .venv/bin/python -m gdbtrace fw.elf --remote 127.0.0.1:3333 --tcl 127.0.0.1:6666  # OpenOCD lancé à part
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf --svd examples/svd/mps2-an385.svd  # périphériques
+make -C examples/freertos && .venv/bin/python -m gdbtrace examples/freertos/freertos.elf  # FreeRTOS
+.venv/bin/python -m gdbtrace fw.elf --openocd configs/nucleo-f429zi.cfg --rtos  # tâches = threads gdb
 ```
 
 Raccourcis : `F5` Go, `F8` Break, `F11` Step, `F10` Over, `Shift+F11` Out, `F7` Step assembleur.
@@ -72,6 +74,34 @@ Limite connue de QEMU : son gdbstub **ignore les écritures du débogueur dans l
 (seules la RAM et la ROM sont écrites). gdbtrace le détecte à la relecture et l'affiche. Sur une
 vraie sonde, les écritures fonctionnent.
 
+### Vue RTOS (FreeRTOS)
+
+La vue s'active quand FreeRTOS est lié dans l'ELF. Elle lit les structures du noyau
+directement en mémoire : il n'y a rien à ajouter au firmware, et elle fonctionne avec QEMU,
+OpenOCD ou J-Link. La disposition des structures (offsets de `TCB_t`, `List_t`, `Queue_t`) est
+lue une fois dans le DWARF via gdb, ce qui respecte la configuration réelle du noyau.
+
+- **Tâches** : état (Running, Ready, Blocked, Suspended, Deleted), priorité (et priorité de
+  base en cas d'héritage par mutex), pile utilisée / taille, taux maximal d'utilisation et
+  octets jamais utilisés (même calcul que `uxTaskGetStackHighWaterMark` ; ligne rouge au-delà de
+  90 %), % CPU (`ulRunTimeCounter`), objet attendu (queue, sémaphore, mutex ou délai). La tâche
+  courante est en gras et rappelée dans la barre d'état.
+- **Objets noyau** (registre des queues, `configQUEUE_REGISTRY_SIZE` > 0) : queues, mutex
+  (détenteur), sémaphores, tâches en attente d'envoi ou de réception.
+- **Contexte d'une tâche** (double-clic, cible arrêtée) : registres relus sur la pile de la
+  tâche et pile d'appels. gdb ne connaît qu'un seul fil d'exécution : gdbtrace y charge
+  temporairement les registres de la tâche le temps de dérouler sa pile, puis **restaure
+  toujours** ceux du cœur. Avec `--openocd … --rtos`, OpenOCD expose les tâches comme threads
+  gdb et ce sont eux qui sont utilisés (chemin non testé sans sonde).
+- **En marche** : la vue est rafraîchie par le canal live. Une lecture faite pendant un
+  changement de contexte peut être incohérente ; elle est détectée (cycles, compteurs,
+  `pvOwner`), relancée jusqu'à 4 fois, sinon ignorée.
+
+Configuration conseillée du noyau : `configUSE_TRACE_FACILITY 1`,
+`configRECORD_STACK_HIGH_ADDRESS 1` (taille des piles), `configCHECK_FOR_STACK_OVERFLOW 2`
+(remplissage 0xA5), `configQUEUE_REGISTRY_SIZE` > 0, `configGENERATE_RUN_TIME_STATS 1`. Ports
+gérés pour le contexte des tâches : ARM_CM3 (testé) et ARM_CM4F.
+
 ### Console
 
 | Saisie | Effet |
@@ -80,6 +110,8 @@ vraie sonde, les écritures fonctionnent.
 | `t32.d("sensors", 32)`, `t32.r()`, `t32.bt()` | Data.dump, Register.view, pile |
 | `t32.mem(addr, n)`, `t32.live_read(addr, n)` | lecture mémoire, y compris cible en marche |
 | `t32.periph("TIMER0")` | PER.view : registres et champs décodés, retourne `{registre: valeur}` |
+| `t32.tasks()`, `t32.queues()` | TASK.List / objets du noyau FreeRTOS (aussi cible en marche) |
+| `t32.task("consumer")` | contexte et pile d'appels d'une tâche |
 | `!info breakpoints` | Commande CLI gdb brute |
 | `mon reset halt` | Commande `monitor` vers OpenOCD |
 
@@ -96,14 +128,19 @@ gdbtrace/
   core/live.py          canal mémoire latéral (OpenOCD TCL, QEMU QMP) + LivePoller
   core/live_vars.py     disposition et décodage des variables sans gdb (Watch en marche)
   core/svd.py           parseur CMSIS-SVD (derivedFrom, dim, clusters, champs, énumérations)
+  core/rtos/freertos.py awareness FreeRTOS : disposition via DWARF, parcours des listes,
+                        piles, objets du noyau, contexte et pile d'appels des tâches
   core/scripting.py     API `t32` + console Python
   gui/                  fenêtre tkinter, vues détachables, pompe d'événements thread-safe
   views/                Source, Désassemblage, Registres, Mémoire, Watch, Périphériques, Pile,
                         Breakpoints, Console
 examples/
   firmware/             firmware de démo Cortex-M3 (SysTick 1 kHz, timer CMSDK)
+  freertos/             firmware de démo FreeRTOS V11.3.3 (noyau MIT inclus) : 7 tâches,
+                        queue, mutex, sémaphore, timer logiciel
   svd/mps2-an385.svd    SVD de démo (SysTick, SCB, TIMER0/1, UART0)
   scripts/demo.py       exemple de script
+  scripts/rtos.py       exemple de script FreeRTOS
 ```
 
 tkinter n'est pas thread-safe. Le lecteur gdb, la console et les actions longues tournent donc dans
@@ -116,4 +153,5 @@ xvfb-run -a .venv/bin/python -m pytest
 ```
 
 Les tests lancent QEMU (`mps2-an385`) avec le firmware de démo. Sans `DISPLAY`, les tests GUI sont ignorés.
-Le client TCL OpenOCD est testé contre un faux serveur TCL ; il reste à valider sur une sonde réelle.
+Le client TCL OpenOCD est testé contre un faux serveur TCL ; il reste à valider sur une sonde réelle,
+comme le support RTOS d'OpenOCD (`--rtos`).
