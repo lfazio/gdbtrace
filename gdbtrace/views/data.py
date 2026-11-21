@@ -122,6 +122,8 @@ class WatchView(View):
         self.tree.bind("<<TreeviewOpen>>", self._expand)
         self.tree.bind("<Double-1>", self._edit)
         self.exprs: list[str] = []          # expressions racines (persistées)
+        self.roots: dict[str, str] = {}     # expression racine -> item de l'arbre
+        self.tree.tag_configure("error", foreground="#b00020")
         self.varobj: dict[str, str] = {}    # item de l'arbre -> nom du varobj gdb
         self.item_of: dict[str, str] = {}   # varobj -> item
         self.numchild: dict[str, int] = {}  # item -> nombre d'enfants
@@ -131,28 +133,60 @@ class WatchView(View):
         expr = expr.strip()
         if not expr:
             return
+        self.expr.set("")
+        if expr in self.exprs and expr in self.roots and self.tree.exists(self.roots[expr]):
+            self.tree.selection_set(self.roots[expr])
+            self.tree.see(self.roots[expr])
+            return
         if expr not in self.exprs:
             self.exprs.append(expr)
-        self.expr.set("")
         if self.stopped:
-            self._create_root(expr)
+            self._ensure_roots()
             self.app.safe(self._compute_layouts)  # suivie en direct dès le prochain Go
+        else:
+            # cible en marche (ou pas encore connectée) : gdb ne peut pas évaluer maintenant
+            self._set_root_row(expr, "<évaluée au prochain arrêt>", "", ("disabled",))
 
-    def _create_root(self, expr: str) -> None:
-        try:
-            v = self.session.var_create(expr)
-        except Exception as exc:  # noqa: BLE001
-            self.tree.insert("", "end", text=expr, values=(f"<{exc}>", ""))
-            return
-        self._insert("", expr, v)
+    def _set_root_row(self, expr: str, value: str, typ: str, tags: tuple) -> str:
+        item = self.roots.get(expr)
+        if item and self.tree.exists(item):
+            self.tree.item(item, values=(value, typ), tags=tags)
+        else:
+            item = self.tree.insert("", self.exprs.index(expr), text=expr, values=(value, typ), tags=tags)
+            self.roots[expr] = item
+        return item
 
-    def _insert(self, parent: str, label: str, v: dict) -> None:
-        item = self.tree.insert(parent, "end", text=label, values=(v.get("value", ""), v.get("type", "")))
+    def _ensure_roots(self) -> None:
+        """Cible arrêtée : crée le varobj de chaque expression qui n'en a pas encore (ajoutée
+        en marche, ou invalide jusqu'ici : locale hors de portée, symbole absent...)."""
+        for expr in self.exprs:
+            item = self.roots.get(expr)
+            if item and item in self.varobj and self.tree.exists(item):
+                continue
+            try:
+                v = self.session.var_create(expr)
+            except Exception as exc:  # noqa: BLE001 - message de gdb affiché dans la ligne
+                msg = str(exc)
+                if "unable to create variable object" in msg:
+                    msg = "inconnue ici (locale hors de portée ?) — réévaluée à chaque arrêt"
+                else:
+                    msg = msg.rsplit(": ", 1)[-1]
+                self._set_root_row(expr, f"<{msg}>", "", ("error",))
+                continue
+            index = self.exprs.index(expr)
+            if item and self.tree.exists(item):
+                index = self.tree.index(item)
+                self.tree.delete(item)
+            self.roots[expr] = self._insert("", expr, v, index)
+
+    def _insert(self, parent: str, label: str, v: dict, index: int | str = "end") -> str:
+        item = self.tree.insert(parent, index, text=label, values=(v.get("value", ""), v.get("type", "")))
         self.varobj[item] = v["name"]
         self.item_of[v["name"]] = item
         self.numchild[item] = int(v.get("numchild", 0))
         if self.numchild[item] > 0:
             self.tree.insert(item, "end", iid=f"{item}{self.PLACEHOLDER}", text="…")
+        return item
 
     def _expand(self, _e) -> None:
         item = self.tree.focus()
@@ -169,12 +203,6 @@ class WatchView(View):
     def refresh(self) -> None:
         if not self.stopped:
             return
-        if not self.varobj and self.exprs:
-            self.tree.delete(*self.tree.get_children())
-            for e in self.exprs:
-                self._create_root(e)
-            self.app.safe(self._compute_layouts)
-            return
         for item in self.varobj:
             if self.tree.exists(item):
                 self.tree.item(item, tags=())
@@ -183,6 +211,7 @@ class WatchView(View):
             if item and self.tree.exists(item) and ch.get("in_scope", "true") == "true":
                 self.tree.set(item, "value", ch.get("value", ""))
                 self.tree.item(item, tags=("changed",))
+        self._ensure_roots()
         self.app.safe(self._compute_layouts)
 
     # ------------------------------------------------------------------ live
@@ -232,6 +261,7 @@ class WatchView(View):
         if self.app.poller:
             self.app.poller.unsubscribe(self)
         self.tree.delete(*self.tree.get_children())
+        self.roots.clear()
         self.varobj.clear()
         self.item_of.clear()
         self.numchild.clear()
@@ -255,6 +285,7 @@ class WatchView(View):
         label = self.tree.item(item, "text")
         if label in self.exprs:
             self.exprs.remove(label)
+        self.roots.pop(label, None)
         name = self.varobj.get(item)
         for it in self._subtree(item):  # gdb supprime aussi les varobjs enfants
             vo = self.varobj.pop(it, None)

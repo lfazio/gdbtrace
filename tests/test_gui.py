@@ -427,3 +427,23 @@ def test_timing_view_with_simulated_etm(etm_app):
     line = app.symbols.line_at(iv.entry).line
     pump(app, lambda: False, timeout=0.2)
     assert src.text.bbox(f"{line}.0") is not None        # ligne d'entrée visible
+
+
+def test_watch_added_while_running_or_out_of_scope(app):
+    """Watch : une expression ajoutée cible en marche s'affiche tout de suite et est évaluée à
+    l'arrêt suivant ; une locale hors de portée est réessayée à chaque arrêt."""
+    from gdbtrace.views.data import WatchView
+    w = app.views.show(WatchView)
+    rows = lambda: {w.tree.item(i, "text"): w.tree.set(i, "value") for i in w.tree.get_children()}  # noqa: E731
+    w.add("n")                                   # au reset : aucune locale `n`
+    assert "hors de portée" in rows()["n"]
+    app.go()
+    assert pump(app, lambda: app.session.state == "running")
+    w.add("counter")
+    assert rows()["counter"] == "<évaluée au prochain arrêt>"
+    app.halt()
+    assert pump(app, lambda: app.session.state == "stopped" and rows()["counter"].isdigit())
+    assert list(rows()) == ["n", "counter"]                       # ordre d'ajout conservé
+    run_to(app, "fib")
+    assert pump(app, lambda: rows()["n"].isdigit())               # locale de fib, enfin visible
+    assert int(rows()["n"]) == int(app.session.evaluate("n"))
