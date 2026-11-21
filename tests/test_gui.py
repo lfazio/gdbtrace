@@ -326,18 +326,11 @@ def test_trace_view_with_simulated_etm(etm_app):
     assert int(last[0], 16) + ins.size == app.current_frame.pc
     flow = [tv.flow.item(i, "values")[0].strip() for i in tv.flow.get_children()]
     assert flow[-1] == "→ fib" and "→ update_sensor" in flow
-    cov = {tv.cov.item(i, "text"): tv.cov.item(i, "values") for i in tv.cov.get_children()}
-    assert cov["peripherals_init"][1] == "100" and cov["Default_Handler"][1] == "0"
     # double-clic sur une ligne du listing → source
     tv.listing.focus(rows[-1])
     tv._goto(tv.listing)
     src = app.views.find(SourceView)
     assert src.current_file.endswith("main.c")
-    # couverture dans la source : lignes de main() en vert
-    tv.cov_var.set(True)
-    tv._toggle_coverage()
-    main_line = app.symbols.line_at(app.symbols.function("main").start).line
-    assert "cov_hit" in src.text.tag_names(f"{main_line}.2")
     # 2e exécution : la trace s'enrichit (ETM simulé à chaque arrêt)
     n = app.trace.etm.stats["instructions"]
     app.go()
@@ -566,3 +559,58 @@ def test_program_elf_retargets_simulated_etm(etm_app, rtos_elf):
         etm_diagnostics(app)
     assert etm.stats["erreurs"] == 0 and etm.stats["code inconnu"] == 0
     assert "→ worker_step" in [f"→ {r.func}" for r in etm.call_flow(5000) if r.kind == "call"]
+
+
+
+def test_coverage_view(etm_app, tmp_path):
+    """Vue Couverture : arbre fichiers/fonctions, annotations Source et Désassemblage, export."""
+    from gdbtrace.views.code import DisasmView, SourceView
+    from gdbtrace.views.coverage import CoverageView
+    app = etm_app
+    cv = app.views.show(CoverageView)
+    run_to(app, "animate")
+    app.go()
+    pump(app, lambda: False, timeout=0.4)
+    app.halt()
+    assert pump(app, lambda: app.session.state == "stopped" and not app.trace.etm_busy
+                and app.trace.etm.stats["instructions"] > 10_000), etm_diagnostics(app)
+    pump(app, lambda: False, timeout=0.3)
+    assert "instructions" in cv.info.cget("text") and "ETM simulé" in cv.info.cget("text")
+    files = {cv.tree.item(i, "text"): i for i in cv.tree.get_children()}
+    assert list(files)[:2] == ["firmware/main.c", "firmware/startup.c"]     # projet d'abord
+    funcs = {cv.tree.item(i, "text"): cv.tree.item(i, "values")
+             for f in files.values() for i in cv.tree.get_children(f)}
+    assert funcs["fib"][0] == "✔ ok" and funcs["Default_Handler"][0] == "✘ jamais"
+    fadd = next(v for k, v in funcs.items() if "__addsf3" in k)
+    assert fadd[0] == "½ partiel" and int(fadd[6]) > 0                    # entrées
+    cv.hide_var.set(True)
+    cv.render(force=True)
+    shown = {cv.tree.item(i, "text") for f in cv.tree.get_children() for i in cv.tree.get_children(f)}
+    assert "fib" not in shown and "Default_Handler" in shown
+    # double-clic sur une fonction : source annotée
+    item = next(i for f in cv.tree.get_children() for i in cv.tree.get_children(f)
+                if cv.tree.item(i, "text") == "Default_Handler")
+    cv.tree.focus(item)
+    cv._goto()
+    src = app.views.find(SourceView)
+    assert cv.annotate_var.get() and app.coverage_in_source and src.current_file.endswith("startup.c")
+    dh = app.symbols.line_at(app.symbols.function("Default_Handler").start).line
+    rh = app.symbols.line_at(app.symbols.function("Reset_Handler").start).line
+    assert src.text.get(f"{dh}.1") == "✘" and "cov_never" in src.text.tag_names(f"{dh}.3")
+    assert src.text.get(f"{rh}.1") == "✔" and "cov_ok" in src.text.tag_names(f"{rh}.3")
+    # désassemblage : instructions partielles nommées
+    dv = app.views.show(DisasmView)
+    dv.follow.set(False)
+    dv._show(app.symbols.function("__addsf3").start)
+    text = dv.text.get("1.0", "end")
+    assert "branchement toujours pris" in text or "branchement jamais pris" in text
+    assert dv.text.tag_ranges("cov_partial") and dv.text.tag_ranges("cov_ok")
+    # sans annotation : plus de marques
+    cv.annotate_var.set(False)
+    cv._toggle_annotate()
+    assert src.text.get(f"{dh}.1") == " " and not dv.text.tag_ranges("covnote")
+    # RàZ, export
+    cv.export(str(tmp_path / "c.info"))
+    assert "SF:" in (tmp_path / "c.info").read_text()
+    cv._reset()
+    assert "instructions 0.0 %" in cv.info.cget("text")

@@ -8,19 +8,28 @@ from tkinter import ttk
 from ..gui.view_base import View
 
 BP_MARK = "●"
+COV_TAG = {"ok": "cov_ok", "partiel": "cov_partial", "jamais": "cov_never"}
+COV_MARK = {"ok": "✔", "partiel": "½", "jamais": "✘"}
 
 
 class _CodeText(tk.Text):
     def __init__(self, master, font, **kw):
         super().__init__(master, font=font, wrap="none", background="#ffffff", **kw)
-        self.tag_configure("cov_hit", background="#d6f2d6")     # couverture ETM : exécutée
-        self.tag_configure("cov_miss", background="#f6d6d6")    # code jamais exécuté
         self.tag_configure("current", background="#fff2a8")
         self.tag_configure("bp", foreground="#d00000")
         self.tag_configure("gutter", foreground="#909090")
         self.tag_configure("func", foreground="#3050a0", font=(font.actual("family"), font.actual("size"), "bold"))
         self.tag_configure("src", foreground="#2f6f3f", background="#f4f7f2")       # List.Mix : ligne C
         self.tag_configure("srcno", foreground="#7a9a80", background="#f4f7f2")
+        # couverture (après les autres : prioritaires) : ok, partiel, jamais ; note d'instruction
+        self.tag_configure("cov_ok", background="#d6f2d6")
+        self.tag_configure("cov_partial", background="#fbe7b5")
+        self.tag_configure("cov_never", background="#f6d6d6")
+        self.tag_configure("covnote", foreground="#8a5a00")
+        bold = (font.actual("family"), font.actual("size"), "bold")
+        self.tag_configure("covmark_ok", foreground="#1d6b2f", font=bold)
+        self.tag_configure("covmark_partiel", foreground="#8a5a00", font=bold)
+        self.tag_configure("covmark_jamais", foreground="#a01f1f", font=bold)
         self.configure(state="disabled", cursor="arrow")
 
 
@@ -96,19 +105,31 @@ class SourceView(View):
         t.configure(state="disabled")
 
     def _decorate_coverage(self) -> None:
-        """Marge colorée selon la couverture ETM (vue Trace, « Couverture dans la source »)."""
+        """Marge : couverture de chaque ligne (✔ ok, ½ partiel, ✘ jamais), d'après la trace ETM
+        (vue Couverture, « Annoter Source et Désassemblage »)."""
         t = self.text
-        t.tag_remove("cov_hit", "1.0", "end")
-        t.tag_remove("cov_miss", "1.0", "end")
+        for tag in COV_TAG.values():
+            t.tag_remove(tag, "1.0", "end")
+        for line in getattr(self, "_cov_marked", []):
+            if t.get(f"{line}.1") in COV_MARK.values():
+                t.delete(f"{line}.1")
+                t.insert(f"{line}.1", " ", "gutter")
+        self._cov_marked: list[int] = []
         etm = self.app.trace.etm
         if not getattr(self.app, "coverage_in_source", False) or etm is None or not self.current_file:
             return
-        key = (self.current_file, etm.generation)
+        key = (self.current_file, id(etm.cov), etm.cov.generation)
         if getattr(self, "_cov_key", None) != key:
-            self._cov_cache = etm.line_coverage(self.current_file)
+            self._cov_cache = {ln: c.status for ln, c in etm.cov.lines(self.current_file).items()}
             self._cov_key = key
-        for line, hit in self._cov_cache.items():
-            t.tag_add("cov_hit" if hit else "cov_miss", f"{line}.0", f"{line}.8")
+        last = int(t.index("end").split(".")[0]) - 1
+        for line, st in self._cov_cache.items():
+            if line > last:
+                continue
+            t.delete(f"{line}.1")
+            t.insert(f"{line}.1", COV_MARK[st], ("gutter", COV_TAG[st], f"covmark_{st}"))
+            t.tag_add(COV_TAG[st], f"{line}.0", f"{line}.8")
+            self._cov_marked.append(line)
 
     def _same(self, name: str) -> bool:
         return bool(self.current_file) and (name == self.current_file
@@ -203,6 +224,7 @@ class DisasmView(View):
         self.line_src: dict[int, tuple[str, int]] = {}     # ligne de texte -> (fichier, ligne C)
         self.window: tuple[int, int] | None = None
         self._center: int | None = None
+        self._pc: int | None = None
 
     def _toggle_mixed(self) -> None:
         self.window = None
@@ -268,6 +290,7 @@ class DisasmView(View):
         self._decorate(center)
 
     def _decorate(self, pc: int | None) -> None:
+        self._pc = pc
         t = self.text
         t.configure(state="normal")
         t.tag_remove("current", "1.0", "end")
@@ -282,7 +305,38 @@ class DisasmView(View):
             if addr == pc:
                 t.tag_add("current", f"{line}.0", f"{line + 1}.0")
                 t.see(f"{line}.0")
+        self._decorate_coverage()
         t.configure(state="disabled")
+
+    def _decorate_coverage(self) -> None:
+        """Couverture : adresse colorée (ok, partiel, jamais) et, pour une instruction partielle,
+        l'issue manquante en fin de ligne ; lignes C intercalées colorées comme dans la Source."""
+        from ..trace.coverage import I_NEVER, I_OK, NEVER, OK, PARTIAL, TAG_HELP
+        t = self.text
+        ranges = t.tag_ranges("covnote")
+        for i in range(len(ranges) - 2, -1, -2):
+            t.delete(ranges[i], ranges[i + 1])
+        for tag in COV_TAG.values():
+            t.tag_remove(tag, "1.0", "end")
+        etm = self.app.trace.etm
+        if not getattr(self.app, "coverage_in_source", False) or etm is None:
+            return
+        cov = etm.cov
+        for line, addr in self.line_addr.items():
+            if not cov.measured(addr):
+                continue
+            tag = cov.tag(addr)
+            st = OK if tag == I_OK else NEVER if tag == I_NEVER else PARTIAL
+            t.tag_add(COV_TAG[st], f"{line}.2", f"{line}.10")
+            if st == PARTIAL:
+                t.insert(f"{line}.end", f"   ◂ {TAG_HELP[tag]}", "covnote")
+        files: dict[str, dict] = {}
+        for row, (file, ln) in self.line_src.items():
+            if file not in files:
+                files[file] = {k: c.status for k, c in cov.lines(file).items()}
+            st = files[file].get(ln)
+            if st:
+                t.tag_add(COV_TAG[st], f"{row}.0", f"{row}.end")
 
     def refresh(self) -> None:
         if not self.stopped:

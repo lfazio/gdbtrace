@@ -176,7 +176,7 @@ class CoverageDB:
                 prev, prev_in_it = ins, in_it
                 le = sym.line_at(addr)
                 instrs.append(InstrInfo(addr, ins.size, ins.text, branch,
-                                        le.file if le else None, le.line if le else None))
+                                        os.path.normpath(le.file) if le else None, le.line if le else None))
                 addr += ins.size
             _drop_padding(instrs)
             if instrs:
@@ -250,6 +250,7 @@ class CoverageDB:
         with self._lock:
             e, n = dict(self.e), dict(self.n)
         out: dict[int, Counts] = {}
+        path = os.path.normpath(path)
         for _funcs, instrs in self.universe():
             for ins in instrs:
                 if ins.file == path and ins.line is not None:
@@ -259,7 +260,12 @@ class CoverageDB:
     def instructions(self, path: str, line: int) -> list[InstrInfo]:
         """Instructions de la ligne `line` de `path` (code objet de la ligne)."""
         self.universe()
-        return self._by_line.get((path, line), [])
+        return self._by_line.get((os.path.normpath(path), line), [])
+
+    def measured(self, addr: int) -> bool:
+        """`addr` fait partie du code mesuré (ni literal pool, ni remplissage) ?"""
+        self.universe()
+        return addr in self._by_addr
 
     def total(self) -> tuple[Counts, int, int]:
         """(totaux du programme, fonctions entrées, fonctions)."""

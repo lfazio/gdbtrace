@@ -4,7 +4,7 @@ Onglets :
 - Listing : les dernières instructions exécutées avant l'arrêt, avec fonction, désassemblage
   et ligne source ; exceptions et retours intercalés ;
 - Appels : flot des appels/retours/exceptions, indenté par profondeur ;
-- Couverture : instructions exécutées par fonction ; option d'annotation de la vue Source.
+La couverture de code a sa propre vue (views/coverage.py).
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from tkinter import ttk
 from ..trace.etm.qemu_log import ExcEntry, ExcReturn, Step
 from ..trace.itm import exception_name
 from ..gui.view_base import View
-from .profile import _bar, _source_line
+from .profile import _source_line
 
 FLOW_ICONS = {"call": "→", "return": "←", "exception": "⚡", "exc-return": "↩", "start": "•",
               "branch": "↷"}
@@ -36,18 +36,14 @@ class TraceView(View):
         e.bind("<Return>", lambda _e: self.render(force=True))
         ttk.Button(bar, text="Rafraîchir", command=lambda: self.render(force=True)).pack(side="left", padx=2)
         ttk.Button(bar, text="Effacer", command=self._clear).pack(side="left")
-        self.cov_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(bar, text="Couverture dans la source", variable=self.cov_var,
-                        command=self._toggle_coverage).pack(side="left", padx=6)
         self.info = ttk.Label(bar, text="")
         self.info.pack(side="left", padx=6)
 
         self.tabs = ttk.Notebook(self)
         self.tabs.pack(fill="both", expand=True)
-        f_list, f_flow, f_cov = ttk.Frame(self.tabs), ttk.Frame(self.tabs), ttk.Frame(self.tabs)
+        f_list, f_flow = ttk.Frame(self.tabs), ttk.Frame(self.tabs)
         self.tabs.add(f_list, text="Listing")
         self.tabs.add(f_flow, text="Appels")
-        self.tabs.add(f_cov, text="Couverture")
         self.listing = self._tree(f_list, [("addr", "Adresse", 80), ("func", "Fonction", 150),
                                            ("instr", "Instruction", 200), ("src", "Source", 300)],
                                   ("#", 70), stretch="src")
@@ -58,10 +54,6 @@ class TraceView(View):
                                ("#", 70), stretch="func")
         self.flow.tag_configure("exception", foreground="#a05000")
         self.flow.bind("<Double-1>", lambda _e: self._goto(self.flow))
-        self.cov = self._tree(f_cov, [("n", "Exécutées", 80), ("pct", "%", 60), ("bar", "", 260)],
-                              ("Fonction", 260), stretch="bar")
-        self.cov.tag_configure("zero", foreground="#b00000")
-        self.cov.bind("<Double-1>", lambda _e: self._goto_func())
 
         self._locs: dict[str, tuple[str, int]] = {}
         self._generation = -1
@@ -95,17 +87,14 @@ class TraceView(View):
     def _on_new_trace(self) -> None:
         if self.winfo_exists():
             self.render()
-            if self.cov_var.get():
-                self._refresh_source()
 
     def refresh(self) -> None:
         self.render()
 
     def _clear(self) -> None:
         if self.etm is not None:
-            self.etm.reset()
+            self.etm.reset()             # la trace ; la couverture a sa propre remise à zéro
         self.render(force=True)
-        self._refresh_source()
 
     def _source_of(self, addr: int) -> tuple[str, int] | None:
         sym = self.app.symbols
@@ -133,7 +122,6 @@ class TraceView(View):
         self._locs.clear()
         self._render_listing(etm.last(n))
         self._render_flow(etm.call_flow(max(n, 20_000))[-n:])
-        self._render_coverage(etm.coverage())
 
     def _render_listing(self, events) -> None:
         tv = self.listing
@@ -182,44 +170,16 @@ class TraceView(View):
         if kids:
             tv.see(kids[-1])
 
-    def _render_coverage(self, rows) -> None:
-        tv = self.cov
-        tv.delete(*tv.get_children())
-        for c in rows:
-            tv.insert("", "end", iid=c.name, text=c.name, tags=("zero",) if not c.executed else (),
-                      values=(f"{c.executed}/{c.total}", f"{c.percent:.0f}", _bar(c.percent)))
-
     # ------------------------------------------------------------------ navigation
     def _goto(self, tv) -> None:
         loc = self._locs.get(tv.focus())
         if loc:
             self.app.show_source(*loc)
 
-    def _goto_func(self) -> None:
-        name = self.cov.focus().split(" = ")[0]
-        f = self.app.symbols.function(name) if self.app.symbols and name else None
-        loc = self._source_of(f.start) if f else None
-        if loc:
-            self.app.show_source(*loc)
-
-    # ------------------------------------------------------------------ couverture dans la source
-    def _toggle_coverage(self) -> None:
-        self.app.coverage_in_source = self.cov_var.get()
-        self._refresh_source()
-
-    def _refresh_source(self) -> None:
-        from .code import SourceView
-        for v in self.app.views.views:
-            if isinstance(v, SourceView):
-                self.app.safe(v._decorate)
-
     def get_state(self) -> dict:
-        return {"count": self.count_var.get(), "coverage": self.cov_var.get(),
-                "tab": self.tabs.index("current")}
+        return {"count": self.count_var.get(), "tab": self.tabs.index("current")}
 
     def set_state(self, state: dict) -> None:
         self.count_var.set(state.get("count", "2000"))
-        self.cov_var.set(state.get("coverage", False))
-        self.app.coverage_in_source = self.cov_var.get()
-        if "tab" in state:
+        if "tab" in state and state["tab"] < len(self.tabs.tabs()):
             self.tabs.select(state["tab"])
