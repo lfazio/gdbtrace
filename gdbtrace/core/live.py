@@ -82,6 +82,20 @@ class OpenOcdTcl(LiveMemory):
             reply, _, self._buf = self._buf.partition(self.TERM)
             return reply.decode(errors="replace")
 
+    def query(self, script: str) -> str:
+        """Exécute `script` ; retourne son résultat, ou « ERR message » en cas d'échec.
+
+        OpenOCD (0.12 au moins) recopie dans son journal le résultat de chaque commande reçue
+        par le port TCL : sur stderr, et vers gdb (paquets « O », donc la console de
+        gdbtrace) tant que la cible tourne. Pour des lectures en continu, c'est un flot de
+        texte qui finit par bloquer OpenOCD si son stderr n'est pas lu. Avec
+        `return -level 0 -code exit`, le résultat part bien sur la socket, mais
+        command_run_line() ignore le code JIM_EXIT au lieu de recopier le résultat.
+        """
+        return self.command(
+            f"if {{[catch {{{script}}} r]}} {{return -level 0 -code exit \"ERR $r\"}} "
+            f"else {{return -level 0 -code exit $r}}").strip()
+
     def read(self, addr: int, length: int) -> bytes:
         out = bytearray()
         pos = 0
@@ -96,10 +110,7 @@ class OpenOcdTcl(LiveMemory):
         # n'acceptent pas les accès octet.
         width = 32 if addr % 4 == 0 and n % 4 == 0 else 8
         count = n * 8 // width
-        reply = self.command(
-            f"if {{[catch {{read_memory {addr:#x} {width} {count}}} r]}} "
-            f"{{set r \"ERR $r\"}} else {{set r}}"
-        ).strip()
+        reply = self.query(f"read_memory {addr:#x} {width} {count}")
         if reply.startswith("ERR") or (reply and not reply.startswith("0x")):
             raise LiveMemoryError(f"read_memory {addr:#x} : {reply[4:] if reply.startswith('ERR') else reply}")
         words = [int(w, 16) for w in reply.split()]
@@ -109,9 +120,7 @@ class OpenOcdTcl(LiveMemory):
         return b"".join(w.to_bytes(size, "little") for w in words)
 
     def write_u32(self, addr: int, value: int) -> None:
-        reply = self.command(
-            f"if {{[catch {{write_memory {addr:#x} 32 {{{value:#x}}}}} r]}} "
-            f"{{set r \"ERR $r\"}} else {{set r OK}}").strip()
+        reply = self.query(f"write_memory {addr:#x} 32 {{{value:#x}}}; list OK")
         if reply != "OK":
             raise LiveMemoryError(f"write_memory {addr:#x} : {reply}")
 

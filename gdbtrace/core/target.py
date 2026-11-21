@@ -1,10 +1,12 @@
 """Lancement du serveur gdb côté cible : QEMU (sans matériel) ou OpenOCD (sonde réelle)."""
 from __future__ import annotations
 
+import collections
 import os
 import shutil
 import socket
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -36,6 +38,9 @@ class TargetServer:
     proc: subprocess.Popen | None = field(default=None, repr=False)
     #: Faut-il faire `load` après connexion (OpenOCD oui, QEMU charge l'ELF lui-même).
     needs_load: bool = True
+    #: dernières lignes écrites par le serveur sur stderr
+    log: collections.deque = field(default_factory=lambda: collections.deque(maxlen=200),
+                                   repr=False)
 
     def command_line(self) -> list[str]:
         raise NotImplementedError
@@ -57,14 +62,24 @@ class TargetServer:
         if not shutil.which(cmd[0]):
             raise FileNotFoundError(f"{cmd[0]} introuvable dans le PATH")
         self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        # stderr est lu en continu : un tube plein (64 Kio) bloque tout le serveur, gdb et
+        # port TCL compris, et OpenOCD y journalise toute la session.
+        self.log.clear()
+        drain = threading.Thread(target=self._drain, args=(self.proc.stderr,),
+                                 name=f"{cmd[0]}-stderr", daemon=True)
+        drain.start()
         try:
             _wait_port(self.host, self.gdb_port, timeout)
         except TimeoutError:
-            err = b""
-            if self.proc.poll() is not None and self.proc.stderr:
-                err = self.proc.stderr.read()
+            if self.proc.poll() is not None:
+                drain.join(timeout=1)     # le serveur est mort : sa sortie est complète
+            err = "\n".join(list(self.log)[-30:])
             self.stop()
-            raise RuntimeError(f"échec du démarrage de {cmd[0]}: {err.decode(errors='replace')}")
+            raise RuntimeError(f"échec du démarrage de {cmd[0]}: {err}") from None
+
+    def _drain(self, pipe) -> None:
+        for line in pipe:
+            self.log.append(line.decode(errors="replace").rstrip())
 
     def stop(self) -> None:
         if self.proc and self.proc.poll() is None:

@@ -1,14 +1,20 @@
-"""Canal mémoire en direct : regroupement, poller, client TCL OpenOCD (faux serveur), QEMU QMP."""
+"""Canal mémoire en direct : regroupement, poller, client TCL OpenOCD (faux serveur et vrai
+OpenOCD sans sonde), sortie des serveurs gdb, QEMU QMP."""
 import re
+import shutil
 import socket
+import subprocess
+import sys
 import threading
 import time
+from dataclasses import dataclass
 
 import pytest
 from conftest import needs_qemu
 
 from gdbtrace.core.live import (LiveMemoryError, LivePoller, OpenOcdTcl, merge_ranges,
                                 slice_ranges)
+from gdbtrace.core.target import TargetServer, _wait_port, free_port
 
 
 # ---------------------------------------------------------------------- regroupement
@@ -142,6 +148,66 @@ def test_openocd_pcsr_sampling():
         assert len(srv.commands) == n + 1                    # TRCENA n'est plus relu
     finally:
         tcl.close()
+
+
+# ---------------------------------------------------------------------- vrai OpenOCD, sans sonde
+@pytest.mark.skipif(not shutil.which("openocd"), reason="openocd absent")
+def test_openocd_tcl_results_not_echoed():
+    """OpenOCD (0.12) recopie dans son journal le résultat de chaque commande TCL : sur
+    stderr, et vers la console gdb tant que la cible tourne. `query()` l'évite.
+
+    OpenOCD en `noinit` sert le port TCL sans sonde. Son stderr n'est volontairement pas lu,
+    comme le faisait TargetServer : avec l'écho, ~11 Kio par commande le bloquaient après
+    5 commandes (le tube fait 64 Kio), lectures TCL et arrêt de la cible compris."""
+    port = free_port()
+    proc = subprocess.Popen(["openocd", "-c", f"tcl_port {port}", "-c", "telnet_port disabled",
+                             "-c", "gdb_port disabled", "-c", "noinit"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    tcl = OpenOcdTcl("127.0.0.1", port)
+    try:
+        _wait_port("127.0.0.1", port, 5)
+        for _ in range(50):                                  # ≈ 560 Kio de résultats
+            assert tcl.query('string repeat "0xa5a5a5a5 " 1024').split() == ["0xa5a5a5a5"] * 1024
+        assert tcl.query("nosuchcmd 1").startswith("ERR invalid command name")
+        assert tcl.query("list OK") == "OK"
+    finally:
+        tcl.close()
+        proc.kill()
+        log = proc.communicate(timeout=5)[1].decode(errors="replace")
+    assert "0xa5a5a5a5" not in log and "OK" not in log.split()
+
+
+# ---------------------------------------------------------------------- sortie des serveurs gdb
+def _server(script: str, port: int) -> TargetServer:
+    @dataclass
+    class Server(TargetServer):
+        def command_line(self) -> list[str]:
+            return [sys.executable, "-c", script]
+    return Server(gdb_port=port)
+
+
+def test_server_stderr_is_drained():
+    """Un serveur bavard sur stderr ne se bloque pas quand le tube (64 Kio) est plein."""
+    port = free_port()
+    t = _server("import socket, sys, time\n"
+                "for i in range(20000): sys.stderr.write(f'Info : ligne {i}\\n')\n"
+                "sys.stderr.flush()\n"
+                f"s = socket.socket(); s.bind(('127.0.0.1', {port})); s.listen(1)\n"
+                "time.sleep(30)\n", port)
+    try:
+        t.start(timeout=5)
+        deadline = time.monotonic() + 2
+        while t.log[-1] != "Info : ligne 19999" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert t.log[-1] == "Info : ligne 19999" and len(t.log) == t.log.maxlen
+    finally:
+        t.stop()
+
+
+def test_server_start_failure_reports_stderr():
+    t = _server("import sys; sys.stderr.write('Error: open failed\\n'); sys.exit(1)", free_port())
+    with pytest.raises(RuntimeError, match="Error: open failed"):
+        t.start(timeout=1)
 
 
 # ---------------------------------------------------------------------- QEMU QMP

@@ -392,7 +392,8 @@ xvfb-run -a .venv/bin/python -m pytest
 ```
 
 Les tests lancent QEMU (`mps2-an385`) avec le firmware de démo. Sans `DISPLAY`, les tests GUI sont ignorés.
-Le client TCL OpenOCD est testé contre un faux serveur TCL ; il reste à valider sur une sonde réelle,
-comme le support RTOS d'OpenOCD (`--rtos`), la capture SWO et `DWT_PCSR` via OpenOCD.
+Le client TCL OpenOCD est testé contre un faux serveur TCL, et contre un vrai OpenOCD lancé sans
+sonde (`noinit`) s'il est installé ; il a été utilisé sur une Nucleo-F746ZG. Restent à valider sur
+sonde réelle le support RTOS d'OpenOCD (`--rtos`), la capture SWO et `DWT_PCSR` via OpenOCD.
 Les tests ETM comparent notre décodeur à OpenCSD si `tools/build_opencsd.sh` a été lancé
 (sinon ce test est ignoré) ; la trace ETM nécessite `pip install capstone` (extra `etm`).
