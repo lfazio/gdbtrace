@@ -194,22 +194,22 @@ def test_task_context_and_backtrace_restore_registers(rtos):
 @needs_qemu
 def test_script_api(rtos_session, capsys):
     from gdbtrace.core.scripting import ScriptAPI
-    t32 = ScriptAPI(rtos_session, rtos_session.target.live_memory())
+    gdbtrace = ScriptAPI(rtos_session, rtos_session.target.live_memory())
     try:
-        names = [t.name for t in t32.tasks()]
+        names = [t.name for t in gdbtrace.tasks()]
         assert set(names) == set(EXPECTED)
         out = capsys.readouterr().out
         assert "*worker" in out and "Suspended" in out
-        assert {o.name for o in t32.queues()} >= {"cmd_queue", "data_mutex"}
+        assert {o.name for o in gdbtrace.queues()} >= {"cmd_queue", "data_mutex"}
         assert "pris par worker" in capsys.readouterr().out
-        frames = t32.task("hog")
+        frames = gdbtrace.task("hog")
         assert [f.func for f in frames][-1] == "hog_task"
         # en marche : même API, via le canal live
         rtos_session.go()
         time.sleep(0.1)
-        assert {t.name for t in t32.tasks()} == set(EXPECTED)
+        assert {t.name for t in gdbtrace.tasks()} == set(EXPECTED)
     finally:
-        t32.live.close()
+        gdbtrace.live.close()
 
 
 @needs_qemu

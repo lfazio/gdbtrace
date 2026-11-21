@@ -23,7 +23,7 @@ def test_program_and_exit(rtos_elf):
 def test_program_then_script(elf, tmp_path):
     """--program sans argument : l'ELF de la ligne de commande ; le script voit la cible au reset."""
     script = tmp_path / "s.py"
-    script.write_text("print('pc', t32.s.frame().func)\nt32.program(verify=False)\n")
+    script.write_text("print('pc', gdbtrace.s.frame().func)\nt32.program(verify=False)\n")
     r = run(elf, "--program", "--no-verify", "--batch", "--script", str(script))
     assert r.returncode == 0, r.stderr
     lines = r.stdout.splitlines()

@@ -9,7 +9,7 @@ Interface en **tkinter**.
 | Jalon | Contenu | État |
 |---|---|---|
 | 1. Run-control | Go/Break/Step/Over/Out/Asm/Reset, breakpoints (logiciels, matériels, watchpoints), vues Fichiers, Source, Désassemblage (source C mêlée), Registres, Mémoire, Watch, Pile, Breakpoints | ✅ |
-| 2. Scripting | Console Python avec l'objet `t32`, scripts `--script`, mode `--batch` | ✅ |
+| 2. Scripting | Console Python avec l'objet `gdbtrace`, scripts `--script`, mode `--batch` | ✅ |
 | 3. Vues en direct | Mémoire, Watch et périphériques rafraîchis cible en marche (OpenOCD TCL / QEMU QMP), vue Périphériques CMSIS-SVD | ✅ |
 | 4. RTOS | Vue FreeRTOS (tâches, piles, CPU, queues/mutex/sémaphores), contexte et pile d'appels de chaque tâche, en direct | ✅ |
 | 5. Trace SWO/ITM | printf ITM, trace des exceptions, profilage statistique (fonctions, lignes, tâches) par SWO ou lecture du PC en marche | ✅ |
@@ -65,7 +65,7 @@ démarre sans cible : choisir l'ELF lance la cible (`--qemu`, `--openocd`… ) p
 .venv/bin/python -m gdbtrace --openocd configs/nucleo-f429zi.cfg     # GUI : choisir l'ELF par le menu
 ```
 
-Depuis un script : `t32.program("build/fw.elf")`, ou `t32.program()` pour l'ELF courant.
+Depuis un script : `gdbtrace.program("build/fw.elf")`, ou `gdbtrace.program()` pour l'ELF courant.
 
 Sous QEMU, **Reset** est un vrai reset de la machine (`system_reset` sur un second port QMP) :
 périphériques, NVIC et mode du cœur repartent à neuf. Un ELF programmé depuis le lancement est
@@ -319,21 +319,21 @@ hors de portée de la trace seule.
 
 | Saisie | Effet |
 |---|---|
-| `t32.break_("fib"); t32.go(); t32.wait()` | Python, avec l'API `t32` |
-| `t32.d("sensors", 32)`, `t32.r()`, `t32.bt()` | Data.dump, Register.view, pile |
-| `t32.mem(addr, n)`, `t32.live_read(addr, n)` | lecture mémoire, y compris cible en marche |
-| `t32.periph("TIMER0")` | PER.view : registres et champs décodés, retourne `{registre: valeur}` |
-| `t32.tasks()`, `t32.queues()` | TASK.List / objets du noyau FreeRTOS (aussi cible en marche) |
-| `t32.task("consumer")` | contexte et pile d'appels d'une tâche |
-| `t32.profile(2.0, per_task=True)` | PERF : profil statistique pendant 2 s (relance puis arrête la cible si besoin) |
-| `t32.itm(0)` | texte reçu sur le port ITM 0 |
-| `t32.swo_config(cpu_hz=180_000_000, swo_hz=2_000_000)` | programme ITM/DWT/TPIU (+ OpenOCD) |
-| `t32.trace_list(30)`, `t32.calls(40)` | Trace.List, flot d'appels (trace ETM) |
-| `t32.cov.summary()`, `t32.cov.list(20)`, `t32.cov.files()` | couverture : résumé, COVerage.ListFunc, ListModule |
-| `t32.cov.export("cov.html")`, `t32.cov.save(f)`, `t32.cov.load(f)`, `t32.cov.reset()` | rapports (.html, .info LCOV, .json), cumul de campagnes, RàZ |
-| `t32.etm_config(port_width=4, stm32=True)` | programme l'ETM et le TPIU parallèle |
-| `t32.program("fw.elf")`, `t32.program()` | FLASH.ReProgram : écrit, vérifie et reset (ELF courant par défaut) |
-| `t32.timing(20, unit="us")`, `t32.timeline(30)` | durées par fonction / derniers appels (trace ETM) |
+| `gdbtrace.break_("fib"); gdbtrace.go(); gdbtrace.wait()` | Python, avec l'API `gdbtrace` |
+| `gdbtrace.d("sensors", 32)`, `gdbtrace.r()`, `gdbtrace.bt()` | Data.dump, Register.view, pile |
+| `gdbtrace.mem(addr, n)`, `gdbtrace.live_read(addr, n)` | lecture mémoire, y compris cible en marche |
+| `gdbtrace.periph("TIMER0")` | PER.view : registres et champs décodés, retourne `{registre: valeur}` |
+| `gdbtrace.tasks()`, `gdbtrace.queues()` | TASK.List / objets du noyau FreeRTOS (aussi cible en marche) |
+| `gdbtrace.task("consumer")` | contexte et pile d'appels d'une tâche |
+| `gdbtrace.profile(2.0, per_task=True)` | PERF : profil statistique pendant 2 s (relance puis arrête la cible si besoin) |
+| `gdbtrace.itm(0)` | texte reçu sur le port ITM 0 |
+| `gdbtrace.swo_config(cpu_hz=180_000_000, swo_hz=2_000_000)` | programme ITM/DWT/TPIU (+ OpenOCD) |
+| `gdbtrace.trace_list(30)`, `gdbtrace.calls(40)` | Trace.List, flot d'appels (trace ETM) |
+| `gdbtrace.cov.summary()`, `gdbtrace.cov.list(20)`, `gdbtrace.cov.files()` | couverture : résumé, COVerage.ListFunc, ListModule |
+| `gdbtrace.cov.export("cov.html")`, `gdbtrace.cov.save(f)`, `gdbtrace.cov.load(f)`, `gdbtrace.cov.reset()` | rapports (.html, .info LCOV, .json), cumul de campagnes, RàZ |
+| `gdbtrace.etm_config(port_width=4, stm32=True)` | programme l'ETM et le TPIU parallèle |
+| `gdbtrace.program("fw.elf")`, `gdbtrace.program()` | FLASH.ReProgram : écrit, vérifie et reset (ELF courant par défaut) |
+| `gdbtrace.timing(20, unit="us")`, `gdbtrace.timeline(30)` | durées par fonction / derniers appels (trace ETM) |
 | `!info breakpoints` | Commande CLI gdb brute |
 | `mon reset halt` | Commande `monitor` vers OpenOCD |
 
@@ -369,7 +369,7 @@ gdbtrace/
   trace/etm/config.py   programmation ETM + TPIU parallèle
   trace/etm/cycles.py   modèle de cycles Cortex-M3/M4 (durées estimées)
   trace/timing.py       analyse temporelle : pile d'appels, durées, chronogramme
-  core/scripting.py     API `t32` + console Python
+  core/scripting.py     API `gdbtrace` + console Python
   gui/                  fenêtre tkinter, vues détachables, pompe d'événements thread-safe
   views/                Fichiers, Source, Désassemblage, Registres, Mémoire, Watch, Périphériques, RTOS,
                         Pile, Breakpoints, Console, ITM, Profil, Trace, Timing, Couverture

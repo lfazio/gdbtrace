@@ -79,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="ajouter une couverture enregistrée (campagnes précédentes) ; répétable")
     g2.add_argument("--go", action="store_true",
                     help="lancer le programme après la connexion (et la programmation)")
-    p.add_argument("--script", help="script Python exécuté après connexion (objet `t32`)")
+    p.add_argument("--script", help="script Python exécuté après connexion (objet `gdbtrace`)")
     p.add_argument("--batch", action="store_true", help="sans GUI : exécute --script puis quitte")
     p.add_argument("--layout", default="gdbtrace-layout.json", help="fichier de layout des fenêtres")
     args = p.parse_args(argv)

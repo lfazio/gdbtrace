@@ -1,16 +1,16 @@
 """API de script : l'équivalent Python du langage PRACTICE de Trace32.
 
-Dans la console et les scripts, l'objet `t32` est disponible :
+Dans la console et les scripts, l'objet `gdbtrace` est disponible :
 
-    t32.break_("fib")            # Break.Set fib
-    t32.go(); t32.wait()         # Go + WAIT !STATE.RUN()
-    print(t32.eval("counter"))   # Var.view counter
-    t32.d(0x20000000, 32)        # Data.dump
-    t32.r()                      # Register.view
-    t32.mem(0x20000000, 16)      # lecture mémoire, même cible en marche (canal live)
-    t32.periph("SysTick")        # PER.view (nécessite un SVD)
+    gdbtrace.break_("fib")            # Break.Set fib
+    gdbtrace.go(); gdbtrace.wait()    # Go + WAIT !STATE.RUN()
+    print(gdbtrace.eval("counter"))   # Var.view counter
+    gdbtrace.d(0x20000000, 32)        # Data.dump
+    gdbtrace.r()                      # Register.view
+    gdbtrace.mem(0x20000000, 16)      # lecture mémoire, même cible en marche (canal live)
+    gdbtrace.periph("SysTick")        # PER.view (nécessite un SVD)
 
-Un script `.py` est exécuté avec `t32.run_script("init.py")` ou au démarrage avec
+Un script `.py` est exécuté avec `gdbtrace.run_script("init.py")` ou au démarrage avec
 l'option `--script`.
 """
 from __future__ import annotations
@@ -42,12 +42,13 @@ def hexdump(data: bytes, base: int, width: int = 16) -> str:
 class CoverageAPI:
     """COVerage : couverture de code mesurée par la trace ETM, sans instrumentation.
 
-        t32.cov.summary()                    # instructions, branches, fonctions
-        t32.cov.list(20)                     # COVerage.ListFunc (les moins couvertes d'abord)
-        t32.cov.files()                      # COVerage.ListModule
-        t32.cov.export("cov.html")           # COVerage.EXPORT : .html, .info (LCOV), .json
-        t32.cov.save("run1.json"); t32.cov.load("run2.json")   # SAVE / LOAD /Add
-        t32.cov.reset()                      # COVerage.RESet
+        gdbtrace.cov.summary()            # instructions, branches, fonctions
+        gdbtrace.cov.list(20)             # COVerage.ListFunc (les moins couvertes d'abord)
+        gdbtrace.cov.files()              # COVerage.ListModule
+        gdbtrace.cov.export("cov.html")   # COVerage.EXPORT : .html, .info (LCOV), .json
+        gdbtrace.cov.save("run1.json")    # COVerage.SAVE
+        gdbtrace.cov.load("run2.json")    # COVerage.LOAD /Add (fusion)
+        gdbtrace.cov.reset()              # COVerage.RESet
     """
 
     def __init__(self, api: "ScriptAPI"):
@@ -209,7 +210,7 @@ class ScriptAPI:
         return events
 
     def coverage(self, top: int | None = 20):
-        """Couverture de code par fonction d'après la trace ETM (voir aussi `t32.cov`)."""
+        """Couverture de code par fonction d'après la trace ETM (voir aussi `gdbtrace.cov`)."""
         return self.cov.list(top)
 
     def calls(self, n: int = 40):
@@ -414,7 +415,7 @@ class ScriptAPI:
     def periph(self, name: str, force: bool = False) -> dict[str, int]:
         """PER.view : affiche les registres décodés d'un périphérique SVD, retourne {reg: valeur}."""
         if self.device is None:
-            raise RuntimeError("aucun SVD chargé (t32.load_svd ou --svd)")
+            raise RuntimeError("aucun SVD chargé (gdbtrace.load_svd ou --svd)")
         p = self.device.peripheral(name)
         if p is None:
             raise KeyError(f"périphérique inconnu : {name}")
@@ -439,7 +440,7 @@ class ScriptAPI:
     def monitor(self, cmd: str) -> str: return self.s.monitor(cmd)
 
     def run_script(self, path: str) -> None:
-        runpy.run_path(path, init_globals={"t32": self, "session": self.s})
+        runpy.run_path(path, init_globals={"gdbtrace": self, "session": self.s})
 
 
 class Console:
@@ -452,7 +453,7 @@ class Console:
     def __init__(self, api: ScriptAPI, write: Callable[[str], None]):
         self.api = api
         self.write = write
-        self.namespace = {"t32": api, "session": api.s, "hexdump": hexdump}
+        self.namespace = {"gdbtrace": api, "session": api.s, "hexdump": hexdump}
         self.interp = code.InteractiveInterpreter(self.namespace)
         self._buffer: list[str] = []
         self._lock = threading.Lock()
@@ -495,7 +496,7 @@ class Console:
                 self.busy = False
             if done:
                 done(False)
-        threading.Thread(target=worker, name="t32-console", daemon=True).start()
+        threading.Thread(target=worker, name="gdbtrace-console", daemon=True).start()
 
 
 class _Writer(io.TextIOBase):

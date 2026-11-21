@@ -70,7 +70,7 @@ def test_console_and_watch(app):
     app.session.break_("main", temporary=True)
     app.go()
     assert pump(app, lambda: app.current_frame is not None and app.current_frame.func == "main")
-    app.execute("x = t32.u32(0x20000000); print('X=', x)")
+    app.execute("x = gdbtrace.u32(0x20000000); print('X=', x)")
     assert pump(app, lambda: "X= 1" in con.out.get("1.0", "end"))
     app.execute("!info line main")
     assert pump(app, lambda: "starts at address" in con.out.get("1.0", "end"))

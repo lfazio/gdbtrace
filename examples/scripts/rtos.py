@@ -6,28 +6,28 @@
 import time
 
 # laisser tourner l'ordonnanceur, puis s'arrêter dans une tâche
-t32.go()
+gdbtrace.go()
 time.sleep(0.5)
-t32.halt()
-t32.break_("worker_step", temporary=True)
-t32.go()
-t32.wait()
+gdbtrace.halt()
+gdbtrace.break_("worker_step", temporary=True)
+gdbtrace.go()
+gdbtrace.wait()
 
 print("== Tâches (cible arrêtée, via gdb)")
-t32.tasks()
+gdbtrace.tasks()
 print("\n== Objets du noyau")
-t32.queues()
+gdbtrace.queues()
 print("\n== Contexte de la tâche « consumer »")
-t32.task("consumer")
+gdbtrace.task("consumer")
 
 # alerte si une pile dépasse 80 %
-for t in t32.rtos().tasks:
+for t in gdbtrace.rtos().tasks:
     if t.stack_percent and t.stack_percent > 80:
         print(f"\n!! pile de {t.name} utilisée à {t.stack_percent:.0f} %")
 
-if t32.live:
+if gdbtrace.live:
     print("\n== Tâches, cible en marche (canal live)")
-    t32.go()
+    gdbtrace.go()
     time.sleep(0.3)
-    t32.tasks()
-    t32.halt()
+    gdbtrace.tasks()
+    gdbtrace.halt()

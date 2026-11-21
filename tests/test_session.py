@@ -91,13 +91,13 @@ def test_varobj_children(session):
 
 
 def test_script_api(session, capsys):
-    t32 = ScriptAPI(session)
-    t32.break_("update_sensor")
-    t32.go()
-    t32.wait()
-    assert t32.eval("tick") == "1"
-    t32.d("sensors", 16)
-    t32.bt()
+    gdbtrace = ScriptAPI(session)
+    gdbtrace.break_("update_sensor")
+    gdbtrace.go()
+    gdbtrace.wait()
+    assert gdbtrace.eval("tick") == "1"
+    gdbtrace.d("sensors", 16)
+    gdbtrace.bt()
     out = capsys.readouterr().out
     assert "20000000  01 00 00 00" in out
     assert "update_sensor" in out and "main" in out

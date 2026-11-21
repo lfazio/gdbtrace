@@ -8,26 +8,26 @@
 import time
 
 # --- run-control et données, cible arrêtée
-t32.break_("update_sensor")
+gdbtrace.break_("update_sensor")
 for _ in range(5):
-    t32.go()
-    t32.wait()
-    print(f"tick={t32.eval('tick'):>3}  counter={t32.eval('counter')}")
-t32.delete(t32.breaks()[0].number)
-t32.d("sensors", 48)
-t32.r()
+    gdbtrace.go()
+    gdbtrace.wait()
+    print(f"tick={gdbtrace.eval('tick'):>3}  counter={gdbtrace.eval('counter')}")
+gdbtrace.delete(gdbtrace.breaks()[0].number)
+gdbtrace.d("sensors", 48)
+gdbtrace.r()
 
 # --- périphériques (SVD), cible arrêtée : lecture via gdb
-if t32.device:
-    t32.periph("SysTick")
+if gdbtrace.device:
+    gdbtrace.periph("SysTick")
 
 # --- cible en marche : lectures par le canal live (OpenOCD TCL / QEMU QMP)
-if t32.live:
-    ticks = t32.addr("ticks")
-    t32.go()
+if gdbtrace.live:
+    ticks = gdbtrace.addr("ticks")
+    gdbtrace.go()
     for _ in range(3):
         time.sleep(0.1)
-        print("ticks (live) =", int.from_bytes(t32.mem(ticks, 4), "little"))
-    if t32.device:
-        print("TIMER0.VALUE (live) =", hex(t32.periph("TIMER0")["VALUE"]))
-    t32.halt()
+        print("ticks (live) =", int.from_bytes(gdbtrace.mem(ticks, 4), "little"))
+    if gdbtrace.device:
+        print("TIMER0.VALUE (live) =", hex(gdbtrace.periph("TIMER0")["VALUE"]))
+    gdbtrace.halt()

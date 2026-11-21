@@ -1,6 +1,6 @@
 """Console Python (remplaçant de la ligne de commande PRACTICE) + sortie gdb/cible.
 
-- Ligne normale : Python, avec l'objet `t32` (voir core/scripting.py).
+- Ligne normale : Python, avec l'objet `gdbtrace` (voir core/scripting.py).
 - Ligne commençant par `!` : commande CLI gdb brute (`!info registers`).
 - Ligne commençant par `mon ` : commande `monitor` vers le serveur gdb.
 """

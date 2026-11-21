@@ -94,26 +94,26 @@ def test_clusters_register_derivation_and_dim_lists():
 
 @needs_qemu
 def test_periph_read_in_qemu(session, capsys):
-    t32 = ScriptAPI(session, session.target.live_memory(), svd.parse(SVD))
+    gdbtrace = ScriptAPI(session, session.target.live_memory(), svd.parse(SVD))
     try:
         session.break_("animate", temporary=True)
         session.go()
         session.wait_stopped(5)
-        st = t32.periph("SysTick")
+        st = gdbtrace.periph("SysTick")
         assert st["CTRL"] & 7 == 7 and st["LOAD"] == 25000 - 1
-        assert t32.periph("SCB")["CPUID"] == 0x410FC231
+        assert gdbtrace.periph("SCB")["CPUID"] == 0x410FC231
         out = capsys.readouterr().out
         assert "CLKSOURCE" in out and "PROCESSOR" in out and "CORTEX_M3" in out
         # en marche : même API, via le canal live
         session.go()
         time.sleep(0.1)
-        v1 = t32.periph("TIMER0")["VALUE"]
+        v1 = gdbtrace.periph("TIMER0")["VALUE"]
         time.sleep(0.05)
-        v2 = t32.periph("TIMER0")["VALUE"]
+        v2 = gdbtrace.periph("TIMER0")["VALUE"]
         assert v1 != v2                                              # le timer décompte
         capsys.readouterr()
-        uart = t32.periph("UART0")
+        uart = gdbtrace.periph("UART0")
         assert "DATA" not in uart and "STATE" in uart                # DATA jamais lue d'office
         assert "DATA" in capsys.readouterr().out.split("(non lu : lecture destructive)")[0]
     finally:
-        t32.live.close()
+        gdbtrace.live.close()
