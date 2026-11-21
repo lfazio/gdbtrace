@@ -92,7 +92,7 @@ class CoverageAPI:
     def export(self, path: str) -> str:
         from ..trace.coverage_report import export
         tm = self._api.trace
-        note = "ETM simulé (QEMU)" if tm is not None and tm.etm_sim is not None else "trace ETM"
+        note = tm.source_label() if tm is not None else "trace ETM"
         fmt = export(self.db, path, note)
         print(f"couverture exportée ({fmt}) : {path}")
         return fmt
@@ -187,6 +187,38 @@ class ScriptAPI:
             raise RuntimeError("pas de trace ETM (--etm-sim sous QEMU, --trace/--trace-file sur matériel)")
         self.trace.wait_etm()
         return self.trace.etm
+
+    def mtb(self, n: int = 20):
+        """Paquets bruts de la MTB lus au dernier arrêt (les `n` derniers), symbolisés :
+        S = début de session, A = exception ou PC changé par le débogueur."""
+        from ..trace.mtb import is_exc_return
+        tm = self.trace
+        src = (tm.mtb or tm.mtb_sim) if tm is not None else None
+        if src is None:
+            raise RuntimeError("pas de MTB (--mtb sur la cible, --mtb-sim sous QEMU)")
+        tm.wait_etm()
+        sym = self._symbols()
+
+        def where(a: int) -> str:
+            if is_exc_return(a):
+                return "EXC_RETURN"
+            f = sym.function_at(a) if sym else None
+            le = sym.line_at(a) if sym else None
+            loc = f"  {le.file.rsplit('/', 1)[-1]}:{le.line}" if le and f else ""
+            return f"{f.name if f else '?'}{loc}"
+        rows = src.last_packets[-n:]
+        for p in rows:
+            print(f"  {'S' if p.s else ' '}{'A' if p.a else ' '} {p.src:08x} {where(p.src):<34} → "
+                  f"{p.dst:08x} {where(p.dst)}")
+        return rows
+
+    def mtb_probe(self):
+        """Composants CoreSight de la cible (tables ROM) : MTB, ETM, TPIU..."""
+        from ..trace.mtb import rom_components
+        comps = rom_components(self.s.read_u32)
+        for c in comps:
+            print(f"  {'  ' * c.depth}{c.addr:#010x}  {c.name}")
+        return comps
 
     def trace_list(self, n: int = 30):
         """Trace.List : les `n` dernières instructions exécutées (et exceptions)."""

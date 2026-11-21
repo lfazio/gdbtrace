@@ -31,6 +31,9 @@ class TraceManager:
         # trace d'instructions ETM (flux TPIU id 2, ou simulée sous QEMU)
         self.etm = None                     # EtmTrace
         self.etm_sim = None                 # QemuEtmSim
+        # trace MTB des Cortex-M0+ (sonde réelle, ou simulée sous QEMU), même EtmTrace
+        self.mtb = None                     # MtbCapture
+        self.mtb_sim = None                 # QemuMtbSim
         self.etm_listeners: list[Callable[[], None]] = []
         self.etm_busy = False
 
@@ -57,9 +60,21 @@ class TraceManager:
             except Exception:  # noqa: BLE001
                 pass
             self.etm_sim = None
+        mtb_sim, mtb = self.mtb_sim, self.mtb
+        if mtb_sim is not None:
+            try:
+                mtb_sim.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self.mtb_sim = None
         msg = self.setup_etm(elf, symbols, cycle_accurate)
         if sim is not None and self.etm is not None:
             self.enable_qemu_sim(sim.qmp)
+        if mtb_sim is not None and self.etm is not None:
+            self.enable_mtb_sim(mtb_sim.qmp, mtb_sim.size)
+        if mtb is not None and self.etm is not None:
+            mtb.retarget(self.etm.image)
+            self.etm.timing_label = "estimé (modèle de cycles, MTB)"
         for fn in list(self.etm_listeners):
             fn()
         return msg
@@ -73,6 +88,39 @@ class TraceManager:
             self.etm.simulated = True            # cycles du modèle : durées estimées
             self.etm_sim = QemuEtmSim(qmp, self.etm.image, self.etm)
 
+    # ------------------------------------------------------------------ MTB (Cortex-M0+)
+    def enable_mtb_sim(self, qmp, size: int = 1024, session=None) -> None:
+        """MTB simulée sous QEMU : tampon de `size` octets (les `size / 8` derniers branchements
+        de chaque exécution ; 0 : illimité)."""
+        from .mtb_capture import QemuMtbSim
+        if self.etm is not None:
+            self.mtb_sim = QemuMtbSim(qmp, self.etm.image, self.etm, size)
+            self.etm.timing_label = "estimé (modèle de cycles, MTB simulée)"
+            if session is not None:
+                self.mtb_sim.last_pc = session.register("pc")
+
+    def setup_mtb(self, session, base: int, buffer: int, size: int):
+        """MTB d'une vraie cible (arrêtée) : programmation, puis lecture à chaque arrêt."""
+        from .mtb_capture import MtbCapture
+        if self.etm is None:
+            raise RuntimeError("trace d'instructions indisponible (capstone requis)")
+        self.mtb = MtbCapture(session, self.etm.image, base, buffer, size)
+        self.etm.timing_label = "estimé (modèle de cycles, MTB)"
+        self.attach_session(session)
+        return self.mtb.state
+
+    def source_label(self) -> str:
+        """D'où vient la trace d'instructions (libellé des vues)."""
+        if self.mtb_sim is not None:
+            return "MTB simulée (QEMU" + (f", {self.mtb_sim.size} octets)" if self.mtb_sim.size
+                                          else ", tampon illimité)")
+        if self.mtb is not None:
+            return "MTB"
+        if self.etm_sim is not None:
+            return "ETM simulé (QEMU)"
+        return "capture ETM" if self.active else "trace ETM"
+
+    # ------------------------------------------------------------------ cycle des exécutions
     def _etm_feed(self, data: bytes) -> None:
         self.etm.feed(data)
         self._etm_changed()
@@ -81,9 +129,15 @@ class TraceManager:
         for fn in list(self.etm_listeners):
             self.post(fn)
 
+    def _sims(self) -> list:
+        return [s for s in (self.etm_sim, self.mtb_sim) if s is not None]
+
     def attach_session(self, session) -> None:
-        """Branche la simulation ETM sur la session : journal activé avant chaque reprise,
-        converti à chaque arrêt."""
+        """Branche la trace sur la session : simulation activée avant chaque reprise,
+        conversion (ou lecture de la MTB) à chaque arrêt. Une seule fois par session."""
+        if getattr(self, "_attached", None) is session:
+            return
+        self._attached = session
         session.add_resume_hook(self.on_target_running)
         session.on_event(lambda kind, data: self.on_target_stopped() if kind == "stopped" else None)
 
@@ -92,38 +146,49 @@ class TraceManager:
         import time
         end = time.monotonic() + timeout
         while time.monotonic() < end:
-            if not self.etm_busy and (self.etm_sim is None or self.etm_sim.path is None):
+            if not self.etm_busy and all(s.path is None for s in self._sims()):
                 return True
             time.sleep(0.02)
         return False
 
     def on_target_running(self) -> None:
         """Avant chaque reprise : journal QEMU de la nouvelle exécution. Si la trace de la
-        précédente est encore en conversion, on l'attend : sinon cette exécution serait perdue."""
-        if self.etm_sim is not None and self.etm_busy:
+        précédente est encore en conversion (ou la MTB en lecture), on l'attend : sinon cette
+        exécution serait perdue (ou la MTB remise à zéro pendant qu'elle trace)."""
+        if self.etm_busy:
             self.wait_etm()
-        if self.etm_sim is not None and self.etm_sim.path is None:
-            try:
-                self.etm_sim.start_run()
-            except Exception as exc:  # noqa: BLE001
-                self.on_error(f"ETM simulé : {exc}")
+        for sim in self._sims():
+            if sim.path is None:
+                try:
+                    sim.start_run()
+                except Exception as exc:  # noqa: BLE001
+                    self.on_error(f"trace simulée : {exc}")
 
     def on_target_stopped(self) -> None:
-        """Fin d'une exécution : sous QEMU, conversion du journal en trace ETM (en tâche de fond)."""
-        if self.etm_sim is None or self.etm_sim.path is None:
+        """Fin d'une exécution, en tâche de fond : sous QEMU, conversion du journal en trace ;
+        sur une cible avec MTB, lecture et remise à zéro du tampon."""
+        jobs = [s for s in self._sims() if s.path is not None]
+        mtb = self.mtb
+        if not jobs and mtb is None:
             return
         import threading
+        session = getattr(self, "_attached", None)
 
         def work():
             try:
-                self.etm_sim.end_run()
+                pc = session.register("pc") if session is not None and self.mtb_sim is not None else None
+                for sim in jobs:
+                    sim.end_run(pc)
+                if mtb is not None:
+                    errors = mtb.decoder.stats.errors
+                    self.etm.feed_events(mtb.collect(), errors=mtb.decoder.stats.errors - errors)
             except Exception as exc:  # noqa: BLE001
-                self.post(self.on_error, f"ETM simulé : {exc}")
+                self.post(self.on_error, f"trace d'instructions : {exc}")
             finally:
                 self.etm_busy = False
             self._etm_changed()
         self.etm_busy = True          # avant le thread : wait_etm() ne peut pas le manquer
-        threading.Thread(target=work, name="etm-sim", daemon=True).start()
+        threading.Thread(target=work, name="trace-run", daemon=True).start()
 
     def configure_etm(self, cfg, session) -> list[str]:
         """Programme l'ETM et le TPIU parallèle (cible arrêtée)."""
@@ -133,12 +198,15 @@ class TraceManager:
 
     def close(self) -> None:
         self.stop()
-        if self.etm_sim is not None:
-            try:
-                self.etm_sim.close()
-            except Exception:  # noqa: BLE001
-                pass
-            self.etm_sim = None
+        for name in ("etm_sim", "mtb_sim"):
+            sim = getattr(self, name)
+            if sim is not None:
+                try:
+                    sim.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                setattr(self, name, None)
+        self.mtb = None
 
     # ------------------------------------------------------------------ sources
     @property

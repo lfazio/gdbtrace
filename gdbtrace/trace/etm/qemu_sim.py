@@ -36,11 +36,19 @@ class QemuEtmSim:
         self.qmp.hmp(f"logfile {self.path}")
         self.qmp.hmp(f"log {LOG_ITEMS}")
 
-    def end_run(self) -> int:
+    def end_run(self, end_pc: int | None = None) -> int:
         """Arrête la journalisation, encode puis décode la trace de l'exécution.
-        Retourne le nombre d'octets ETM produits."""
-        if self.path is None:
+        Retourne le nombre d'octets de trace produits. `end_pc` : PC à l'arrêt (MTB)."""
+        events = self._take_log()
+        if events is None:
             return 0
+        self.last_events = len(events)
+        return self._convert(events, end_pc)
+
+    def _take_log(self) -> list | None:
+        """Événements réels (chemin QEMU) de l'exécution qui vient de s'arrêter."""
+        if self.path is None:
+            return None
         self.qmp.hmp("log none")
         self.qmp.hmp(f"logfile {os.path.join(self.dir, 'idle.log')}")   # ferme et vide le fichier
         path, self.path = self.path, None
@@ -54,10 +62,11 @@ class QemuEtmSim:
                 text = fh.read().decode("latin-1")
         finally:
             os.remove(path)
+        return list(parse(text.splitlines()))
+
+    def _convert(self, events: list, end_pc: int | None) -> int:
         # cycles du modèle (QEMU n'en a pas), encodés en mode cycle-accurate
-        events = annotate(list(parse(text.splitlines())), self.image)
-        self.last_events = len(events)
-        data = Etm3Encoder(self.image, cycle_accurate=True).encode(events)
+        data = Etm3Encoder(self.image, cycle_accurate=True).encode(annotate(events, self.image))
         self.etm.feed(data)
         return len(data)
 

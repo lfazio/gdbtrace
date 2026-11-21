@@ -25,7 +25,26 @@ def build_target(args, elf: str) -> object:
         return OpenOcdTarget(configs=args.openocd or ["board/st_nucleo_f4.cfg"],
                              gdb_port=args.gdb_port or 3333, rtos=args.rtos)
     return QemuTarget(elf=os.path.abspath(elf), machine=args.machine,
-                      gdb_port=args.gdb_port or free_port(), etm_sim=args.etm_sim)
+                      gdb_port=args.gdb_port or free_port(), etm_sim=args.etm_sim,
+                      mtb_sim=mtb_sim_size(args, elf))
+
+
+def mtb_sim_size(args, elf: str) -> int | None:
+    """Taille du tampon de la MTB simulée : `--mtb-sim N` (0 : illimité), sinon celle du
+    tampon réservé par le firmware (symbole `__mtb_buffer__`...), sinon 1 Ko ; None sans
+    MTB simulée."""
+    if args.mtb_sim is None:
+        return None
+    if args.mtb_sim >= 0:
+        return args.mtb_sim
+    from .core.symbols import SymbolTable
+    from .trace.mtb_capture import DEFAULT_SIZE, buffer_from_symbols
+    found = buffer_from_symbols(SymbolTable(os.path.abspath(elf)))
+    return found[1] if found else DEFAULT_SIZE
+
+
+def int_auto(text: str) -> int:
+    return int(text, 0)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -63,6 +82,19 @@ def main(argv: list[str] | None = None) -> int:
                    help="trace ETM cycle-accurate (durées mesurées pour l'analyse temporelle, ~8× plus de trace)")
     e.add_argument("--etm-width", type=int, default=4, choices=(1, 2, 4), help="largeur du port de trace")
     e.add_argument("--stm32", action="store_true", help="activer les broches de trace (DBGMCU_CR des STM32)")
+    m = p.add_argument_group("trace MTB (Cortex-M0+)")
+    m.add_argument("--mtb", nargs="?", const="auto", metavar="ADRESSE",
+                   help="activer la MTB de la cible (registres trouvés par les tables ROM CoreSight, "
+                        "ou à ADRESSE) ; tampon lu et remis à zéro à chaque arrêt")
+    m.add_argument("--mtb-buffer", metavar="ADRESSE:TAILLE",
+                   help="tampon de la MTB en SRAM (aligné sur sa taille) ; par défaut le symbole "
+                        "__mtb_buffer__ / mtb_buffer / __MTB_BUFFER du firmware")
+    m.add_argument("--mtb-sim", nargs="?", const=-1, type=int_auto, metavar="TAILLE",
+                   help="QEMU : MTB simulée, tampon de TAILLE octets (défaut : celui du firmware, "
+                        "sinon 1024 ; 0 : illimité, toute l'exécution) ; ex. avec --machine microbit "
+                        "et examples/m0plus")
+    m.add_argument("--mtb-probe", action="store_true",
+                   help="lister les composants CoreSight de la cible (MTB, ETM, TPIU...) à la connexion")
     p.add_argument("--machine", default="mps2-an385", help="machine QEMU")
     p.add_argument("--gdb", default="gdb-multiarch", help="exécutable gdb")
     p.add_argument("--gdb-port", type=int, default=0)
@@ -87,8 +119,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.elf and os.path.abspath(args.elf) != os.path.abspath(args.program):
             p.error("deux ELF différents : l'ELF de la ligne de commande et celui de --program")
         args.elf = args.program
-    if args.coverage and not (args.etm_sim or args.trace or args.trace_file or args.coverage_merge):
-        p.error("--coverage : pas de trace ETM (--etm-sim sous QEMU, --trace/--trace-file sur matériel)")
+    if args.coverage and not (args.etm_sim or args.trace or args.trace_file or args.coverage_merge
+                              or args.mtb is not None or args.mtb_sim is not None):
+        p.error("--coverage : pas de trace d'instructions (--etm-sim / --mtb-sim sous QEMU, "
+                "--trace / --trace-file / --mtb sur matériel)")
     program = args.program is not None
     verify = not args.no_verify
     if args.elf is None and (args.batch or program):
@@ -117,11 +151,37 @@ def main(argv: list[str] | None = None) -> int:
             for line in trace.configure_etm(EtmConfig(port_width=args.etm_width, stm32=args.stm32,
                                                            cycle_accurate=args.etm_cycle_accurate), session):
                 print(line)
+        if args.mtb_probe:
+            from .trace.mtb import rom_components
+            comps = rom_components(session.read_u32)
+            print("Composants CoreSight :" if comps else "Aucune table ROM CoreSight lisible")
+            for c in comps:
+                print(f"  {'  ' * c.depth}{c.addr:#010x}  {c.name}")
+        if args.mtb is not None:
+            setup_mtb(trace, session)
         if args.trace:                       # port parallèle : formateur TPIU, ETM + ITM
             host, _, port = args.trace.rpartition(":")
             trace.start_tcp(host or "127.0.0.1", int(port), formatter=True)
         elif args.trace_file:
             trace.start_file(args.trace_file, formatter=True)
+
+    def setup_mtb(trace, session) -> None:
+        """--mtb : registres (auto-détection ou adresse), tampon (option ou symbole), programmation."""
+        from .trace.mtb import find_mtb
+        from .trace.mtb_capture import buffer_from_symbols, describe
+        base = find_mtb(session.read_u32) if args.mtb == "auto" else int(args.mtb, 0)
+        if base is None:
+            raise RuntimeError("MTB introuvable (ni dans les tables ROM CoreSight, ni aux adresses "
+                               "connues) : la puce en a-t-elle une ? Sinon --mtb ADRESSE ; voir --mtb-probe")
+        if args.mtb_buffer:
+            addr, _, size = args.mtb_buffer.partition(":")
+            buffer = (int(addr, 0), int(size, 0))
+        else:
+            buffer = buffer_from_symbols(trace.etm.symbols if trace.etm is not None else None)
+            if buffer is None:
+                raise RuntimeError("tampon MTB : réserver un tableau `__mtb_buffer__` aligné sur sa "
+                                   "taille dans le firmware, ou --mtb-buffer ADRESSE:TAILLE")
+        print(describe(base, trace.setup_mtb(session, base, *buffer)))
 
     if args.batch:
         from .core.scripting import ScriptAPI
@@ -141,9 +201,12 @@ def main(argv: list[str] | None = None) -> int:
         from .core.symbols import SymbolTable
         symbols = SymbolTable(elf)
         msg = trace.setup_etm(elf, symbols, cycle_accurate=args.etm_cycle_accurate)
-        if args.etm_sim:
+        if args.etm_sim or args.mtb_sim is not None:
             if msg:
                 print(msg)
+            elif args.mtb_sim is not None:
+                trace.enable_mtb_sim(live, target.mtb_sim, s)
+                trace.attach_session(s)
             else:
                 trace.enable_qemu_sim(live)
                 trace.attach_session(s)

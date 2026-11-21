@@ -262,19 +262,22 @@ class MtbDecoder:
         self.handlers = vector_handlers(image, vtor)
         self.stats = MtbStats()
 
-    def decode(self, packets: list[Packet], end_pc: int | None = None) -> list[Event]:
+    def decode(self, packets: list[Packet], end_pc: int | None = None,
+               start_pc: int | None = None) -> list[Event]:
         """Événements (Step, ExcEntry, ExcReturn) de la portion tracée. `end_pc` : PC à l'arrêt
-        (prochaine instruction), pour compléter la fin, après le dernier paquet."""
+        (prochaine instruction), pour compléter la fin, après le dernier paquet ; `start_pc` :
+        PC à la reprise, si le tampon n'a pas débordé depuis (le début est alors complet)."""
         out: list[Event] = []
         st = self.stats
-        cur: int | None = None               # prochaine instruction (destination précédente)
+        cur: int | None = start_pc & ~1 if start_pc is not None else None   # prochaine instruction
         returning = False                    # entre `… → EXC_RETURN` et `EXC_RETURN → …`
         stack: list[int] = []                # adresses de retour des exceptions en cours
-        for p in packets:
+        for k, p in enumerate(packets):
             st.packets += 1
-            if p.s:
-                st.sessions += 1
-                cur, returning = None, False
+            if p.s:                          # trace (re)démarrée : ce qui précède est inconnu,
+                st.sessions += 1             # sauf le PC de reprise s'il est fourni
+                if k or start_pc is None:
+                    cur, returning = None, False
             if p.a and is_exc_return(p.src):    # 2e paquet du retour d'exception
                 if p.dst in self.handlers and (not stack or p.dst != stack[-1]):
                     out.append(ExcEntry(self.handlers[p.dst], p.dst, tailchain=True))
@@ -366,9 +369,9 @@ def _it_length(ins) -> int:
 
 
 # ====================================================================== encodage (simulation)
-def encode(events: list[Event], image) -> list[Packet]:
+def encode(events: list[Event], image, start: bool = True) -> list[Packet]:
     """Paquets qu'une MTB écrirait pour ce chemin d'exécution (QEMU, tests). Premier paquet
-    marqué S ; pas de limite de taille (voir `last`)."""
+    marqué S si `start` (trace qui démarre) ; pas de limite de taille (voir `last`)."""
     from .etm.cycles import successors
     nxt = successors(events)
     out: list[Packet] = []
@@ -377,7 +380,7 @@ def encode(events: list[Event], image) -> list[Packet]:
     pending_return = False
 
     def emit(src: int, dst: int, a: bool = False) -> None:
-        out.append(Packet(src, dst, a, s=not out))
+        out.append(Packet(src, dst, a, s=start and not out))
 
     def seq(addr: int) -> int:
         ins = image.instr(addr)

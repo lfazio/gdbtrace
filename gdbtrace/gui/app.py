@@ -350,12 +350,16 @@ class App:
         if self.api:
             self.api.live = self.live
         from ..core.target import QemuTarget
-        if isinstance(target, QemuTarget) and target.etm_sim and self.live is not None:
+        if isinstance(target, QemuTarget) and (target.etm_sim or target.mtb_sim is not None) \
+                and self.live is not None:
             if self.trace.etm is None and self.session and self.session.elf and self.symbols:
                 msg = self.trace.setup_etm(self.session.elf, self.symbols)
                 if msg:
                     self.report_error(msg)
-            if self.trace.etm is not None and self.trace.etm_sim is None:
+            if self.trace.etm is not None and target.mtb_sim is not None and self.trace.mtb_sim is None:
+                self.trace.enable_mtb_sim(self.live, target.mtb_sim, self.session)
+                self.trace.attach_session(self.session)
+            elif self.trace.etm is not None and target.etm_sim and self.trace.etm_sim is None:
                 self.trace.enable_qemu_sim(self.live)
                 self.trace.attach_session(self.session)
         if self.session and self.session.state == "running":

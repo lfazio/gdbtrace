@@ -614,3 +614,46 @@ def test_coverage_view(etm_app, tmp_path):
     assert "SF:" in (tmp_path / "c.info").read_text()
     cv._reset()
     assert "instructions 0.0 %" in cv.info.cget("text")
+
+
+@pytest.fixture
+def mtb_app(m0_elf, tmp_path):
+    """Démo Cortex-M0+ sous QEMU microbit, MTB simulée (tampon de 1 Ko du firmware)."""
+    from gdbtrace.gui.app import App
+    a = App(layout_file=str(tmp_path / "layout.json"))
+    s = Session()
+    s.connect(m0_elf, QemuTarget(elf=m0_elf, machine="microbit", gdb_port=free_port(), mtb_sim=1024))
+    a.attach(s)
+    yield a
+    close_app(a)
+
+
+def test_mtb_simulated_views(mtb_app):
+    """MTB simulée : Trace.List, flot d'appels, Couverture et Timing alimentés comme par l'ETM."""
+    from gdbtrace.views.coverage import CoverageView
+    from gdbtrace.views.timing import TimingView
+    from gdbtrace.views.trace import TraceView
+    app = mtb_app
+    assert app.trace.mtb_sim is not None and app.trace.etm_sim is None
+    tv = app.views.show(TraceView)
+    run_to(app, "animate")
+    assert pump(app, lambda: app.trace.etm.stats["instructions"] > 50 and not app.trace.etm_busy), \
+        etm_diagnostics(app)
+    pump(app, lambda: False, timeout=0.3)
+    assert "MTB simulée (QEMU, 1024 octets)" in tv.info.cget("text")
+    rows = tv.listing.get_children()
+    last = tv.listing.item(rows[-1], "values")
+    ins = app.trace.etm.image.instr(int(last[0], 16))
+    assert int(last[0], 16) + ins.size == app.current_frame.pc        # jusqu'au point d'arrêt
+    flow = [tv.flow.item(i, "values")[0].strip() for i in tv.flow.get_children()]
+    assert "→ main" in flow and flow[-1] == "→ animate"                # depuis le reset : complet
+    cv = app.views.show(CoverageView)
+    cv.render(force=True)
+    assert "MTB simulée" in cv.info.cget("text")
+    funcs = {cv.tree.item(i, "text"): cv.tree.item(i, "values")
+             for f in cv.tree.get_children() for i in cv.tree.get_children(f)}
+    assert funcs["peripherals_init"][0] == "✔ ok" and funcs["HardFault_Handler"][0] == "✘ jamais"
+    tm = app.views.show(TimingView)
+    tm.analyze()
+    assert pump(app, lambda: tm.result is not None and not tm._busy, timeout=30)
+    assert "MTB simulée" in tm.info.cget("text") and "estimé" in tm.info.cget("text")

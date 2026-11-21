@@ -53,7 +53,22 @@ class EtmTrace:
         self.cov = CoverageDB(image, symbols)
         self.bytes = 0
         self.generation = 0          # incrémenté à chaque ajout (rafraîchissement des vues)
+        #: origine des durées quand la trace ne vient pas de l'ETM (ex. MTB : cycles du modèle)
+        self.timing_label: str | None = None
+        self.fed_instructions = 0    # instructions venues d'une autre source (MTB)
+        self.fed_errors = 0
         self._lock = threading.Lock()
+
+    def feed_events(self, events: list[Event], errors: int = 0) -> int:
+        """Ajoute des événements déjà décodés (trace MTB) ; retourne le nombre d'instructions."""
+        with self._lock:
+            self.history.extend(events)
+            self.cov.add(events)
+            n = sum(1 for e in events if isinstance(e, Step))
+            self.fed_instructions += n
+            self.fed_errors += errors
+            self.generation += 1
+            return n
 
     def feed(self, data: bytes) -> int:
         """Ajoute des octets de trace ETM ; retourne le nombre d'instructions décodées."""
@@ -71,6 +86,7 @@ class EtmTrace:
             self.flow = FlowDecoder(self.image, self.cycle_accurate)
             self.history.clear()
             self.bytes = 0
+            self.fed_instructions = self.fed_errors = 0
             self.generation += 1
 
     def last(self, n: int) -> list[Event]:
@@ -82,13 +98,15 @@ class EtmTrace:
     @property
     def stats(self) -> dict[str, int]:
         fs = self.flow.stats
-        return {"octets": self.bytes, "instructions": fs.instructions, "non exécutées": fs.not_executed,
-                "erreurs": self.packets.errors, "atomes perdus": fs.lost_atoms,
-                "code inconnu": fs.unknown_code, "cycles": fs.cycles}
+        return {"octets": self.bytes, "instructions": fs.instructions + self.fed_instructions,
+                "non exécutées": fs.not_executed, "erreurs": self.packets.errors + self.fed_errors,
+                "atomes perdus": fs.lost_atoms, "code inconnu": fs.unknown_code, "cycles": fs.cycles}
 
     @property
     def timing(self) -> str:
         """Origine des durées : mesurées (cycle-accurate) ou estimées (modèle)."""
+        if self.timing_label:
+            return self.timing_label
         if self.simulated:
             return "estimé (modèle de cycles, ETM simulé)"
         return self.flow.timing

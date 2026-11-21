@@ -63,4 +63,28 @@ def test_coverage_campaigns(elf, tmp_path):
 
 def test_coverage_needs_etm(elf, tmp_path):
     r = run(elf, "--batch", "--coverage", str(tmp_path / "c.html"))
-    assert r.returncode != 0 and "pas de trace ETM" in r.stderr
+    assert r.returncode != 0 and "pas de trace d'instructions" in r.stderr
+
+
+@needs_qemu
+def test_mtb_simulated_campaign(m0_elf, tmp_path):
+    """--mtb-sim sur la démo Cortex-M0+ (QEMU microbit) : couverture et paquets bruts."""
+    import json
+    script = tmp_path / "s.py"
+    script.write_text("gdbtrace.break_('animate', temporary=True)\ngdbtrace.go()\ngdbtrace.wait()\n"
+                      "rows = gdbtrace.mtb(5)\nprint('paquets', len(rows))\n")
+    out = tmp_path / "cov.json"
+    r = run(m0_elf, "--machine", "microbit", "--mtb-sim", "0", "--batch", "--script", str(script),
+            "--coverage", str(out), timeout=180)
+    assert r.returncode == 0, r.stderr
+    assert "paquets 5" in r.stdout and "→ 000001d4 animate" in r.stdout
+    cov = json.load(open(out))
+    assert len(cov["e"]) > 50                                  # Reset_Handler, main, fib, animate...
+
+
+@needs_qemu
+def test_mtb_absent_on_target(m0_elf):
+    """--mtb sur une cible sans MTB (QEMU) : erreur explicite ; --mtb-probe ne plante pas."""
+    r = run(m0_elf, "--machine", "microbit", "--mtb", "--mtb-probe", "--batch", timeout=120)
+    assert r.returncode == 1 and "MTB introuvable" in r.stderr
+    assert "CoreSight" in r.stdout

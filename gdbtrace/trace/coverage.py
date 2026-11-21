@@ -168,7 +168,7 @@ class CoverageDB:
                 it_left = len(mnem) - 1 if mnem.startswith("it") and len(mnem) <= 4 and \
                     set(mnem[2:]) <= {"t", "e"} else max(0, it_left - 1)
                 branch = ins.kind in (DIRECT, INDIRECT) and (ins.cond or in_it) and not ins.call
-                if mnem == "nop" and prev is not None and prev.kind in (DIRECT, INDIRECT) \
+                if _is_nop(ins.text) and prev is not None and prev.kind in (DIRECT, INDIRECT) \
                         and not prev.cond and not prev_in_it and not prev.call:
                     prev, prev_in_it = ins, in_it    # alignement après un saut : inatteignable
                     addr += ins.size
@@ -319,6 +319,13 @@ def line_of_function(db: CoverageDB, name: str) -> FuncCov | None:
 def _drop_padding(instrs: list[InstrInfo]) -> None:
     """Retire les `nop` d'alignement placés par le compilateur avant un literal pool ou en
     fin de fonction : jamais exécutables, ils fausseraient la couverture."""
-    while len(instrs) > 1 and instrs[-1].text.split()[0].split(".")[0] == "nop" \
+    while len(instrs) > 1 and _is_nop(instrs[-1].text) \
             and not instrs[-1].branch:
         instrs.pop()
+
+
+def _is_nop(text: str) -> bool:
+    """`nop` (Thumb-2) ou `mov r8, r8` (0x46C0, le nop d'ARMv6-M, Cortex-M0/M0+)."""
+    if not text:
+        return False
+    return text.split()[0].split(".")[0] == "nop" or text.replace(" ", "") == "movr8,r8"

@@ -240,3 +240,65 @@ def _roundtrip(img, events):
     end = d2.decode(tail, end_pc=events[last_step].addr)
     assert d2.stats.errors == 0 and len(steps(end)) > 128
     assert steps(end) == steps(got)[-len(steps(end)):]
+
+
+# ====================================================================== capture sur cible
+class FakeSession(FakeMtb):
+    """Session gdb factice : registres MTB et SRAM (FakeMtb), PC courant."""
+
+    def __init__(self, pc):
+        super().__init__()
+        self.pc = pc
+
+    def register(self, name):
+        assert name == "pc"
+        return self.pc
+
+    read_memory = FakeMtb.read_mem
+
+
+def test_capture_collect_restart_and_continuity():
+    """MtbCapture : programmation, lecture à chaque arrêt, remise à zéro ; sans débordement,
+    la reprise part du PC de l'arrêt précédent (aucune instruction perdue)."""
+    from gdbtrace.trace.mtb_capture import MtbCapture
+    s = FakeSession(pc=0x100)
+    cap = MtbCapture(s, IMG, 0xF0000000, 0x1FFFF400, 64)
+    assert s.mem[0xF0000000 + mtb.MASTER] & mtb.MASTER_EN
+    # 1re exécution : 0x100, 0x102, bne pris (0x104 → 0x100), arrêt avant 0x102
+    s.hw_write([P(0x104, 0x100, s=True)])
+    s.pc = 0x102
+    ev = cap.collect()
+    assert steps(ev) == [(0x100, True), (0x102, True), (0x104, True), (0x100, True)]
+    assert all(e.cycles > 0 for e in ev)                         # durées du modèle (estimées)
+    assert mtb.read_state(s.read_u32, 0xF0000000).index == 0      # tampon remis à zéro
+    # 2e exécution : reprend à 0x102 ; bne non pris, bl, retour
+    s.hw_write([P(0x106, 0x300), P(0x302, 0x10A)])
+    s.pc = 0x10A
+    assert steps(cap.collect()) == [(0x102, True), (0x104, False), (0x106, True), (0x300, True),
+                                    (0x302, True)]
+    assert cap.last_packets == [P(0x106, 0x300), P(0x302, 0x10A)]
+
+
+@needs_qemu
+def test_simulated_mtb_feeds_trace_and_coverage(m0_path):
+    """QemuMtbSim (sans QEMU en marche : conversion d'un chemin enregistré) → EtmTrace :
+    instructions, couverture des branches, durées estimées."""
+    from gdbtrace.core.symbols import SymbolTable
+    from gdbtrace.trace.etm.trace import EtmTrace
+    from gdbtrace.trace.mtb_capture import QemuMtbSim
+    img, events = m0_path
+    trace = EtmTrace(img, SymbolTable(img.path))
+    sim = QemuMtbSim(qmp=None, image=img, etm_trace=trace, size=0)
+    sim.runs = 1
+    sim._convert(list(events), end_pc=None)
+    st = trace.stats
+    assert st["instructions"] > 200_000 and st["erreurs"] == 0
+    funcs = {f.name: f for f in trace.cov.functions()}
+    assert funcs["fib"].status == "ok" and funcs["delay"].branches >= 1
+    small = EtmTrace(img, SymbolTable(img.path))
+    sim2 = QemuMtbSim(qmp=None, image=img, etm_trace=small, size=1024)
+    sim2.runs = 1
+    sim2._convert(list(events), end_pc=None)
+    assert 128 * 2 < small.stats["instructions"] < st["instructions"] // 10   # 128 derniers branchements
+    import shutil
+    shutil.rmtree(sim.dir), shutil.rmtree(sim2.dir)

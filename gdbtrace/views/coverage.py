@@ -102,7 +102,7 @@ class CoverageView(View):
     def render(self, force: bool = False) -> None:
         db = self.db
         if db is None:
-            self.info.configure(text="Pas de trace ETM : --etm-sim sous QEMU, ou --trace / "
+            self.info.configure(text="Pas de trace d'instructions : --etm-sim / --mtb-sim sous QEMU, ou --mtb / --trace / "
                                      "--trace-file avec une sonde de trace")
             self.tree.delete(*self.tree.get_children())
             return
@@ -111,7 +111,7 @@ class CoverageView(View):
             return
         self._gen = key
         tm = self.app.trace
-        src = "ETM simulé (QEMU)" if tm.etm_sim is not None else "capture ETM" if tm.active else "trace ETM"
+        src = tm.source_label()
         self.info.configure(text=f"{db.summary()} — {src}")
         opened = {self.tree.item(i, "text") for i in self.tree.get_children() if self.tree.item(i, "open")}
         first = not self.tree.get_children()
@@ -188,7 +188,7 @@ class CoverageView(View):
     def export(self, path: str) -> None:
         from ..trace.coverage_report import export
         tm = self.app.trace
-        note = "ETM simulé (QEMU)" if tm.etm_sim is not None else "trace ETM"
+        note = tm.source_label()
         fmt = self.app.safe(export, self.db, path, note)
         if fmt:
             self.app.status.set(f"Couverture exportée ({fmt}) : {path}")

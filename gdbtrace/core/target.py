@@ -102,6 +102,9 @@ class QemuTarget(TargetServer):
     #: ETM simulé : une instruction par bloc TCG, journal activé à chaque exécution
     #: (plus lent ; QEMU n'émule pas d'ETM, voir trace/etm/qemu_sim.py)
     etm_sim: bool = False
+    #: MTB simulée (Cortex-M0+) : même journal que l'ETM simulé, tampon de `mtb_sim` octets
+    #: (None : pas de MTB simulée ; 0 : tampon illimité, toute l'exécution)
+    mtb_sim: int | None = None
 
     #: second port QMP réservé au contrôle de la machine (reset) : le premier sert au canal
     #: live, et un serveur QMP n'accepte qu'un client à la fois
@@ -148,7 +151,7 @@ class QemuTarget(TargetServer):
             "-gdb", f"tcp:{self.host}:{self.gdb_port}", "-S",
             "-qmp", f"tcp:{self.host}:{self.qmp_port},server=on,wait=off",
             "-qmp", f"tcp:{self.host}:{self.ctl_port},server=on,wait=off",
-        ] + (["-accel", "tcg,one-insn-per-tb=on"] if self.etm_sim else [])
+        ] + (["-accel", "tcg,one-insn-per-tb=on"] if self.etm_sim or self.mtb_sim is not None else [])
 
     def live_memory(self) -> LiveMemory | None:
         return QemuQmp(self.host, self.qmp_port)

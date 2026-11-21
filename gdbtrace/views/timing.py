@@ -116,7 +116,8 @@ class TimingView(View):
     def analyze(self) -> None:
         etm = self.app.trace.etm
         if etm is None:
-            self.info.configure(text="trace ETM indisponible (--etm-sim sous QEMU, ou capture de trace)")
+            self.info.configure(text="trace d'instructions indisponible (--etm-sim / --mtb-sim sous QEMU, "
+                                     "--mtb ou capture ETM sur cible)")
             return
         if self._busy:
             return

@@ -110,8 +110,8 @@ class TraceView(View):
         if not force and etm.generation == self._generation:
             return
         self._generation = etm.generation
-        src = ("ETM simulé (QEMU)" if self.app.trace.etm_sim is not None
-               else "capture TPIU" if self.app.trace.active else "aucune source")
+        tm = self.app.trace
+        src = tm.source_label() if (tm.etm_sim or tm.mtb_sim or tm.mtb or tm.active) else "aucune source"
         st = etm.stats
         self.info.configure(text=f"{src} — {st['instructions']} instructions décodées, "
                                  f"{st['octets']} octets, {st['erreurs']} erreurs")
