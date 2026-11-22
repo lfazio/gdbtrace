@@ -73,3 +73,39 @@ def test_compute_layout_matches_gdb(session):
         assert not lay.live and "locale" in lay.reason
     finally:
         lm.close()
+
+
+def test_formats_live_like_gdb(session):
+    """Chaque format d'affichage : décodage en marche (octets bruts) == gdb cible arrêtée
+    (-var-set-format), pour que la valeur ne change pas d'aspect entre l'arrêt et la marche."""
+    from gdbtrace.core.formats import GDB_FORMAT, from_zero_hex
+    session.break_("update_sensor")
+    session.go()
+    session.wait_stopped(5)
+    local_names = {v["name"] for v in session.locals()}
+    lm = session.target.live_memory()
+    try:
+        root = session.var_create("sensors")
+        s1 = session.var_children(root["name"])[1]
+        leaves = [c["name"] for c in session.var_children(s1["name"])]
+        leaves += [session.var_create(e)["name"]
+                   for e in ("mode", "last_char", "temperature", "offset", "ticks")]
+        for name in leaves:
+            lay = compute_layout(session, name, local_names)
+            raw = lm.read(lay.addr, lay.size)
+            for fmt in ("decimal", "hexadecimal", "octal", "binary", "ascii"):
+                value = session.var_set_format(name, GDB_FORMAT[fmt])
+                if fmt in ("binary", "ascii"):
+                    value = from_zero_hex(value, fmt)
+                assert decode(lay, raw, fmt) == value, (name, fmt)
+        off = session.var_create("offset")["name"]
+        assert session.var_set_format(off, "hexadecimal") == "0xfffd"
+        # locales et expressions : output/F de gdb, sans historique $N
+        assert session.format_value("tick", "hex").startswith("0x")
+        assert session.format_value("offset", "bin") == "0b1111_1111_1111_1101"
+        assert session.format_value("s", "decimal").isdigit()             # pointeur
+        assert session.format_value("*s", "hex").startswith("{id = 0x")   # membres en hexadécimal
+        assert session.format_value("*s", "binary").startswith("{id = ")  # agrégat : /t de gdb
+        assert "$" not in session.format_value("ticks", "oct")
+    finally:
+        lm.close()

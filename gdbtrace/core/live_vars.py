@@ -11,6 +11,7 @@ import re
 import struct
 from dataclasses import dataclass, field
 
+from .formats import format_bytes
 from .gdb_backend import GdbError
 
 MAX_LIVE_SIZE = 4096
@@ -92,12 +93,15 @@ def _char_repr(v: int) -> str:
     return f"{v} '{c}'"
 
 
-def decode(layout: LeafLayout, data: bytes) -> str:
-    """Convertit les octets bruts en texte, comme gdb l'afficherait."""
+def decode(layout: LeafLayout, data: bytes, fmt: str = "natural") -> str:
+    """Convertit les octets bruts en texte, comme gdb l'afficherait au format `fmt`
+    (core/formats.py ; décimal signé pour les entiers signés, bits bruts d'un flottant)."""
     if len(data) < layout.size:
         return "<?>"
     raw = data[:layout.size]
     k = layout.kind
+    if fmt != "natural":
+        return format_bytes(raw, fmt, signed=k in ("int", "schar"))
     if k == "float":
         v = struct.unpack("<f" if layout.size == 4 else "<d", raw)[0]
         return f"{v:.9g}" if layout.size == 4 else f"{v:.17g}"

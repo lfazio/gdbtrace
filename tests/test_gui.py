@@ -730,3 +730,75 @@ def test_etm_over_swo_in_gui(app, qemu_paths, tmp_path):
     assert t.covered > 100 and cv.tree.get_children()
     assert "instructions décodées" in tv.info.cget("text")
     app.trace.stop()
+
+
+def test_watch_and_locals_display_formats(app):
+    """Clic droit › format d'affichage : Watch (hérité par les membres, gardé en marche et dans
+    le layout, changé cible en marche) et locales de la vue Pile."""
+    from gdbtrace.core.formats import ascii_repr
+    from gdbtrace.views.data import StackView, WatchView
+
+    def pick(view, item, label):
+        m = view._format_menu(item)
+        m.invoke(m.index(label))
+
+    app.session.break_("update_sensor", temporary=True)
+    app.go()
+    assert pump(app, lambda: app.current_frame is not None and app.current_frame.func == "update_sensor")
+    w = app.views.find(WatchView)
+    for e in ("offset", "last_char", "sensors", "ticks"):
+        w.add(e)
+    r = w.roots
+    pick(w, r["offset"], "Hexadécimal")
+    assert w.tree.set(r["offset"], "value") == "0xfffd"
+    pick(w, r["offset"], "Binaire")
+    assert w.tree.set(r["offset"], "value") == "0b1111_1111_1111_1101"
+    ch = int(w.tree.set(r["last_char"], "value").split()[0])          # naturel : « 65 'A' »
+    pick(w, r["last_char"], "ASCII")
+    assert w.tree.set(r["last_char"], "value") == ascii_repr(bytes([ch]))
+    # structure : le format vaut pour les membres, dépliés ensuite compris
+    pick(w, r["sensors"], "Hexadécimal")
+    w.tree.focus(r["sensors"])
+    w._expand(None)
+    s1 = w.tree.get_children(r["sensors"])[1]
+    w.tree.focus(s1)
+    w._expand(None)
+    kids = {w.tree.item(i, "text"): i for i in w.tree.get_children(s1)}
+    assert w.tree.set(kids["id"], "value") == "0x2"
+    pick(w, kids["id"], "Décimal")                                     # un membre garde le sien
+    assert w.tree.set(kids["id"], "value") == "2" and w.format_of(kids["value"]) == "hexadecimal"
+    w._format_menu(kids["id"])
+    assert w.format_menu.var.get() == "decimal"                        # bouton radio coché
+    # cible en marche : suivi en direct au format choisi, et format changé en marche
+    pick(w, r["ticks"], "Hexadécimal")
+    app.go()
+    assert pump(app, lambda: app.session.state == "running")
+    t0 = w.tree.set(r["ticks"], "value")
+    assert pump(app, lambda: w.tree.set(r["ticks"], "value").startswith("0x")
+                and w.tree.set(r["ticks"], "value") != t0)
+    pick(w, r["ticks"], "ASCII")
+    assert pump(app, lambda: w.tree.set(r["ticks"], "value").startswith("'"))
+    app.halt()
+    assert pump(app, lambda: app.session.state == "stopped")
+    pump(app, lambda: False, timeout=0.3)
+    assert w.tree.set(r["ticks"], "value").startswith("'") and w.tree.set(r["offset"], "value").startswith("0b")
+    # layout : formats gardés, appliqués à la création des racines
+    state = w.get_state()
+    assert state["formats"]["offset"] == "binary" and state["formats"]["sensors\t[1]\tid"] == "decimal"
+    w2 = app.views.open(WatchView, None, {"exprs": ["offset"], "formats": state["formats"]})
+    off = w2.tree.set(w2.roots["offset"], "value")          # offset = -(tick % 7) : négatif ou nul
+    assert off == w.tree.set(r["offset"], "value") and off.startswith("0b") and len(off) == 21
+    # locales de la vue Pile
+    app.session.break_("update_sensor", temporary=True)
+    app.go()
+    assert pump(app, lambda: app.session.state == "stopped" and app.current_frame is not None
+                and app.current_frame.func == "update_sensor")
+    sv = app.views.show(StackView)
+    sv.refresh()
+    tick = next(i for i in sv.locals.get_children() if sv.locals.set(i, "name") == "tick")
+    pick(sv, tick, "Hexadécimal")
+    assert sv.locals.set(tick, "value").startswith("0x")
+    assert sv.get_state() == {"formats": {"update_sensor/tick": "hexadecimal"}}
+    sv.refresh()                                                        # arrêt suivant : gardé
+    tick = next(i for i in sv.locals.get_children() if sv.locals.set(i, "name") == "tick")
+    assert sv.locals.set(tick, "value").startswith("0x")

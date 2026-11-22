@@ -510,6 +510,26 @@ class Session:
     def var_delete(self, name: str) -> None:
         self.gdb.command(f"-var-delete {name}")
 
+    def var_set_format(self, name: str, fmt: str) -> str:
+        """Format d'affichage d'un varobj (natural, decimal, hexadecimal, octal, binary,
+        zero-hexadecimal), gardé par les `-var-update` suivants ; retourne la valeur.
+        Les enfants d'une structure ou d'un tableau ne l'héritent pas."""
+        return self.gdb.command(f"-var-set-format {name} {fmt}").get("value", "")
+
+    def format_value(self, expr: str, fmt: str = "natural") -> str:
+        """Valeur d'une expression au format voulu (core/formats.py) : `output/F` de gdb, sans
+        historique `$N` ; binaire et ASCII d'un scalaire tirés de `output/z` (largeur du type),
+        ceux d'une structure laissés à gdb (/t, /c)."""
+        from .formats import AGGREGATE_LETTER, OUTPUT_LETTER, from_zero_hex, normalize
+        fmt = normalize(fmt)
+        if fmt == "natural":
+            return self.evaluate(expr)
+        out = self.cli(f"output/{OUTPUT_LETTER[fmt]} {expr}").strip()
+        if fmt in AGGREGATE_LETTER:
+            conv = from_zero_hex(out, fmt)
+            out = conv if conv is not None else self.cli(f"output/{AGGREGATE_LETTER[fmt]} {expr}").strip()
+        return out
+
     # ------------------------------------------------------------------ threads (RTOS côté serveur)
     def threads(self) -> list[dict]:
         """Threads vus par gdb. Avec OpenOCD `-rtos`, chaque tâche RTOS est un thread."""

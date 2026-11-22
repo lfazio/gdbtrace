@@ -432,7 +432,9 @@ class ScriptAPI:
     def breaks(self): return self.s.breakpoints()
 
     # données
-    def eval(self, expr: str) -> str: return self.s.evaluate(expr)
+    def eval(self, expr: str, fmt: str = "natural") -> str:
+        """Valeur d'une expression ; `fmt` : naturel, dec, hex, oct, bin, ascii (core/formats.py)."""
+        return self.s.format_value(expr, fmt)
     def set(self, expr: str, value) -> None: self.s.set_var(expr, str(value))
     def read(self, addr: int, n: int) -> bytes: return self.s.read_memory(addr, n)
     def write(self, addr: int, data: bytes) -> None: self.s.write_memory(addr, data)

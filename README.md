@@ -88,6 +88,16 @@ Un double-clic dans la marge de la vue Source ou Désassemblage pose ou retire u
   instruction un breakpoint à l'adresse.
 - **Watch** : une expression ajoutée cible en marche est évaluée à l'arrêt suivant ; une locale
   hors de portée est réévaluée à chaque arrêt.
+- **Format d'affichage** (Watch et locales de la vue Pile) : un clic droit sur une variable
+  propose Naturel, Décimal, Hexadécimal, Octal, Binaire ou ASCII.
+  - Le format d'une structure ou d'un tableau vaut pour tous ses membres, y compris ceux
+    dépliés plus tard ; un membre peut avoir le sien.
+  - Il s'applique aussi cible en marche (Watch en direct), et il est gardé dans le layout.
+    Une locale garde son format par fonction.
+  - Comme `print/x` de gdb, un flottant en hexadécimal, décimal, octal ou binaire montre ses
+    bits bruts (`21.5` → `0x41ac0000`).
+  - Le binaire couvre toute la largeur du type, par groupes de 4 (`0b1111_1111_1111_1101`).
+  - L'ASCII lit les octets dans l'ordre de la mémoire, comme Data.dump (`'AB\0\0'`).
 Un double-clic sur un registre, un octet mémoire ou une variable Watch permet d'en modifier la valeur.
 Clic droit sur un onglet : détacher la vue dans une fenêtre flottante, ou la déplacer.
 Le layout est enregistré dans `gdbtrace-layout.json` ; les vues ajoutées depuis la sauvegarde
@@ -453,6 +463,7 @@ avec OpenOCD, comme un Break).
 |---|---|
 | `gdbtrace.break_("fib"); gdbtrace.go(); gdbtrace.wait()` | Python, avec l'API `gdbtrace` |
 | `gdbtrace.d("sensors", 32)`, `gdbtrace.r()`, `gdbtrace.bt()` | Data.dump, Register.view, pile |
+| `gdbtrace.eval("offset", "hex")` | valeur d'une expression ; format : naturel, `dec`, `hex`, `oct`, `bin`, `ascii` |
 | `gdbtrace.mem(addr, n)`, `gdbtrace.live_read(addr, n)` | lecture mémoire, y compris cible en marche |
 | `gdbtrace.periph("TIMER0")` | PER.view : registres et champs décodés, retourne `{registre: valeur}` |
 | `gdbtrace.tasks()`, `gdbtrace.queues()` | TASK.List / objets du noyau FreeRTOS (aussi cible en marche) |
@@ -484,6 +495,7 @@ gdbtrace/
   core/symbols.py       ELF/DWARF direct (pyelftools) : fonctions, table des lignes
   core/live.py          canal mémoire latéral (OpenOCD TCL, QEMU QMP) + LivePoller
   core/live_vars.py     disposition et décodage des variables sans gdb (Watch en marche)
+  core/formats.py       formats d'affichage (décimal, hexa, octal, binaire, ASCII), comme gdb
   core/svd.py           parseur CMSIS-SVD (derivedFrom, dim, clusters, champs, énumérations)
   core/rtos/freertos.py awareness FreeRTOS : disposition via DWARF, parcours des listes,
                         piles, objets du noyau, contexte et pile d'appels des tâches

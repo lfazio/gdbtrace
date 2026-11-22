@@ -1,11 +1,37 @@
-"""Break.List, Var.Watch, Frame.view (pile + locales)."""
+"""Break.List, Var.Watch, Frame.view (pile + locales).
+
+Clic droit sur une variable (Watch, locales) : format d'affichage de sa valeur (Naturel,
+Décimal, Hexadécimal, Octal, Binaire, ASCII), gardé en marche et dans le layout.
+"""
 from __future__ import annotations
 
 import tkinter as tk
 from tkinter import simpledialog, ttk
 
+from ..core.formats import FORMATS, GDB_FORMAT, from_zero_hex, normalize
 from ..core.live_vars import LeafLayout, compute_layout, decode
 from ..gui.view_base import View
+
+
+class FormatMenu:
+    """Menu contextuel « Format d'affichage » d'une vue : un bouton radio par format. Une seule
+    variable tkinter par vue (créée dans le thread GUI), un seul menu affiché à la fois."""
+
+    def __init__(self, view: View):
+        self.view = view
+        self.var = tk.StringVar(view, "natural")
+        self.menu: tk.Menu | None = None
+
+    def build(self, current: str, choose) -> tk.Menu:
+        if self.menu is not None:
+            self.menu.destroy()
+        self.var.set(current)
+        m = self.menu = tk.Menu(self.view, tearoff=False)
+        m.add_command(label="Format d'affichage", state="disabled")
+        for key, label in FORMATS.items():
+            m.add_radiobutton(label=label, value=key, variable=self.var,
+                              command=lambda k=key: choose(k))
+        return m
 
 
 def _tree(master, columns: list[tuple[str, str, int]], tree_col: tuple[str, int] | None = None):
@@ -121,6 +147,7 @@ class WatchView(View):
                           tree_col=("Expression", 180))
         self.tree.bind("<<TreeviewOpen>>", self._expand)
         self.tree.bind("<Double-1>", self._edit)
+        self.tree.bind("<Button-3>", self._menu)
         self.exprs: list[str] = []          # expressions racines (persistées)
         self.roots: dict[str, str] = {}     # expression racine -> item de l'arbre
         self.tree.tag_configure("error", foreground="#b00020")
@@ -128,6 +155,14 @@ class WatchView(View):
         self.item_of: dict[str, str] = {}   # varobj -> item
         self.numchild: dict[str, int] = {}  # item -> nombre d'enfants
         self.layouts: dict[str, LeafLayout] = {}  # feuille -> disposition mémoire (live)
+        # formats d'affichage : chemin (libellés depuis la racine, séparés par \t) -> format,
+        # hérité par les membres (persisté) ; format posé sur chaque varobj ; dernière valeur
+        # `zero-hexadecimal` (binaire, ASCII) ; derniers octets lus en marche
+        self.formats: dict[str, str] = {}
+        self.gdb_fmt: dict[str, str] = {}
+        self.hex_value: dict[str, str] = {}
+        self.last_live: dict[int, bytes] = {}
+        self.format_menu = FormatMenu(self)
 
     def add(self, expr: str) -> None:
         expr = expr.strip()
@@ -186,7 +221,76 @@ class WatchView(View):
         self.numchild[item] = int(v.get("numchild", 0))
         if self.numchild[item] > 0:
             self.tree.insert(item, "end", iid=f"{item}{self.PLACEHOLDER}", text="…")
+        if self.format_of(item) != "natural":      # varobj neuf : format naturel chez gdb
+            self.app.safe(self._apply_format, item)
         return item
+
+    # ------------------------------------------------------------------ formats d'affichage
+    def _path(self, item: str) -> str:
+        labels = []
+        while item:
+            labels.append(self.tree.item(item, "text"))
+            item = self.tree.parent(item)
+        return "\t".join(reversed(labels))
+
+    def format_of(self, item: str) -> str:
+        """Format effectif : celui de la ligne, sinon de l'ancêtre le plus proche, sinon naturel."""
+        path = self._path(item)
+        while True:
+            if path in self.formats:
+                return self.formats[path]
+            if "\t" not in path:
+                return "natural"
+            path = path.rsplit("\t", 1)[0]
+
+    def set_format(self, item: str, fmt: str) -> None:
+        """Format d'affichage de la ligne et de tous ses membres (structure, tableau). Cible
+        arrêtée : appliqué par gdb tout de suite ; en marche : aux valeurs suivies en direct,
+        les autres à l'arrêt suivant."""
+        fmt = normalize(fmt)
+        path = self._path(item)
+        for p in [p for p in self.formats if p == path or p.startswith(path + "\t")]:
+            del self.formats[p]
+        parent = self.tree.parent(item)
+        if fmt != (self.format_of(parent) if parent else "natural"):
+            self.formats[path] = fmt
+        if self.stopped:
+            for it in self._subtree(item):
+                if it in self.varobj:
+                    self.app.safe(self._apply_format, it)
+        elif self.last_live:
+            self._on_live(dict(self.last_live), mark=False)
+
+    def _apply_format(self, item: str) -> None:
+        """Cible arrêtée : pose le format sur le varobj de la ligne et affiche sa valeur."""
+        gfmt = GDB_FORMAT[self.format_of(item)]
+        if self.gdb_fmt.get(item, "natural") != gfmt:
+            value = self.session.var_set_format(self.varobj[item], gfmt)
+            self.gdb_fmt[item] = gfmt
+        elif gfmt == "zero-hexadecimal" and item in self.hex_value:
+            value = self.hex_value[item]             # binaire ↔ ASCII : même valeur gdb
+        else:
+            return
+        self._show(item, value)
+
+    def _show(self, item: str, value: str) -> None:
+        """Valeur de gdb (au format posé sur le varobj) → texte affiché."""
+        fmt = self.format_of(item)
+        if fmt in ("binary", "ascii") and self.gdb_fmt.get(item) == "zero-hexadecimal":
+            self.hex_value[item] = value
+            value = from_zero_hex(value, fmt) or value
+        self.tree.set(item, "value", value)
+
+    def _menu(self, event) -> None:
+        item = self.tree.identify_row(event.y)
+        if not item or item.endswith(self.PLACEHOLDER):
+            return
+        self.tree.focus(item)
+        self.tree.selection_set(item)
+        self._format_menu(item).tk_popup(event.x_root, event.y_root)
+
+    def _format_menu(self, item: str) -> tk.Menu:
+        return self.format_menu.build(self.format_of(item), lambda f: self.set_format(item, f))
 
     def _expand(self, _e) -> None:
         item = self.tree.focus()
@@ -209,8 +313,13 @@ class WatchView(View):
         for ch in self.session.var_update():
             item = self.item_of.get(ch.get("name"))
             if item and self.tree.exists(item) and ch.get("in_scope", "true") == "true":
-                self.tree.set(item, "value", ch.get("value", ""))
+                self._show(item, ch.get("value", ""))       # au format posé sur le varobj
                 self.tree.item(item, tags=("changed",))
+        # formats choisis cible en marche : appliqués maintenant (valeur inchangée comprise)
+        for item in list(self.varobj):
+            if self.tree.exists(item) and (self.gdb_fmt.get(item, "natural") != "natural"
+                                           or self.format_of(item) != "natural"):
+                self.app.safe(self._apply_format, item)
         self._ensure_roots()
         self.app.safe(self._compute_layouts)
 
@@ -246,15 +355,19 @@ class WatchView(View):
                 self.tree.item(it, tags=() if (live and lay.live) else ("disabled",))
         self._update_subscription()
 
-    def _on_live(self, data: dict[int, bytes]) -> None:
+    def _on_live(self, data: dict[int, bytes], mark: bool = True) -> None:
+        """Octets lus en marche → valeurs, au format de chaque ligne. `mark=False` : simple
+        changement de format (pas de surlignage)."""
+        self.last_live.update(data)
         for it, lay in self.layouts.items():
             if not lay.live or lay.addr not in data or not self.tree.exists(it):
                 continue
-            val = decode(lay, data[lay.addr])
+            val = decode(lay, data[lay.addr], self.format_of(it))
             if val != self.tree.set(it, "value"):
                 self.tree.set(it, "value", val)
-                self.tree.item(it, tags=("changed",))
-            else:
+                if mark:
+                    self.tree.item(it, tags=("changed",))
+            elif mark:
                 self.tree.item(it, tags=())
 
     def on_disconnected(self) -> None:
@@ -266,6 +379,9 @@ class WatchView(View):
         self.item_of.clear()
         self.numchild.clear()
         self.layouts.clear()
+        self.gdb_fmt.clear()                # varobjs disparus ; les formats (par chemin) restent
+        self.hex_value.clear()
+        self.last_live.clear()
 
     def destroy(self) -> None:
         if self.app.poller:
@@ -300,12 +416,16 @@ class WatchView(View):
         if label in self.exprs:
             self.exprs.remove(label)
         self.roots.pop(label, None)
+        for p in [p for p in self.formats if p == label or p.startswith(label + "\t")]:
+            del self.formats[p]
         name = self.varobj.get(item)
         for it in self._subtree(item):  # gdb supprime aussi les varobjs enfants
             vo = self.varobj.pop(it, None)
             self.item_of.pop(vo, None)
             self.numchild.pop(it, None)
             self.layouts.pop(it, None)
+            self.gdb_fmt.pop(it, None)
+            self.hex_value.pop(it, None)
         self.tree.delete(item)
         if name and self.stopped:
             self.app.safe(self.session.var_delete, name)
@@ -316,17 +436,21 @@ class WatchView(View):
         name = self.varobj.get(item)
         if not name or not self.stopped:
             return None
+        current = self.tree.set(item, "value")
+        if self.format_of(item) in ("binary", "ascii"):     # valeur que gdb sait relire
+            current = self.hex_value.get(item, current)
         val = simpledialog.askstring("Modifier", f"{self.tree.item(item, 'text')} =",
-                                     initialvalue=self.tree.set(item, "value"), parent=self)
+                                     initialvalue=current, parent=self)
         if val is not None:
             self.app.safe(self.session.var_assign, name, val)
             self.app.refresh_all()
         return "break"
 
     def get_state(self) -> dict:
-        return {"exprs": list(self.exprs)}
+        return {"exprs": list(self.exprs), "formats": dict(self.formats)}
 
     def set_state(self, state: dict) -> None:
+        self.formats.update(state.get("formats", {}))      # avant les racines : appliqués à leur création
         for e in state.get("exprs", []):
             self.add(e)
 
@@ -347,8 +471,25 @@ class StackView(View):
                                   ("loc", "Source", 200)])
         self.frames.bind("<Double-1>", self._goto)
         self.locals = _tree(bottom, [("name", "Locale", 120), ("value", "Valeur", 200)])
+        self.locals.bind("<Button-3>", self._menu)
         self.bt = []
-        self.prev_locals: dict[str, str] = {}
+        self.prev_locals: dict[str, str] = {}   # valeurs naturelles (détection des changements)
+        #: formats d'affichage des locales : « fonction/nom » -> format (persisté)
+        self.formats: dict[str, str] = {}
+        self.format_menu = FormatMenu(self)
+
+    def _key(self, name: str) -> str:
+        func = self.bt[0].func if self.bt else ""
+        return f"{func or '??'}/{name}"
+
+    def _value(self, name: str, natural: str) -> str:
+        fmt = self.formats.get(self._key(name), "natural")
+        if fmt == "natural":
+            return natural
+        try:
+            return self.session.format_value(name, fmt)
+        except Exception:  # noqa: BLE001 - valeur indisponible dans ce format : naturelle
+            return natural
 
     def refresh(self) -> None:
         if not self.stopped:
@@ -364,8 +505,40 @@ class StackView(View):
             name, val = v.get("name", "?"), v.get("value", "")
             cur[name] = val
             tags = ("changed",) if name in self.prev_locals and self.prev_locals[name] != val else ()
-            self.locals.insert("", "end", values=(name, val), tags=tags)
+            self.locals.insert("", "end", values=(name, self._value(name, val)), tags=tags)
         self.prev_locals = cur
+
+    def _menu(self, event) -> None:
+        item = self.locals.identify_row(event.y)
+        if not item:
+            return
+        self.locals.focus(item)
+        self.locals.selection_set(item)
+        self._format_menu(item).tk_popup(event.x_root, event.y_root)
+
+    def _format_menu(self, item: str) -> tk.Menu:
+        name = self.locals.set(item, "name")
+        return self.format_menu.build(self.formats.get(self._key(name), "natural"),
+                                      lambda f: self.set_format(name, f))
+
+    def set_format(self, name: str, fmt: str) -> None:
+        """Format d'affichage d'une locale de la fonction courante (cible arrêtée : tout de suite)."""
+        fmt = normalize(fmt)
+        if fmt == "natural":
+            self.formats.pop(self._key(name), None)
+        else:
+            self.formats[self._key(name)] = fmt
+        if not self.stopped:
+            return
+        for item in self.locals.get_children():
+            if self.locals.set(item, "name") == name:
+                self.locals.set(item, "value", self._value(name, self.prev_locals.get(name, "")))
+
+    def get_state(self) -> dict:
+        return {"formats": dict(self.formats)}
+
+    def set_state(self, state: dict) -> None:
+        self.formats.update(state.get("formats", {}))
 
     def _goto(self, _e) -> None:
         sel = self.frames.focus()
