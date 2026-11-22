@@ -26,7 +26,7 @@ def build_target(args, elf: str) -> object:
                              gdb_port=args.gdb_port or 3333, rtos=args.rtos)
     return QemuTarget(elf=os.path.abspath(elf), machine=args.machine,
                       gdb_port=args.gdb_port or free_port(), etm_sim=args.etm_sim,
-                      mtb_sim=mtb_sim_size(args, elf))
+                      mtb_sim=mtb_sim_size(args, elf), mtb_autohalt=args.mtb_autohalt)
 
 
 def mtb_sim_size(args, elf: str) -> int | None:
@@ -100,6 +100,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="QEMU : MTB simulée, tampon de TAILLE octets (défaut : celui du firmware, "
                         "sinon 1024 ; 0 : illimité, toute l'exécution) ; ex. avec --machine microbit "
                         "et examples/m0plus")
+    m.add_argument("--mtb-autohalt", action="store_true",
+                   help="avec --mtb ou --mtb-sim : la MTB arrête le cœur à chaque tampon plein, "
+                        "GdbTrace le vide et relance (arrêts invisibles) : trace complète, cible "
+                        "ralentie ; préférer un tampon de 4 à 8 Ko")
     m.add_argument("--mtb-probe", action="store_true",
                    help="lister les composants CoreSight de la cible (MTB, ETM, TPIU...) à la connexion")
     p.add_argument("--machine", default="mps2-an385", help="machine QEMU")
@@ -130,6 +134,8 @@ def main(argv: list[str] | None = None) -> int:
                               or args.mtb is not None or args.mtb_sim is not None):
         p.error("--coverage : pas de trace d'instructions (--etm-sim / --mtb-sim sous QEMU, "
                 "--trace / --trace-file / --mtb sur matériel)")
+    if args.mtb_autohalt and args.mtb is None and args.mtb_sim is None:
+        p.error("--mtb-autohalt : avec --mtb (cible) ou --mtb-sim (QEMU)")
     program = args.program is not None
     verify = not args.no_verify
     if args.elf is None and (args.batch or program):
@@ -191,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
             if buffer is None:
                 raise RuntimeError("tampon MTB : réserver un tableau `__mtb_buffer__` aligné sur sa "
                                    "taille dans le firmware, ou --mtb-buffer ADRESSE:TAILLE")
-        print(describe(base, trace.setup_mtb(session, base, *buffer)))
+        print(describe(base, trace.setup_mtb(session, base, *buffer, autohalt=args.mtb_autohalt)))
 
     if args.batch:
         from .core.scripting import ScriptAPI
@@ -217,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
             if msg:
                 print(msg)
             elif args.mtb_sim is not None:
-                trace.enable_mtb_sim(live, target.mtb_sim, s)
+                trace.enable_mtb_sim(live, target.mtb_sim, s, autohalt=args.mtb_autohalt)
                 trace.attach_session(s)
             else:
                 trace.enable_qemu_sim(live)

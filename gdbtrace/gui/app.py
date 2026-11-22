@@ -361,7 +361,8 @@ class App:
         if isinstance(target, QemuTarget) and (target.etm_sim or target.mtb_sim is not None) \
                 and self.live is not None:
             if self.trace.etm is not None and target.mtb_sim is not None and self.trace.mtb_sim is None:
-                self.trace.enable_mtb_sim(self.live, target.mtb_sim, self.session)
+                self.trace.enable_mtb_sim(self.live, target.mtb_sim, self.session,
+                                          autohalt=target.mtb_autohalt)
                 self.trace.attach_session(self.session)
             elif self.trace.etm is not None and target.etm_sim and self.trace.etm_sim is None:
                 self.trace.enable_qemu_sim(self.live)

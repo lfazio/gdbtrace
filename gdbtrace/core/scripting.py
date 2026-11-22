@@ -212,6 +212,20 @@ class ScriptAPI:
                   f"{p.dst:08x} {where(p.dst)}")
         return rows
 
+    def mtb_stats(self) -> dict:
+        """Compteurs de la MTB : paquets, instructions, arrêts AUTOHALT, débordements, erreurs."""
+        tm = self.trace
+        src = (tm.mtb or tm.mtb_sim) if tm is not None else None
+        if src is None:
+            raise RuntimeError("pas de MTB (--mtb sur la cible, --mtb-sim sous QEMU)")
+        tm.wait_etm()
+        st = src.decoder.stats
+        out = {"paquets": st.packets, "instructions": st.instructions, "exceptions": st.exceptions,
+               "arrêts AUTOHALT": src.autohalts, "débordements": src.wraps, "erreurs": st.errors}
+        for k, v in out.items():
+            print(f"  {k:<18} {v}")
+        return out
+
     def mtb_probe(self):
         """Composants CoreSight de la cible (tables ROM) : MTB, ETM, TPIU..."""
         from ..trace.mtb import rom_components

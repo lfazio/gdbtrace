@@ -78,7 +78,8 @@ class TraceManager:
         if sim is not None and self.etm is not None:
             self.enable_qemu_sim(sim.qmp)
         if mtb_sim is not None and self.etm is not None:
-            self.enable_mtb_sim(mtb_sim.qmp, mtb_sim.size)
+            self.enable_mtb_sim(mtb_sim.qmp, mtb_sim.size, getattr(self, "_attached", None),
+                                autohalt=mtb_sim.autohalt)
         if mtb is not None and self.etm is not None:
             mtb.retarget(self.etm.image)
             self.etm.timing_label = "estimé (modèle de cycles, MTB)"
@@ -126,33 +127,92 @@ class TraceManager:
             self.etm_sim = QemuEtmSim(qmp, self.etm.image, self.etm)
 
     # ------------------------------------------------------------------ MTB (Cortex-M0+)
-    def enable_mtb_sim(self, qmp, size: int = 1024, session=None) -> None:
+    def enable_mtb_sim(self, qmp, size: int = 1024, session=None, autohalt: bool = False) -> None:
         """MTB simulée sous QEMU : tampon de `size` octets (les `size / 8` derniers branchements
-        de chaque exécution ; 0 : illimité)."""
+        de chaque exécution ; 0 : illimité) ; `autohalt` : arrêts internes simulés, trace
+        complète."""
         from .mtb_capture import QemuMtbSim
         if self.etm is not None:
-            self.mtb_sim = QemuMtbSim(qmp, self.etm.image, self.etm, size)
+            self.mtb_sim = QemuMtbSim(qmp, self.etm.image, self.etm, size, autohalt=autohalt)
             self.etm.timing_label = "estimé (modèle de cycles, MTB simulée)"
             if session is not None:
                 self.mtb_sim.last_pc = session.register("pc")
+                if autohalt:
+                    self.mtb_sim.start_halter(session)
+                    session.set_stop_interceptor(self._intercept)
 
-    def setup_mtb(self, session, base: int, buffer: int, size: int):
-        """MTB d'une vraie cible (arrêtée) : programmation, puis lecture à chaque arrêt."""
+    def setup_mtb(self, session, base: int, buffer: int, size: int, autohalt: bool = False):
+        """MTB d'une vraie cible (arrêtée) : programmation, puis lecture à chaque arrêt ; en
+        AUTOHALT, la MTB arrête le cœur à chaque tampon plein : arrêts internes, invisibles."""
         from .mtb_capture import MtbCapture
         if self.etm is None:
             raise RuntimeError("trace d'instructions indisponible (capstone requis)")
-        self.mtb = MtbCapture(session, self.etm.image, base, buffer, size)
+        self.mtb = MtbCapture(session, self.etm.image, base, buffer, size, autohalt=autohalt)
         self.etm.timing_label = "estimé (modèle de cycles, MTB)"
         self.attach_session(session)
+        if autohalt:
+            session.set_stop_interceptor(self._intercept)
         return self.mtb.state
+
+    # ------------------------------------------------------------------ AUTOHALT : arrêts internes
+    def _autohalt_source(self):
+        for src in (self.mtb, self.mtb_sim):
+            if src is not None and src.autohalt:
+                return src
+        return None
+
+    def _intercept(self, reason: dict) -> bool:
+        """Thread lecteur de gdb : un arrêt non demandé, MTB en AUTOHALT → arrêt interne,
+        traité en tâche de fond (jamais d'appel gdb ici)."""
+        if self._autohalt_source() is None or getattr(self, "_attached", None) is None:
+            return False
+        import threading
+        self.etm_busy = True
+        threading.Thread(target=self._internal_stop, name="mtb-autohalt-stop", daemon=True).start()
+        return True
+
+    def _internal_stop(self) -> None:
+        """Vide la MTB ; relance la cible si c'est elle qui l'a arrêtée, sinon livre l'arrêt."""
+        session = self._attached
+        halted = False
+        try:
+            pc = session.register("pc")
+            if self.mtb_sim is not None and self.mtb_sim.path is not None:
+                halted = self.mtb_sim.take_halt()
+                if halted:                          # tronçon mis de côté, converti à l'arrêt
+                    self.mtb_sim.stash_run(pc)      # visible ; journal du suivant (pas de hook)
+                    self.mtb_sim.start_run()
+            if self.mtb is not None:
+                errors = self.mtb.decoder.stats.errors
+                self.etm.feed_events(self.mtb.collect(), errors=self.mtb.decoder.stats.errors - errors)
+                halted = halted or self.mtb.halted
+        except Exception as exc:  # noqa: BLE001
+            self.post(self.on_error, f"MTB (AUTOHALT) : {exc}")
+            halted = False
+        finally:
+            self.etm_busy = False
+        # pas de rafraîchissement des vues à chaque tampon : rendre une longue trace prend du
+        # temps et figerait l'interface ; elles se mettent à jour à l'arrêt visible
+        if not halted:
+            self._etm_changed()
+        try:
+            if halted:
+                session.resume_internal()
+            else:
+                session.deliver_stop()
+        except Exception as exc:  # noqa: BLE001
+            self.post(self.on_error, f"MTB (AUTOHALT) : reprise impossible : {exc}")
+            session.deliver_stop(force=True)
 
     def source_label(self) -> str:
         """D'où vient la trace d'instructions (libellé des vues)."""
         if self.mtb_sim is not None:
+            if self.mtb_sim.autohalt:
+                return f"MTB simulée (QEMU, AUTOHALT, {self.mtb_sim.autohalts} arrêts)"
             return "MTB simulée (QEMU" + (f", {self.mtb_sim.size} octets)" if self.mtb_sim.size
                                           else ", tampon illimité)")
         if self.mtb is not None:
-            return "MTB"
+            return f"MTB (AUTOHALT, {self.mtb.autohalts} arrêts)" if self.mtb.autohalt else "MTB"
         if self.etm_sim is not None:
             return "ETM simulé (QEMU)"
         return "capture ETM" if self.active else "trace ETM"
@@ -205,6 +265,8 @@ class TraceManager:
         """Fin d'une exécution, en tâche de fond : sous QEMU, conversion du journal en trace ;
         sur une cible avec MTB, lecture et remise à zéro du tampon. ETMv4 capturé : le dernier
         élément, encore spéculatif, est validé."""
+        if self.mtb_sim is not None and self.mtb_sim.autohalt:
+            self.mtb_sim.clear_halt()
         jobs = [s for s in self._sims() if s.path is not None]
         mtb = self.mtb
         if not jobs and mtb is None:

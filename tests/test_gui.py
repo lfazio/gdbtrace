@@ -657,3 +657,34 @@ def test_mtb_simulated_views(mtb_app):
     tm.analyze()
     assert pump(app, lambda: tm.result is not None and not tm._busy, timeout=30)
     assert "MTB simulée" in tm.info.cget("text") and "estimé" in tm.info.cget("text")
+
+
+def test_mtb_autohalt_views(m0_elf, tmp_path):
+    """MTB simulée en AUTOHALT : pendant les arrêts internes, l'interface voit la cible en
+    marche ; la trace grossit ; Break livre un vrai arrêt."""
+    from gdbtrace.gui.app import App
+    from gdbtrace.views.trace import TraceView
+    a = App(layout_file=str(tmp_path / "layout.json"))
+    try:
+        s = Session()
+        s.connect(m0_elf, QemuTarget(elf=m0_elf, machine="microbit", gdb_port=free_port(),
+                                     mtb_sim=1024, mtb_autohalt=True))
+        a.attach(s)
+        tv = a.views.show(TraceView)
+        a.go()
+        states = []
+        deadline = time.monotonic() + 1.2
+        while time.monotonic() < deadline:
+            a.root.update()
+            states.append(a.session.state)
+            time.sleep(0.02)
+        sim = a.trace.mtb_sim
+        assert len(states) > 25 and set(states[5:]) == {"running"}    # interface fluide
+        assert sim.autohalts >= 2                                      # arrêts internes
+        a.halt()                    # tronçons convertis à l'arrêt visible (coût de la simulation)
+        assert pump(a, lambda: a.session.state == "stopped" and not a.trace.etm_busy, timeout=120)
+        pump(a, lambda: False, timeout=0.3)
+        assert "AUTOHALT" in tv.info.cget("text")
+        assert a.trace.etm.stats["instructions"] == sim.logged and sim.decoder.stats.errors == 0
+    finally:
+        close_app(a)

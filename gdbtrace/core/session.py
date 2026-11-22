@@ -82,6 +82,7 @@ class Session:
         self._quiet_running = False
         self._halt_requested = False
         self._halt_wanted = False
+        self._continuing = False        # dernière reprise : Go (et non un pas ou un « until »)
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------ événements
@@ -97,7 +98,8 @@ class Session:
 
     def set_stop_interceptor(self, fn: Callable[[dict], bool] | None) -> None:
         """fn(raison) est appelée dans le thread lecteur (sans bloquer ni appeler gdb) pour
-        chaque arrêt `signal-received` que le débogueur n'a pas demandé. Si elle renvoie vrai,
+        chaque arrêt `signal-received` que le débogueur n'a pas demandé, pendant un Go (un pas à
+        pas interrompu reste visible : le relancer en Go perdrait le pas). Si elle renvoie vrai,
         l'arrêt est **interne** : aucun événement, `state` reste « running », `wait_stopped()`
         continue d'attendre ; son propriétaire doit ensuite appeler `resume_internal()` ou
         `deliver_stop()`. Un arrêt demandé (`halt()`, point d'arrêt, pas à pas) n'est jamais
@@ -171,7 +173,7 @@ class Session:
             with self._lock:
                 requested, self._halt_requested = self._halt_requested, False
                 if (self._intercept is not None and not requested and self.state == "running"
-                        and payload.get("reason") == "signal-received"):
+                        and self._continuing and payload.get("reason") == "signal-received"):
                     self._internal, self._internal_reason = True, payload
                     try:
                         internal = bool(self._intercept(payload))
@@ -282,6 +284,7 @@ class Session:
 
     # ------------------------------------------------------------------ run-control
     def go(self) -> None:
+        self._continuing = True
         self._stopped.clear()
         self._before_resume()
         self.gdb.command("-exec-continue")
@@ -317,6 +320,7 @@ class Session:
         self._sync("-exec-step-instruction")
 
     def go_until(self, location: str, timeout: float | None = None) -> None:  # Go <addr>
+        self._continuing = False
         self._stopped.clear()
         self._before_resume()
         self.gdb.command(f"-exec-until {location}")
@@ -346,6 +350,7 @@ class Session:
         self.write_register("pc", pc & ~1)
 
     def _sync(self, cmd: str, timeout: float = 30.0) -> None:
+        self._continuing = False
         self._stopped.clear()
         self._before_resume()
         self.gdb.command(cmd)

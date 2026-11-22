@@ -23,6 +23,12 @@ vol, les derniers branchements avant l'arrêt. GdbTrace le lit à chaque arrêt,
 remet le pointeur à zéro : chaque exécution est ajoutée une seule fois à l'historique et à la
 couverture.
 
+Mode AUTOHALT (trace complète) : FLOW.WATERMARK = seuil (même format que POINTER) et
+FLOW.AUTOHALT ; quand le pointeur atteint le seuil, la MTB met MASTER.HALTREQ à 1 et arrête le
+cœur (EDBGRQ). Le débogueur vide le tampon, efface HALTREQ (sinon le cœur s'arrête de nouveau
+dès la reprise), remet le pointeur à zéro et relance. Le seuil laisse une marge pour les
+paquets écrits entre la demande d'arrêt et l'arrêt effectif.
+
 Registres (MTB-M0+, ARM DDI 0486) : POSITION (+0x0 : POINTER[31:3], décalage depuis
 MTB_BASE ; WRAP bit 2), MASTER (+0x4 : EN bit 31, HALTREQ 9, RAMPRIV 8, SFRWPRIV 7,
 TSTOPEN 6, TSTARTEN 5, MASK[4:0]), FLOW (+0x8 : WATERMARK[31:3], AUTOHALT 1, AUTOSTOP 0),
@@ -39,7 +45,10 @@ from .etm.qemu_log import Event, ExcEntry, ExcReturn, Step
 
 POSITION, MASTER, FLOW, BASE = 0x0, 0x4, 0x8, 0xC
 MASTER_EN = 1 << 31
+MASTER_HALTREQ = 1 << 9
 POSITION_WRAP = 1 << 2
+FLOW_AUTOSTOP = 1 << 0
+FLOW_AUTOHALT = 1 << 1
 PART_MTB_M0P = 0x932                    # numéro de pièce CoreSight du MTB-M0+
 EXC_RETURN = 0xFFFFFFF9                 # simulation : retour en mode thread, pile MSP
 #: adresses connues des registres MTB (à défaut de les trouver dans la table ROM)
@@ -79,6 +88,7 @@ class MtbState:
     sram: int                    # MTB_BASE
     position: int
     master: int
+    flow: int = 0
 
     @property
     def size(self) -> int:
@@ -101,9 +111,29 @@ class MtbState:
     def enabled(self) -> bool:
         return bool(self.master & MASTER_EN)
 
+    @property
+    def halt_requested(self) -> bool:
+        """La MTB a demandé l'arrêt du cœur (seuil atteint en mode AUTOHALT)."""
+        return bool(self.master & MASTER_HALTREQ)
+
+    @property
+    def autohalt(self) -> bool:
+        return bool(self.flow & FLOW_AUTOHALT)
+
+    @property
+    def watermark(self) -> int:
+        """Seuil, en décalage depuis MTB_BASE (comme POSITION.POINTER)."""
+        return self.flow & ~7
+
 
 def read_state(read_u32: Callable[[int], int], base: int) -> MtbState:
-    return MtbState(read_u32(base + BASE), read_u32(base + POSITION), read_u32(base + MASTER))
+    return MtbState(read_u32(base + BASE), read_u32(base + POSITION), read_u32(base + MASTER),
+                    read_u32(base + FLOW))
+
+
+def watermark_margin(size: int) -> int:
+    """Marge du seuil AUTOHALT : paquets que le cœur peut encore écrire avant de s'arrêter."""
+    return min(32, size // 2)
 
 
 def read_packets(read_u32: Callable[[int], int], read_mem: Callable[[int, int], bytes],
@@ -118,9 +148,10 @@ def read_packets(read_u32: Callable[[int], int], read_mem: Callable[[int, int], 
 
 
 def configure(write_u32: Callable[[int, int], None], read_u32: Callable[[int], int], base: int,
-              buffer: int, size: int, flow: int = 0) -> MtbState:
+              buffer: int, size: int, flow: int = 0, autohalt: bool = False) -> MtbState:
     """Programme la MTB : tampon de `size` octets à `buffer` (dans la SRAM, aligné sur sa
-    taille, réservé par le firmware : la MTB l'écrase), trace en continu (circulaire)."""
+    taille, réservé par le firmware : la MTB l'écrase), trace en continu (circulaire) ou, avec
+    `autohalt`, arrêt du cœur quand le tampon est presque plein."""
     if size < 16 or size & (size - 1):
         raise ValueError(f"taille du tampon MTB : puissance de 2 d'au moins 16 octets ({size})")
     if buffer % size:
@@ -128,6 +159,8 @@ def configure(write_u32: Callable[[int, int], None], read_u32: Callable[[int], i
     sram = read_u32(base + BASE)
     if buffer < sram:
         raise ValueError(f"tampon MTB à {buffer:#x} hors de la SRAM tracée (MTB_BASE = {sram:#x})")
+    if autohalt:
+        flow = ((buffer - sram + size - watermark_margin(size)) & ~7) | FLOW_AUTOHALT
     write_u32(base + MASTER, 0)                                  # arrêt pendant la programmation
     write_u32(base + POSITION, buffer - sram)
     write_u32(base + FLOW, flow)
@@ -137,8 +170,11 @@ def configure(write_u32: Callable[[int, int], None], read_u32: Callable[[int], i
 
 def restart(write_u32: Callable[[int, int], None], base: int, st: MtbState) -> None:
     """Pointeur au début du tampon, WRAP effacé : la prochaine lecture ne rendra que les
-    paquets de l'exécution suivante."""
+    paquets de l'exécution suivante. HALTREQ effacé : sinon, en mode AUTOHALT, le cœur
+    s'arrêterait de nouveau dès la reprise."""
     write_u32(base + POSITION, st.start - st.sram)
+    if st.halt_requested:
+        write_u32(base + MASTER, st.master & ~MASTER_HALTREQ)
 
 
 # ====================================================================== découverte CoreSight
@@ -369,14 +405,18 @@ def _it_length(ins) -> int:
 
 
 # ====================================================================== encodage (simulation)
-def encode(events: list[Event], image, start: bool = True) -> list[Packet]:
+def encode(events: list[Event], image, start: bool = True,
+           resume_pc: int | None = None, end_pc: int | None = None) -> list[Packet]:
     """Paquets qu'une MTB écrirait pour ce chemin d'exécution (QEMU, tests). Premier paquet
-    marqué S si `start` (trace qui démarre) ; pas de limite de taille (voir `last`)."""
+    marqué S si `start` (trace qui démarre) ; pas de limite de taille (voir `last`).
+    `resume_pc` : PC à la reprise, si la portion commence par une exception prise avant toute
+    instruction (sa source est alors ce PC). `end_pc` : PC à l'arrêt ; un branchement pris
+    juste avant l'arrêt a déjà écrit son paquet (la MTB l'écrit à l'exécution)."""
     from .etm.cycles import successors
     nxt = successors(events)
     out: list[Packet] = []
     prev: tuple[int, int] | None = None      # (indice, adresse) de la dernière instruction
-    entered: int | None = None               # handler pas encore commencé (exception imbriquée)
+    entered: int | None = resume_pc          # prochaine instruction pas encore exécutée
     pending_return = False
 
     def emit(src: int, dst: int, a: bool = False) -> None:
@@ -423,6 +463,12 @@ def encode(events: list[Event], image, start: bool = True) -> list[Packet]:
                 emit(prev[1], EXC_RETURN)
             pending_return = True
             prev, entered = None, None
+    if end_pc is not None:                   # arrêt juste après un changement de flot
+        end_pc &= ~1
+        if pending_return:
+            emit(EXC_RETURN, end_pc, a=True)
+        elif prev is not None and end_pc != seq(prev[1]):
+            emit(prev[1], end_pc)
     return out
 
 

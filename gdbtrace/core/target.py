@@ -105,6 +105,8 @@ class QemuTarget(TargetServer):
     #: MTB simulée (Cortex-M0+) : même journal que l'ETM simulé, tampon de `mtb_sim` octets
     #: (None : pas de MTB simulée ; 0 : tampon illimité, toute l'exécution)
     mtb_sim: int | None = None
+    #: MTB simulée en mode AUTOHALT (arrêts internes, trace complète)
+    mtb_autohalt: bool = False
 
     #: second port QMP réservé au contrôle de la machine (reset) : le premier sert au canal
     #: live, et un serveur QMP n'accepte qu'un client à la fois

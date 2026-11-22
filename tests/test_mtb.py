@@ -123,6 +123,8 @@ class FakeMtb:
             idx += 8
             if idx == st.size:
                 idx, wrap = 0, True
+            if st.autohalt and start + idx == st.watermark:      # seuil atteint : HALTREQ
+                self.mem[0xF0000000 + mtb.MASTER] |= mtb.MASTER_HALTREQ
         self.write_u32(0xF0000000, start + idx | (mtb.POSITION_WRAP if wrap else 0))
 
 
@@ -322,3 +324,63 @@ def test_etm_and_mtb_agree(qemu_paths, m0_path, name):
     skip = sum(isinstance(e, Step) for e in events[:first])
     assert d.stats.errors == 0 and len(got) > 100_000
     assert steps(etm)[skip:skip + len(got)] == got
+
+
+
+# ====================================================================== AUTOHALT
+def test_autohalt_configure_collect_and_clear():
+    """Seuil = fin du tampon moins la marge ; HALTREQ lu par collect() puis effacé (sinon le
+    cœur s'arrêterait de nouveau dès la reprise), MASTER.EN conservé."""
+    from gdbtrace.trace.mtb_capture import MtbCapture
+    s = FakeSession(pc=0x100)
+    cap = MtbCapture(s, IMG, 0xF0000000, 0x1FFFF400, 256, autohalt=True)
+    flow = s.mem[0xF0000000 + mtb.FLOW]
+    assert flow == (0x400 + 256 - 32) | mtb.FLOW_AUTOHALT and cap.state.autohalt
+    assert cap.state.watermark == 0x400 + 224
+    s.hw_write([P(0x104, 0x100, s=True)])
+    s.pc = 0x102
+    cap.collect()
+    assert not cap.halted and cap.autohalts == 0
+    loop = [P(0x104, 0x100)] * 28                       # 28 paquets : seuil (224 o) atteint
+    s.hw_write(loop)
+    assert s.mem[0xF0000000 + mtb.MASTER] & mtb.MASTER_HALTREQ
+    s.pc = 0x100
+    ev = cap.collect()
+    assert cap.halted and cap.autohalts == 1 and cap.wraps == 0
+    assert len(steps(ev)) == 2 + 3 * 27                  # reprise en 0x102, puis 27 tours
+    master = s.mem[0xF0000000 + mtb.MASTER]
+    assert not master & mtb.MASTER_HALTREQ and master & mtb.MASTER_EN
+
+
+def test_encode_resume_and_end_pc():
+    """Encodeur (simulation) : exception prise à la reprise avant toute instruction (source =
+    PC de reprise) ; branchement pris juste avant l'arrêt (paquet déjà écrit)."""
+    pk = mtb.encode([ExcEntry(15, 0x200), Step(0x200), Step(0x202), ExcReturn()], IMG,
+                    start=False, resume_pc=0x102, end_pc=0x102)
+    assert pk == [P(0x102, 0x200, a=True), P(0x202, mtb.EXC_RETURN), P(mtb.EXC_RETURN, 0x102, a=True)]
+    pk = mtb.encode([Step(0x100), Step(0x102), Step(0x104)], IMG, start=False, end_pc=0x100)
+    assert pk == [P(0x104, 0x100)]                       # bne pris, arrêt sur sa cible
+
+
+@needs_qemu
+def test_autohalt_chunks_equal_one_block(m0_path):
+    """Tampons successifs vidés à chaque arrêt AUTOHALT (reprise au PC de l'arrêt précédent) :
+    même suite d'instructions que le décodage du flux d'un seul bloc."""
+    from gdbtrace.trace.mtb_capture import MtbCapture
+    img, events = m0_path
+    packets = mtb.encode(events, img)
+    whole = steps(mtb.MtbDecoder(img).decode(packets))
+    s = FakeSession(pc=packets[0].src)
+    cap = MtbCapture(s, img, 0xF0000000, 0x1FFFF000, 1024, autohalt=True)
+    per_halt = cap.state.watermark // 8                  # paquets avant le seuil
+    got, i = [], 0
+    while i < len(packets):
+        j = min(i + per_halt, len(packets))
+        while j < len(packets) and mtb.is_exc_return(packets[j - 1].dst):
+            j += 1                                       # pas de coupure au milieu d'un retour
+        s.hw_write(packets[i:j])
+        s.pc = packets[j - 1].dst                        # le cœur s'arrête sur la destination
+        got += steps(cap.collect())
+        i = j
+    assert cap.autohalts >= len(packets) // per_halt - 1 and cap.wraps == 0
+    assert cap.decoder.stats.errors == 0 and got == whole

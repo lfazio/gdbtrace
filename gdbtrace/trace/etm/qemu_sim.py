@@ -48,11 +48,22 @@ class QemuEtmSim:
 
     def _take_log(self) -> list | None:
         """Événements réels (chemin QEMU) de l'exécution qui vient de s'arrêter."""
+        path = self._close_log()
+        return None if path is None else self._read_log(path)
+
+    def _close_log(self) -> str | None:
+        """Arrête la journalisation ; chemin du journal de l'exécution (None : aucune)."""
         if self.path is None:
             return None
         self.qmp.hmp("log none")
         self.qmp.hmp(f"logfile {os.path.join(self.dir, 'idle.log')}")   # ferme et vide le fichier
         path, self.path = self.path, None
+        return path
+
+    def _read_log(self, path: str) -> list:
+        """Événements d'un journal (supprimé après lecture)."""
+        if not os.path.exists(path):            # relancé mais jamais exécuté (arrêt aussitôt)
+            return []
         try:
             size = os.path.getsize(path)
             with open(path, "rb") as fh:

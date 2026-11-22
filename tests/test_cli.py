@@ -88,3 +88,47 @@ def test_mtb_absent_on_target(m0_elf):
     r = run(m0_elf, "--machine", "microbit", "--mtb", "--mtb-probe", "--batch", timeout=120)
     assert r.returncode == 1 and "MTB introuvable" in r.stderr
     assert "CoreSight" in r.stdout
+
+
+AUTOHALT_SCRIPT = """import time
+gdbtrace.go()
+states = []
+for _ in range(10):
+    time.sleep(0.1)
+    states.append(gdbtrace.s.state)
+gdbtrace.halt()
+st = gdbtrace.mtb_stats()
+sim = gdbtrace.trace.mtb_sim
+print("états", sorted(set(states)))
+print("vérité", sim.logged, "décodé", gdbtrace.trace.etm.stats["instructions"])
+"""
+
+
+@needs_qemu
+def test_mtb_autohalt_campaign(m0_elf, tmp_path):
+    """--mtb-sim 1024 --mtb-autohalt : arrêts internes invisibles (la cible reste « en marche »
+    pour le script), trace complète (décodé == exécuté d'après QEMU), couverture comparable à
+    un tampon illimité."""
+    import json
+    import re
+    script = tmp_path / "s.py"
+    script.write_text(AUTOHALT_SCRIPT)
+    auto, full = tmp_path / "auto.json", tmp_path / "full.json"
+    r = run(m0_elf, "--machine", "microbit", "--mtb-sim", "1024", "--mtb-autohalt", "--batch",
+            "--script", str(script), "--coverage", str(auto), timeout=240)
+    assert r.returncode == 0, r.stderr
+    assert "états ['running']" in r.stdout
+    halts = int(re.search(r"arrêts AUTOHALT\s+(\d+)", r.stdout).group(1))
+    errors = int(re.search(r"erreurs\s+(\d+)", r.stdout).group(1))
+    truth, decoded = map(int, re.search(r"vérité (\d+) décodé (\d+)", r.stdout).groups())
+    assert halts >= 2 and errors == 0 and decoded == truth > 50_000
+    r = run(m0_elf, "--machine", "microbit", "--mtb-sim", "0", "--batch", "--script", str(script),
+            "--coverage", str(full), timeout=240)
+    assert r.returncode == 0, r.stderr
+    covered_auto, covered_full = (len(json.load(open(f))["e"]) for f in (auto, full))
+    assert covered_auto >= 0.9 * covered_full
+
+
+def test_mtb_autohalt_needs_mtb(elf):
+    r = run(elf, "--mtb-autohalt", "--batch")
+    assert r.returncode != 0 and "--mtb-autohalt" in r.stderr

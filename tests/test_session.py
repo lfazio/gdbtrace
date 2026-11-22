@@ -159,6 +159,7 @@ def _internal_session(intercept=True):
     s = Session()
     s.gdb = FakeGdb()
     s.state = "running"
+    s._continuing = True                                 # la cible a été lancée par Go
     events, taken = [], []
     s.on_event(lambda kind, data: events.append(kind))
 
@@ -223,3 +224,12 @@ def test_halt_during_internal_stop_delivers_it():
     s.resume_internal()
     t.join(2)
     assert not t.is_alive() and events == ["stopped"] and s.gdb.sent == []
+
+
+def test_stop_during_step_is_visible():
+    """Un pas à pas interrompu (seuil MTB atteint pendant un `next`) n'est pas intercepté :
+    le relancer en Go perdrait le pas."""
+    s, events, taken = _internal_session()
+    s._continuing = False
+    s._on_mi(SIGINT)
+    assert taken == [] and events == ["stopped"]

@@ -154,10 +154,12 @@ def test_bare_metal_identities(qemu_paths, elf):
     assert s["update_sensor"].gross == s["update_sensor"].net + s["fib"].gross
     assert s["[SysTick]"].gross == s["[SysTick]"].net + s["SysTick_Handler"].gross
     assert s["fib"].calls == s["update_sensor"].calls
-    # seuls les cadres sans fin (Reset_Handler, main) ou coupés par la fin de trace sont partiels
-    assert {n for n, x in s.items() if x.partial} <= {"Reset_Handler", "main", "delay", "animate",
-                                                      "update_sensor", "fib", "[SysTick]",
-                                                      "SysTick_Handler"}
+    # seuls les cadres sans fin (Reset_Handler, main) ou encore ouverts à la fin de la trace sont
+    # partiels ; le point de coupure varie d'un enregistrement à l'autre (SysTick suit l'horloge
+    # de l'hôte) : la trace peut finir dans delay, animate, fib, la soft-float...
+    open_at_end = {iv.name for iv in r.intervals if iv.partial_end}
+    assert all(iv.end == r.total for iv in r.intervals if iv.partial_end)
+    assert {n for n, x in s.items() if x.partial} <= {"Reset_Handler", "main"} | open_at_end
     assert all(x.partial <= 1 for x in s.values())
 
 
