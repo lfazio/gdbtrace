@@ -118,6 +118,8 @@ class ScriptAPI:
         self.cpu_hz = 25_000_000
         #: appelé après chaque programmation avec le chemin de l'ELF (l'interface s'y recâble)
         self.on_program: Callable[[str], None] | None = None
+        #: Var.Watch : ajoute une expression à la vue Watch (fourni par l'interface)
+        self.on_var_watch: Callable[[str, str], None] | None = None
         #: COVerage : couverture de code depuis la trace ETM
         self.cov = CoverageAPI(self)
 
@@ -429,12 +431,33 @@ class ScriptAPI:
     def break_(self, loc: str, **kw): return self.s.break_(loc, **kw)
     def watch(self, expr: str, access: str = "write"): return self.s.watch(expr, access)
     def delete(self, num: str) -> None: self.s.delete_break(str(num))
+    def enable(self, num: str, on: bool = True) -> None:
+        """Break.ENable / Break.DISable (`on=False`) : le breakpoint reste posé."""
+        self.s.enable_break(str(num), on)
     def breaks(self): return self.s.breakpoints()
 
     # données
     def eval(self, expr: str, fmt: str = "natural") -> str:
         """Valeur d'une expression ; `fmt` : naturel, dec, hex, oct, bin, ascii (core/formats.py)."""
         return self.s.format_value(expr, fmt)
+
+    def var_watch(self, expr: str, fmt: str = "natural") -> str | None:
+        """Var.Watch : ajoute `expr` à la vue Watch, au format `fmt` (dans le GUI ; suivie en
+        direct si c'est une globale) ; sans GUI, affiche sa valeur. Retourne la valeur (cible
+        arrêtée), ou None (cible en marche, ou expression inconnue ici)."""
+        from .formats import normalize
+        fmt = normalize(fmt)
+        if self.on_var_watch is not None:
+            self.on_var_watch(expr, fmt)
+        value, why = None, "<cible en marche : évaluée au prochain arrêt>"
+        if self.s.state == "stopped":
+            try:
+                value = self.s.format_value(expr, fmt)
+            except GdbError as exc:
+                why = f"<{str(exc).rsplit(': ', 1)[-1]}>"
+        if self.on_var_watch is None:
+            print(f"{expr} = {value if value is not None else why}")
+        return value
     def set(self, expr: str, value) -> None: self.s.set_var(expr, str(value))
     def read(self, addr: int, n: int) -> bytes: return self.s.read_memory(addr, n)
     def write(self, addr: int, data: bytes) -> None: self.s.write_memory(addr, data)

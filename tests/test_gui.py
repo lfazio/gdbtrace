@@ -802,3 +802,23 @@ def test_watch_and_locals_display_formats(app):
     sv.refresh()                                                        # arrêt suivant : gardé
     tick = next(i for i in sv.locals.get_children() if sv.locals.set(i, "name") == "tick")
     assert sv.locals.set(tick, "value").startswith("0x")
+
+
+def test_example_session_script_in_gui(app):
+    """examples/scripts/session.py dans le GUI : la vue Watch se remplit (formats compris),
+    le script va au bout sans erreur."""
+    from conftest import ROOT
+    from gdbtrace.views.console import ConsoleView
+    from gdbtrace.views.data import WatchView
+    con = app.views.find(ConsoleView)
+    app.run_script(os.path.join(ROOT, "examples", "scripts", "session.py"))
+    assert pump(app, lambda: "== Fin" in con.out.get("1.0", "end") and not app.console.busy,
+                timeout=60), con.out.get("1.0", "end")[-3000:]
+    text = con.out.get("1.0", "end")
+    assert "Traceback" not in text and "Error" not in text, text[-3000:]
+    assert "watchpoint-trigger" in text and "fib(n = " in text
+    w = app.views.find(WatchView)
+    assert {"counter", "sensors", "last_char", "offset", "temperature", "ticks", "*s"} <= set(w.roots)
+    assert w.format_of(w.roots["offset"]) == "binary" and w.format_of(w.roots["sensors"]) == "hexadecimal"
+    assert pump(app, lambda: w.tree.set(w.roots["offset"], "value").startswith("0b"))
+    assert w.tree.set(w.roots["last_char"], "value").startswith("'")

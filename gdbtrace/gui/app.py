@@ -210,6 +210,7 @@ class App:
         self.api.device = self.device
         self.api.trace = self.trace
         self.api.on_program = lambda elf: self.pump.post(self._program_changed, elf)
+        self.api.on_var_watch = lambda expr, fmt: self.pump.post(self.add_watch, expr, fmt)
         self._rtos_layout = None
         if session.elf and os.path.exists(session.elf):
             self._program_changed(session.elf, refresh=False)
@@ -418,6 +419,15 @@ class App:
         """Appelé par la vue RTOS : tâche courante affichée dans la barre d'état."""
         self.current_task = name
         self.task_label.configure(text=f"tâche : {name}" if name else "")
+
+    def add_watch(self, expr: str, fmt: str = "natural") -> None:
+        """Var.Watch (`gdbtrace.var_watch`) : expression ajoutée à la vue Watch, au format voulu."""
+        from ..views.data import WatchView
+        w = self.views.show(WatchView, "data")
+        w.add(expr)
+        item = w.roots.get(expr.strip())
+        if item and w.tree.exists(item) and w.format_of(item) != fmt:
+            w.set_format(item, fmt)
 
     def show_memory(self, addr: int) -> None:
         from ..views.memory import MemoryView

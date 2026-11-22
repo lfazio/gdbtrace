@@ -462,6 +462,10 @@ avec OpenOCD, comme un Break).
 | Saisie | Effet |
 |---|---|
 | `gdbtrace.break_("fib"); gdbtrace.go(); gdbtrace.wait()` | Python, avec l'API `gdbtrace` |
+| `gdbtrace.break_("animate", condition="tick == 6")`, `break_("fib", hw=True, temporary=True)` | breakpoint conditionnel, matériel, temporaire |
+| `gdbtrace.enable(n, False)`, `gdbtrace.delete(n)`, `gdbtrace.breaks()`, `gdbtrace.watch("mode")` | Break.DISable / ENable, Break.Delete, Break.List, watchpoint (`access="read"` / `"rw"`) |
+| `gdbtrace.step()`, `over()`, `out()`, `stepi()`, `go(until="fib")` | Step, Step.Over, Go.Return, pas assembleur, Go jusqu'à |
+| `gdbtrace.var_watch("sensors", "hex")` | Var.Watch : ajoute l'expression à la vue Watch avec son format ; sans GUI, affiche sa valeur |
 | `gdbtrace.d("sensors", 32)`, `gdbtrace.r()`, `gdbtrace.bt()` | Data.dump, Register.view, pile |
 | `gdbtrace.eval("offset", "hex")` | valeur d'une expression ; format : naturel, `dec`, `hex`, `oct`, `bin`, `ascii` |
 | `gdbtrace.mem(addr, n)`, `gdbtrace.live_read(addr, n)` | lecture mémoire, y compris cible en marche |
@@ -483,7 +487,15 @@ avec OpenOCD, comme un Break).
 | `!info breakpoints` | Commande CLI gdb brute |
 | `mon reset halt` | Commande `monitor` vers OpenOCD |
 
-Voir `gdbtrace/core/scripting.py` pour l'API complète et `examples/scripts/demo.py`.
+Voir `gdbtrace/core/scripting.py` pour l'API complète. Exemples dans `examples/scripts/` :
+`session.py` (session de débogage complète : programmation, breakpoints simple, temporaire,
+conditionnel et matériel, watchpoint, Watch avec formats, pas à pas, lecture et modification
+de variables, lectures cible en marche), `demo.py`, `rtos.py` (FreeRTOS), `coverage.py`.
+
+```bash
+.venv/bin/python -m gdbtrace examples/firmware/demo.elf --script examples/scripts/session.py
+.venv/bin/python -m gdbtrace examples/firmware/demo.elf --batch --script examples/scripts/session.py
+```
 
 ## Architecture
 

@@ -132,3 +132,17 @@ def test_mtb_autohalt_campaign(m0_elf, tmp_path):
 def test_mtb_autohalt_needs_mtb(elf):
     r = run(elf, "--mtb-autohalt", "--batch")
     assert r.returncode != 0 and "--mtb-autohalt" in r.stderr
+
+
+def test_example_session_script(elf):
+    """examples/scripts/session.py en --batch : programmation, breakpoints (temporaire,
+    conditionnel, matériel désactivé puis réactivé), watchpoint, Watch avec formats, pas à pas."""
+    r = run(elf, "--batch", "--script", os.path.join("examples", "scripts", "session.py"))
+    assert r.returncode == 0, r.stderr
+    out = r.stdout
+    for expected in ("vérifié", "4 hw breakpoint  non", "main (main.c:", "offset = 0b1111_1111_1111_1101",
+                     "last_char = 'A'", "temperature = 21.5", "step → fib", "out  → update_sensor",
+                     "tick = 6, last_char = 'F'", "watchpoint-trigger : mode MODE_IDLE → MODE_RUN",
+                     "sensors[0].value en hexadécimal : 0x4d2", "fib(n = ", "== Fin : 0 breakpoint"):
+        assert expected in out, (expected, out)
+    assert "Traceback" not in out + r.stderr
