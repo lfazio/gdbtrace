@@ -34,15 +34,31 @@ def test_etm_swo_bandwidth_summary():
     assert "trous" not in ec.EtmConfig(port="swo", cpu_hz=2_000_000, swo_hz=2_000_000).summary()
 
 
-def test_etmv4_rejected():
+def test_etmv4_programming():
+    """ETM-M7 (TRCIDR1 : architecture 4) : registres TRC*, arrêt et attente d'IDLE d'abord,
+    remise en marche en dernier."""
     class S:
+        def __init__(self):
+            self.writes = []
+
         def read_u32(self, a):
-            return 0x4100F440 if a == ec.ETMIDR else 0           # TRCIDR1 : architecture 4
+            if a == ec.ETMIDR:
+                return 0x4100F400                                # TRCIDR1 d'un ETM-M7
+            return ec.TRCSTATR_IDLE if a == ec.TRCSTATR else 0
 
         def write_u32(self, a, v):
-            raise AssertionError("rien ne doit être écrit")
-    with pytest.raises(ValueError, match="ETMv4"):
-        ec.EtmConfig().apply(S())
+            self.writes.append((a, v))
+    s = S()
+    cfg = ec.EtmConfig(port="swo", cpu_hz=216_000_000, stall=True)
+    done = dict(cfg.apply(s))
+    assert cfg.version == 4 and "ETMv4" in cfg.summary() and "stall" in cfg.summary()
+    addrs = [a for a, _ in s.writes]
+    assert addrs.index(ec.TRCPRGCTLR) < addrs.index(ec.TRCTRACEIDR)
+    assert s.writes[-1] == (ec.TRCPRGCTLR, 1)
+    assert done["TRCVICTLR"] == 0x201 and done["TRCTRACEIDR"] == 2 and done["TPIU_FFCR"] == 0x102
+    assert done["TRCSTALLCTLR"] & 1 << 8 and done["TRCVIIECTLR"] == 0
+    with pytest.raises(ValueError, match="cycle-accurate"):    # refusé avant toute écriture
+        ec.EtmConfig(cycle_accurate=True).apply(S())
     assert ec.etm_version(lambda a: 0x4114F250) == 2                   # ETM-M3 / M4 : ETMv3
 
 
