@@ -85,6 +85,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="sortie de l'ETM : port de trace parallèle (sonde de trace) ou broche SWO "
                         "(formateur TPIU, capturée par la sonde de débogage via OpenOCD ; "
                         "faible débit, voir --cpu-hz / --swo-hz)")
+    e.add_argument("--etm-stall", action="store_true",
+                   help="ralentir le cœur plutôt que perdre de la trace quand la FIFO de l'ETM se "
+                        "remplit (indispensable par SWO sur un cœur rapide)")
     e.add_argument("--stm32", action="store_true", help="activer les broches de trace (DBGMCU_CR des STM32)")
     m = p.add_argument_group("trace MTB (Cortex-M0+)")
     m.add_argument("--mtb", nargs="?", const="auto", metavar="ADRESSE",
@@ -154,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.etm_config:
             from .trace.etm.config import EtmConfig
             cfg = EtmConfig(port_width=args.etm_width, stm32=args.stm32, port=args.etm_port,
-                            cpu_hz=args.cpu_hz, swo_hz=args.swo_hz,
+                            cpu_hz=args.cpu_hz, swo_hz=args.swo_hz, stall=args.etm_stall,
                             cycle_accurate=args.etm_cycle_accurate)
             for line in trace.configure_etm(cfg, session):
                 print(line)
@@ -208,6 +211,8 @@ def main(argv: list[str] | None = None) -> int:
         from .core.symbols import SymbolTable
         symbols = SymbolTable(elf)
         msg = trace.setup_etm(elf, symbols, cycle_accurate=args.etm_cycle_accurate)
+        if trace.etm is not None:
+            trace.detect_etm(s)                  # ETMv3 (M3/M4) ou ETMv4 (M7)
         if args.etm_sim or args.mtb_sim is not None:
             if msg:
                 print(msg)

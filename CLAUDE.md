@@ -100,6 +100,10 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
   appels). Les événements `Step` / `ExcEntry` / `ExcReturn` portent des cycles mesurés
   (cycle-accurate) ou estimés par `cycles.py` ; `trace/timing.py` en tire le temps brut/net
   par fonction et par exception (vue Timing).
+- ETMv4 (Cortex-M7) : `etm4.py` (paquets) → `flow4.py` (file de spéculation, parcours du
+  code entre points de passage) ; `encoder4.py` pour les tests et l'ETM simulé.
+  `EtmTrace(version=…)` choisit v3 ou v4 ; `TraceManager.detect_etm()` lit TRCIDR1 (sous
+  QEMU : CPUID, M7 → v4) après la connexion, et `configure_etm()` suit `EtmConfig.version`.
 - ETM simulé (QEMU n'a pas d'ETM) : QEMU lancé avec `-accel tcg,one-insn-per-tb=on` ; le
   resume hook active le journal (`-d exec,nochain,int`), l'arrêt le convertit en tâche de
   fond (`qemu_log.py` → `encoder.py` → même décodeur). `TraceManager.wait_etm()` attend la
@@ -130,7 +134,12 @@ synchronisés.
   seulement) ; QEMU n'émule ni ITM ni SWO.
 - Non validé sur sonde réelle : `--rtos`, capture SWO, `DWT_PCSR` via OpenOCD, trace ETM
   matérielle, ETM par SWO, MTB (dont le sens de l'adresse source d'une entrée d'exception :
-  prise comme adresse de retour). ETMv4 (M7, M33, M55) non pris en charge.
+  prise comme adresse de retour). ETMv4 : M7 (ETMv4.0) seulement, sans cycle-accurate ni
+  horodatage ; pas les ARMv8-M (M33, M55).
+- ETMv4 : un atome = un point de passage (`Instr.waypoint` : branchement ou ISB), pas une
+  instruction ; en profondeur de spéculation 1, le dernier élément n'est validé qu'au
+  suivant ou par `EtmTrace.flush()` (fait à l'arrêt de la cible). OpenCSD 1.4.1 déborde sur
+  une vraie trace d'ETM-M7 (Trace Info SPEC=1) : pour le comparer, ramener SPEC à 0.
 - OpenOCD 0.12 recopie dans son journal (stderr, et console gdb cible en marche) le
   résultat de chaque commande TCL : passer par `OpenOcdTcl.query()`, jamais `command()`,
   pour tout ce qui renvoie des données. Le stderr des serveurs doit rester drainé

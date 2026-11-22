@@ -356,6 +356,10 @@ class App:
                 msg = self.trace.setup_etm(self.session.elf, self.symbols)
                 if msg:
                     self.report_error(msg)
+        if self.trace.etm is not None and self.session is not None and self.session.state == "stopped":
+            self.safe(self.trace.detect_etm, self.session)      # ETMv3 (M3/M4) ou ETMv4 (M7)
+        if isinstance(target, QemuTarget) and (target.etm_sim or target.mtb_sim is not None) \
+                and self.live is not None:
             if self.trace.etm is not None and target.mtb_sim is not None and self.trace.mtb_sim is None:
                 self.trace.enable_mtb_sim(self.live, target.mtb_sim, self.session)
                 self.trace.attach_session(self.session)

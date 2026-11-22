@@ -5,6 +5,11 @@
 - couverture : base de couverture (`trace/coverage.py`) alimentée en continu : instructions,
   branches prises / non prises, ramenées aux lignes et aux fonctions ;
 - flot d'appels : appels, retours, exceptions, reconstruits depuis l'historique.
+
+`version` : architecture de l'ETM de la cible, 3 (Cortex-M3/M4, ETMv3.5) ou 4 (Cortex-M7,
+ETMv4.0). En ETMv4, le dernier élément P0 reste spéculatif tant que le suivant n'est pas
+arrivé : `flush()` le valide (à l'arrêt de la cible, sinon la dernière instruction tracée
+manquerait).
 """
 from __future__ import annotations
 
@@ -40,14 +45,14 @@ class FlowRow:
 
 class EtmTrace:
     def __init__(self, image: CodeImage, symbols=None, history: int = 200_000,
-                 cycle_accurate: bool = False):
+                 cycle_accurate: bool = False, version: int = 3):
         self.image = image
         self.symbols = symbols
-        self.cycle_accurate = cycle_accurate
+        self.version = 4 if version == 4 else 3
+        self.cycle_accurate = cycle_accurate and self.version == 3   # ETMv4 : pas encore
         #: trace produite par l'ETM simulé : ses cycles viennent du modèle, pas du matériel
         self.simulated = False
-        self.packets = Etm3Decoder(cycle_accurate=cycle_accurate)
-        self.flow = FlowDecoder(image, cycle_accurate)
+        self.packets, self.flow = self._decoders()
         self.history: deque[Event] = deque(maxlen=history)
         from ..coverage import CoverageDB
         self.cov = CoverageDB(image, symbols)
@@ -58,6 +63,13 @@ class EtmTrace:
         self.fed_instructions = 0    # instructions venues d'une autre source (MTB)
         self.fed_errors = 0
         self._lock = threading.Lock()
+
+    def _decoders(self):
+        if self.version == 4:
+            from .etm4 import Etm4Decoder
+            from .flow4 import Etm4Flow
+            return Etm4Decoder(), Etm4Flow(self.image)
+        return Etm3Decoder(cycle_accurate=self.cycle_accurate), FlowDecoder(self.image, self.cycle_accurate)
 
     def feed_events(self, events: list[Event], errors: int = 0) -> int:
         """Ajoute des événements déjà décodés (trace MTB) ; retourne le nombre d'instructions."""
@@ -80,10 +92,24 @@ class EtmTrace:
             self.generation += 1
             return sum(1 for e in events if isinstance(e, Step))
 
+    def flush(self) -> int:
+        """ETMv4 : valide les éléments encore spéculatifs ; retourne le nombre d'instructions.
+        Un Commit reçu ensuite pour l'un d'eux est sans effet ; un Cancel ne pourrait plus
+        l'annuler (sans conséquence sur un ETM-M7, qui ne spécule pas les branchements)."""
+        if self.version != 4:
+            return 0
+        with self._lock:
+            events = self.flow.flush()
+            if not events:
+                return 0
+            self.history.extend(events)
+            self.cov.add(events)
+            self.generation += 1
+            return sum(1 for e in events if isinstance(e, Step))
+
     def reset(self) -> None:
         with self._lock:
-            self.packets = Etm3Decoder(cycle_accurate=self.cycle_accurate)
-            self.flow = FlowDecoder(self.image, self.cycle_accurate)
+            self.packets, self.flow = self._decoders()
             self.history.clear()
             self.bytes = 0
             self.fed_instructions = self.fed_errors = 0
@@ -99,8 +125,10 @@ class EtmTrace:
     def stats(self) -> dict[str, int]:
         fs = self.flow.stats
         return {"octets": self.bytes, "instructions": fs.instructions + self.fed_instructions,
-                "non exécutées": fs.not_executed, "erreurs": self.packets.errors + self.fed_errors,
-                "atomes perdus": fs.lost_atoms, "code inconnu": fs.unknown_code, "cycles": fs.cycles}
+                "non exécutées": fs.not_executed,
+                "erreurs": self.packets.errors + getattr(fs, "errors", 0) + self.fed_errors,
+                "atomes perdus": fs.lost_atoms, "code inconnu": fs.unknown_code, "cycles": fs.cycles,
+                "débordements": getattr(fs, "overflows", 0)}
 
     @property
     def timing(self) -> str:

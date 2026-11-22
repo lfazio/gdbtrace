@@ -13,6 +13,9 @@ from .itm import ItmTextSink
 from .profile import Profile
 from .swo import ExceptionStats, FileSwoSource, SwoSource, TcpSwoSource, TraceSession, profile_sink
 
+CPUID = 0xE000ED00
+CORTEX_M7 = 0xC27                      # CPUID.PARTNO
+
 LineListener = Callable[[int, str, int], None]
 
 
@@ -38,13 +41,16 @@ class TraceManager:
         self.etm_busy = False
 
     # ------------------------------------------------------------------ ETM
-    def setup_etm(self, elf: str, symbols, cycle_accurate: bool = False) -> str | None:
+    def setup_etm(self, elf: str, symbols, cycle_accurate: bool = False,
+                  version: int = 3) -> str | None:
         """Prépare le décodage ETM pour cet ELF. `cycle_accurate` doit refléter la
-        configuration de l'ETM (ETMCR bit 12). Retourne un message si impossible."""
+        configuration de l'ETM (ETMCR bit 12) ; `version` : 3 (M3/M4) ou 4 (M7), voir
+        `detect_etm`. Retourne un message si impossible."""
         try:
             from .etm.image import CodeImage
             from .etm.trace import EtmTrace
-            self.etm = EtmTrace(CodeImage(elf), symbols, cycle_accurate=cycle_accurate)
+            self.etm = EtmTrace(CodeImage(elf), symbols, cycle_accurate=cycle_accurate,
+                                version=version)
         except Exception as exc:  # noqa: BLE001 - capstone absent, ELF illisible
             self.etm = None
             return f"trace ETM indisponible : {exc}"
@@ -67,7 +73,8 @@ class TraceManager:
             except Exception:  # noqa: BLE001
                 pass
             self.mtb_sim = None
-        msg = self.setup_etm(elf, symbols, cycle_accurate)
+        version = self.etm.version if self.etm is not None else 3
+        msg = self.setup_etm(elf, symbols, cycle_accurate, version)
         if sim is not None and self.etm is not None:
             self.enable_qemu_sim(sim.qmp)
         if mtb_sim is not None and self.etm is not None:
@@ -79,11 +86,41 @@ class TraceManager:
             fn()
         return msg
 
+    def detect_etm(self, session) -> int:
+        """Architecture de l'ETM de la cible arrêtée : TRCIDR1/ETMIDR si un ETM répond, sinon
+        d'après le cœur (CPUID : Cortex-M7 → ETMv4, pour l'ETM simulé de QEMU). Le décodeur
+        suit ; retourne 3 ou 4."""
+        from .etm.config import etm_version
+        v = etm_version(session.read_u32)
+        if v not in (2, 3, 4):                   # pas d'ETM lisible (QEMU)
+            try:
+                part = (session.read_u32(CPUID) >> 4) & 0xFFF
+            except Exception:  # noqa: BLE001
+                part = 0
+            v = 4 if part == CORTEX_M7 else 3
+        v = 4 if v == 4 else 3
+        self.set_etm_version(v)
+        return v
+
+    def set_etm_version(self, version: int) -> None:
+        """Décodeur ETMv3 ou ETMv4 ; la trace déjà décodée est abandonnée en cas de changement."""
+        if self.etm is None or self.etm.version == version:
+            return
+        from .etm.trace import EtmTrace
+        old = self.etm
+        self.etm = EtmTrace(old.image, old.symbols, cycle_accurate=old.cycle_accurate,
+                            version=version)
+        self.etm.simulated, self.etm.timing_label = old.simulated, old.timing_label
+        if self.etm_sim is not None:
+            self.etm_sim.etm = self.etm
+        self._etm_changed()
+
     def enable_qemu_sim(self, qmp) -> None:
         from .etm.qemu_sim import QemuEtmSim
         from .etm.trace import EtmTrace
         if self.etm is not None:
-            if not self.etm.cycle_accurate:      # la simulation encode en cycle-accurate
+            if self.etm.version == 3 and not self.etm.cycle_accurate:
+                # la simulation ETMv3 encode en cycle-accurate
                 self.etm = EtmTrace(self.etm.image, self.etm.symbols, cycle_accurate=True)
             self.etm.simulated = True            # cycles du modèle : durées estimées
             self.etm_sim = QemuEtmSim(qmp, self.etm.image, self.etm)
@@ -166,10 +203,13 @@ class TraceManager:
 
     def on_target_stopped(self) -> None:
         """Fin d'une exécution, en tâche de fond : sous QEMU, conversion du journal en trace ;
-        sur une cible avec MTB, lecture et remise à zéro du tampon."""
+        sur une cible avec MTB, lecture et remise à zéro du tampon. ETMv4 capturé : le dernier
+        élément, encore spéculatif, est validé."""
         jobs = [s for s in self._sims() if s.path is not None]
         mtb = self.mtb
         if not jobs and mtb is None:
+            if self.etm is not None and self.etm.version == 4 and self.etm.flush():
+                self._etm_changed()
             return
         import threading
         session = getattr(self, "_attached", None)
@@ -191,9 +231,12 @@ class TraceManager:
         threading.Thread(target=work, name="trace-run", daemon=True).start()
 
     def configure_etm(self, cfg, session) -> list[str]:
-        """Programme l'ETM et le TPIU parallèle (cible arrêtée)."""
+        """Programme l'ETM et le TPIU (cible arrêtée) ; le décodeur suit l'architecture de
+        l'ETM détectée (v3 ou v4)."""
         log = [f"{name} = {val:#010x}" for name, val in cfg.apply(session)]
         log.append(cfg.summary())
+        self.set_etm_version(cfg.version)
+        self.attach_session(session)            # ETMv4 : validation à chaque arrêt
         return log
 
     def close(self) -> None:

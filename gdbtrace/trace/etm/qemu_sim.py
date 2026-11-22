@@ -2,7 +2,8 @@
 
 Pendant chaque exécution (Go → arrêt), QEMU journalise les instructions exécutées
 (activé/désactivé par le moniteur : `logfile`, `log`). À l'arrêt, le journal est converti
-en flux ETMv3 par l'encodeur — le même flux qu'émettrait l'ETM d'un Cortex-M — puis décodé
+en flux ETMv3 (ou ETMv4 si la trace est en v4 : Cortex-M7, `mps2-an500`) par l'encodeur — le
+même flux qu'émettrait l'ETM d'un Cortex-M — puis décodé
 comme une vraie capture. Toute la chaîne de décodage et les vues sont ainsi utilisables
 sans matériel. QEMU doit être lancé avec `-accel tcg,one-insn-per-tb=on`
 (`QemuTarget(etm_sim=True)`, option `--etm-sim`).
@@ -65,8 +66,15 @@ class QemuEtmSim:
         return list(parse(text.splitlines()))
 
     def _convert(self, events: list, end_pc: int | None) -> int:
-        # cycles du modèle (QEMU n'en a pas), encodés en mode cycle-accurate
-        data = Etm3Encoder(self.image, cycle_accurate=True).encode(annotate(events, self.image))
+        events = annotate(events, self.image)        # cycles du modèle (QEMU n'en a pas)
+        if getattr(self.etm, "version", 3) == 4:
+            from .encoder4 import Etm4Encoder
+            data = Etm4Encoder(self.image).encode(events)
+            self.etm.feed(data)
+            self.etm.flush()                         # fin de l'exécution : rien n'est spéculatif
+            return len(data)
+        # ETMv3 : encodé en mode cycle-accurate
+        data = Etm3Encoder(self.image, cycle_accurate=True).encode(events)
         self.etm.feed(data)
         return len(data)
 

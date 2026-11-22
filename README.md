@@ -17,6 +17,7 @@ Interface en **tkinter**.
 | 7. Analyse temporelle | Durées par fonction et par exception (appels, brut, net, min/max/moy), chronogramme des appels ; ETM cycle-accurate (validé contre OpenCSD) ou modèle de cycles | ✅ |
 | 8. Couverture de code | Couverture du code objet par la trace ETM, sans instrumentation : instructions, branches prises / non prises, lignes, fonctions ; cumul et fusion de campagnes ; rapports HTML et LCOV | ✅ |
 | 9. MTB et ETM par SWO | Trace MTB des Cortex-M0+ (décodage validé sur chemins QEMU, démo M0+, MTB simulée) ; ETM d'un M3/M4 par la broche SWO, sans sonde de trace | ✅ (à valider sur carte) |
+| 10. ETMv4 (Cortex-M7) | Trace d'instructions de l'ETM-M7 (ETMv4.0) : décodage validé contre QEMU, OpenCSD et une vraie capture par SWO sur Nucleo-F746ZG ; version de l'ETM détectée ; ETM simulé v4 sous QEMU (`mps2-an500`) | 🚧 (cycle-accurate et horodatage à venir) |
 
 ## Installation
 
@@ -199,12 +200,15 @@ Sources de trace :
 
 | Source | Option | Remarque |
 |---|---|---|
-| ETM simulé (QEMU) | `--etm-sim` | QEMU n'a pas d'ETM : son journal d'exécution est activé à chaque Go, puis converti à l'arrêt en flux ETMv3, tel que l'émettrait un ETM-M, et décodé comme une vraie capture. QEMU tourne plus lentement (une instruction par bloc TCG). |
+| ETM simulé (QEMU) | `--etm-sim` | QEMU n'a pas d'ETM : son journal d'exécution est activé à chaque Go, puis converti à l'arrêt en flux ETMv3 (ETMv4 sur une machine Cortex-M7 : `--machine mps2-an500`), tel que l'émettrait un ETM-M, et décodé comme une vraie capture. QEMU tourne plus lentement (une instruction par bloc TCG). |
 | Port de trace parallèle | `--etm-config [--etm-width 4] [--stm32]` puis `--trace HOST:PORT` ou `--trace-file F` | flux TPIU formaté : ETM (ID 2) et ITM (ID 1) séparés automatiquement. Il faut une sonde de trace (ex. ORBTrace Mini avec Orbuculum, qui sert le flux brut en TCP) et une carte qui expose TRACECLK/TRACED0-3. |
-| Broche SWO | `--etm-config --etm-port swo --cpu-hz N [--swo-hz N] [--stm32]` (OpenOCD) ou `--swo HOST:PORT` / `--swo-file F` | même flux formaté, sur la broche SWO, capturé par la sonde de débogage (ST-Link, J-Link...). Faible débit : voir ci-dessous. |
+| Broche SWO | `--etm-config --etm-port swo --cpu-hz N [--swo-hz N] [--etm-stall] [--stm32]` (OpenOCD) ou `--swo HOST:PORT` / `--swo-file F` | même flux formaté, sur la broche SWO, capturé par la sonde de débogage (ST-Link, J-Link...). Faible débit : voir ci-dessous. |
 
 `--etm-config` programme l'ETM (ID de trace 2, trace de tout le code), le TPIU en port
 parallèle 1/2/4 bits avec formateur, et avec `--stm32` les broches de trace (DBGMCU_CR).
+L'architecture de l'ETM est lue sur la cible (TRCIDR1 ; sous QEMU, le cœur d'après CPUID) :
+ETMv3 pour un Cortex-M3/M4, ETMv4 pour un Cortex-M7, et le décodeur suit. `--etm-stall`
+ralentit le cœur plutôt que de perdre de la trace quand la FIFO de l'ETM se remplit.
 
 **Comment le décodeur a été validé sans matériel.**
 1. QEMU fournit le chemin réel instruction par instruction, exceptions comprises.
@@ -219,8 +223,21 @@ Les deux retrouvent exactement le chemin de QEMU :
   enchaînées.
 
 Ce test tourne dans la suite (`tools/build_opencsd.sh` construit OpenCSD dans `.cache/`). Il
-reste à valider sur une vraie sonde de trace. Les ETMv4 (Cortex-M7, M33, M55) ne sont pas
-pris en charge.
+reste à valider sur une vraie sonde de trace.
+
+**ETMv4 (Cortex-M7).** Un atome ne désigne plus une instruction mais un point de passage
+(branchement ou ISB) : le décodeur parcourt le code entre deux atomes. Une exception porte
+l'adresse de retour préférée, qui borne les instructions exécutées avant l'interruption, puis
+l'adresse du handler. La spéculation est gérée comme dans OpenCSD (profondeur 1 sur un
+ETM-M7 ; le dernier élément est validé à l'arrêt de la cible). Même méthode de validation :
+sur les chemins QEMU bare-metal et FreeRTOS, notre décodeur et OpenCSD retrouvent exactement
+le chemin (0,3 à 0,6 bit par instruction). Puis sur matériel : 2 s capturées par SWO sur une
+Nucleo-F746ZG à 216 MHz (`--etm-stall`), 1 961 SysTick et 1 962 retours, 0 débordement, et
+GdbTrace et OpenCSD identiques sur 194 127 événements. Deux constats sur cette carte : les
+premiers octets sortent avant que le formateur TPIU ne démarre (GdbTrace les ignore), et
+OpenCSD 1.4.1 ne compte pas l'élément spéculatif annoncé par Trace Info (SPEC=1) : il déborde
+à chaque synchronisation, GdbTrace non. Pas encore pris en charge : cycle-accurate et
+horodatage en ETMv4, ETMv4 des ARMv8-M (M33, M55).
 
 ### Analyse temporelle (vue Timing)
 
@@ -341,8 +358,11 @@ TRACECLK (≈ 4 × HCLK bit/s). Aucun MCU ne l'échantillonne seul. Avec une bas
 (4 bits figés sur le front descendant), une interface parallèle sur un seul front (DCMI,
 PSSI) reçoit 8 bits par front montant. Une F746 capte ainsi en rafale dans sa RAM (quelques
 ms, sortie USB FS seulement) ; une N6 (USB HS à PHY intégré) pourrait streamer, mais c'est un
-firmware à part entière. La solution mûre reste une sonde FPGA (ORBTrace Mini). L'ETMv4 des
-Cortex-M7 (F746) n'est pas décodé par GdbTrace ; `--etm-config` le refuse.
+firmware à part entière. La solution mûre reste une sonde FPGA (ORBTrace Mini).
+
+L'ETMv4 d'un Cortex-M7 est plus compact (un atome par branchement), mais un M7 exécute bien
+plus d'instructions par seconde : sur une F746 à 216 MHz, le SWO d'un ST-LINK/V2-1 ne suit
+que du code qui dort souvent. Sinon `--etm-stall` ralentit le cœur au débit de la trace.
 
 ### Trace MTB (Cortex-M0+)
 
@@ -435,6 +455,9 @@ gdbtrace/
   trace/etm/flow.py     reconstruction du flot d'exécution (paquets + code de l'ELF)
   trace/etm/image.py    image du code et classification Thumb-2 (capstone)
   trace/etm/encoder.py  encodeur ETMv3 (ETM simulé, tests)
+  trace/etm/etm4.py     décodeur de paquets ETMv4 (Cortex-M7)
+  trace/etm/flow4.py    flot ETMv4 : points de passage, exceptions, spéculation
+  trace/etm/encoder4.py encodeur ETMv4 (ETM simulé, tests)
   trace/etm/qemu_log.py chemin réel depuis le journal QEMU
   trace/etm/trace.py    historique, flot d'appels ; alimente la base de couverture
   trace/coverage.py     base de couverture (E/N par adresse), lignes, fonctions, fusion

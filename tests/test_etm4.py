@@ -219,3 +219,56 @@ def test_resynchronisation_mid_stream(qemu_paths):
         # repris à une synchro, il va jusqu'à la fin du flux : suffixe exact du décodage complet
         # (comparer à un tronçon du chemin le ferait coïncider avec un tour de boucle antérieur)
         assert full[len(full) - len(tail):] == tail
+
+
+# ====================================================================== intégration
+def test_detect_etm_version():
+    """TRCIDR1 d'un vrai ETM d'abord ; sans ETM lisible (QEMU), le cœur décide (CPUID)."""
+    from gdbtrace.trace.etm.config import ETMIDR
+    from gdbtrace.trace.manager import CPUID, TraceManager
+
+    class S:
+        def __init__(self, regs):
+            self.regs = regs
+
+        def read_u32(self, a):
+            if a not in self.regs:
+                raise RuntimeError("lecture impossible")
+            return self.regs[a]
+    tm = TraceManager()
+    assert tm.detect_etm(S({ETMIDR: 0x4100F400})) == 4                 # ETM-M7
+    assert tm.detect_etm(S({ETMIDR: 0x4114F250})) == 3                 # ETM-M4 (ETMv3.5)
+    assert tm.detect_etm(S({CPUID: 0x411FC272})) == 4                  # QEMU mps2-an500 (M7)
+    assert tm.detect_etm(S({CPUID: 0x410FC231})) == 3                  # QEMU mps2-an385 (M3)
+
+
+def test_etm_trace_v4_flush_shows_the_last_branch():
+    from gdbtrace.trace.etm.trace import EtmTrace
+    events = [ql.Step(0x100), ql.Step(0x102), ql.Step(0x104), ql.Step(0x106)]
+    t = EtmTrace(TinyImage(), version=4)
+    t.feed(encode(events, TinyImage()))
+    assert [e.addr for e in t.last(10)] == [0x100, 0x102]             # atome du bx lr spéculatif
+    assert t.flush() == 2 and [e.addr for e in t.last(10)] == [0x100, 0x102, 0x104, 0x106]
+    assert t.stats["erreurs"] == 0 and t.flush() == 0
+
+
+@needs_qemu
+def test_simulated_etmv4_on_qemu_cortex_m7(elf, tmp_path):
+    """--machine mps2-an500 (Cortex-M7) --etm-sim : ETMv4 détecté et décodé jusqu'à l'arrêt."""
+    import subprocess
+    import sys
+    from conftest import ROOT
+    script = tmp_path / "s.py"
+    script.write_text("g = gdbtrace\nprint('ETMv%d' % g.trace.etm.version)\n"
+                      "g.break_('fib'); g.go(); g.wait(); g.trace.wait_etm()\n"
+                      "st = g.trace.etm.stats\nprint('instructions', st['instructions'], 'erreurs', st['erreurs'])\n"
+                      "print('dernière', g.trace.etm.last(1)[0].addr)\n")
+    r = subprocess.run([sys.executable, "-m", "gdbtrace", elf, "--machine", "mps2-an500",
+                        "--etm-sim", "--batch", "--script", str(script)],
+                       cwd=ROOT, capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr
+    out = r.stdout.split()
+    assert "ETMv4" in out and out[out.index("erreurs") + 1] == "0"
+    assert int(out[out.index("instructions") + 1]) > 100
+    img = __import__("gdbtrace.trace.etm.image", fromlist=["CodeImage"]).CodeImage(elf)
+    assert img.instr(int(out[out.index("dernière") + 1])).call                # le bl vers fib
