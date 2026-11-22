@@ -123,6 +123,9 @@ class GdbMI:
         La sortie est capturée et **pas** diffusée aux abonnés : les commandes internes
         (ptype, info line...) ne doivent pas polluer la console de l'utilisateur.
         Les appels sont sérialisés pour que chaque capture reçoive sa propre sortie.
+        La sortie d'une commande `monitor` (réponse du serveur gdb : OpenOCD, QEMU) arrive
+        par le flux « target » de MI (`@"..."`), pas par le flux « console » : les deux sont
+        capturés.
         """
         escaped = cli.replace("\\", "\\\\").replace('"', '\\"')
         with self._console_lock:
@@ -153,7 +156,7 @@ class GdbMI:
                     q.put(rec)
                     continue
             capture = self._capture
-            if capture is not None and rec.get("type") == "console":
+            if capture is not None and rec.get("type") in ("console", "target"):
                 capture.append(rec.get("payload") or "")
                 continue
             self._dispatch(rec)

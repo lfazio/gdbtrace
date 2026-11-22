@@ -129,6 +129,11 @@ class TcpSwoSource(SwoSource):
                     if not data:
                         raise ConnectionError("connexion fermée par le serveur SWO")
                     self.session.feed(data)
+            except ConnectionRefusedError:
+                # OpenOCD n'ouvre ce port qu'à `tpiu enable` : connexion faite trop tôt
+                self.error = (f"rien n'écoute sur {self.host}:{self.port} (OpenOCD : « Configurer "
+                              f"la cible… » ou --swo-config ouvre ce port ; nouvel essai chaque "
+                              f"{self.retry:g} s)")
             except OSError as exc:
                 self.error = str(exc)
             finally:

@@ -133,6 +133,17 @@ def test_download_progress_not_echoed(session):
     assert not any("+download" in t for t in out)
 
 
+def test_monitor_returns_server_output(session):
+    """La sortie d'une commande `monitor` arrive par le flux « target » de MI (`@"..."`) :
+    elle était diffusée sans être capturée, et monitor() renvoyait "" (avec OpenOCD,
+    `monitor tpiu names` vide : « aucun TPIU déclaré », --swo-config inutilisable)."""
+    out = []
+    session.on_event(lambda kind, data: out.append(data.get("text", "")) if kind == "output" else None)
+    version = session.monitor("info version")
+    assert version.strip()[:1].isdigit(), version              # « 11.1.3Debian ... »
+    assert not any(version.strip() in t for t in out if t)     # capturée, pas diffusée
+
+
 # ====================================================================== arrêts internes
 class FakeGdb:
     def __init__(self):

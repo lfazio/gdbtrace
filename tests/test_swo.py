@@ -144,6 +144,20 @@ def test_tcp_swo_source(elf):
     assert not src.running
 
 
+def test_tcp_swo_source_refused_explains():
+    """Port fermé (OpenOCD avant `tpiu enable`) : l'erreur dit comment ouvrir le port."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]                         # libre, personne n'y écoute
+    src = TcpSwoSource("127.0.0.1", port, retry=0.1)
+    src.start(TraceSession())
+    try:
+        assert wait(lambda: src.error is not None)
+        assert "rien n'écoute" in src.error and "Configurer la cible" in src.error
+    finally:
+        src.stop()
+
+
 def test_formatted_stream_and_file_replay(elf, tmp_path):
     sym = SymbolTable(elf)
     path = tmp_path / "capture.bin"
