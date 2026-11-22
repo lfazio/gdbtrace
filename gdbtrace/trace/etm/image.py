@@ -39,6 +39,13 @@ class Instr:
     ret: bool                     # BX LR, POP {..., PC}... (retour probable)
     text: str                     # désassemblage
     op: str = ""                  # mnémonique de base, sans condition ni « .w » (bx, pop, ldr…)
+    isb: bool = False             # ISB : point de passage (élément P0) de l'ETMv4
+
+    @property
+    def waypoint(self) -> bool:
+        """Élément P0 de l'ETMv4 : tout branchement, et ISB (comme OpenCSD : DSB, DMB, WFI et
+        WFE n'en sont pas sur un ETMv4.0)."""
+        return self.kind != NORMAL or self.isb
 
 
 class CodeImage:
@@ -64,6 +71,24 @@ class CodeImage:
                 elif name[:2] in ("$t", "$a", "$d") and (len(name) == 2 or name[2] == "."):
                     marks.append((addr, name[1]))
         self.segments.sort()
+        self._init_disasm(ends, marks)
+
+    @classmethod
+    def from_segments(cls, segments: list[tuple[int, bytes]], name: str = "mémoire") -> "CodeImage":
+        """Image faite de copies de la mémoire de la cible [(adresse, octets)] : décoder une
+        trace quand l'ELF ne correspond pas au code exécuté (autre build flashé, code généré
+        à l'exécution). Sans table des symboles, pas de balayage des blocs IT : chaque
+        instruction est décodée seule (une instruction conditionnée par un IT paraît
+        inconditionnelle)."""
+        if capstone is None:
+            raise RuntimeError("le module capstone est requis : pip install capstone")
+        img = cls.__new__(cls)
+        img.path = name
+        img.segments = sorted((base, bytes(data)) for base, data in segments)
+        img._init_disasm({}, [])
+        return img
+
+    def _init_disasm(self, ends: dict[int, int], marks: list[tuple[int, str]]) -> None:
         self.cs = capstone.Cs(capstone.CS_ARCH_ARM, capstone.CS_MODE_THUMB | capstone.CS_MODE_MCLASS)
         self.cs.detail = True
         self._cache: dict[int, Instr | None] = {}
@@ -163,4 +188,4 @@ def _classify(ins) -> Instr:
         elif op in ("pop", "ldm", "ldmia") and writes_pc:
             ret = True
     return Instr(ins.address, ins.size, kind, target, cond, call, ret,
-                 f"{ins.mnemonic} {ins.op_str}".strip(), op)
+                 f"{ins.mnemonic} {ins.op_str}".strip(), op, isb=op == "isb")

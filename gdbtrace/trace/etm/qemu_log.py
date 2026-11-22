@@ -40,6 +40,10 @@ class ExcEntry:
     handler: int
     tailchain: bool = False      # enchaînée sans retour au code interrompu
     cycles: int = field(default=0, compare=False)
+    #: adresse de retour préférée, quand QEMU la donne : interruption prise avant une
+    #: instruction (« Stopped execution of TB chain before <PC> ») ; None sinon (exception
+    #: synchrone comme SVC : l'instruction qui suit la dernière exécutée)
+    ret: int | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -56,6 +60,7 @@ def parse(lines: Iterable[str]) -> Iterator[Event]:
     number: int | None = None
     tailchain = False
     held_return = False                 # ExcReturn retenu : annulé si enchaînement
+    stopped: int | None = None          # instruction devant laquelle l'exécution s'est arrêtée
     for line in lines:
         m = _TRACE.match(line)
         if m:
@@ -65,11 +70,13 @@ def parse(lines: Iterable[str]) -> Iterator[Event]:
                 yield ExcReturn()
                 held_return = False
             pending = int(m.group(1), 16)
+            stopped = None
             continue
         m = _STOPPED.match(line)
         if m:
             if pending is not None and int(m.group(1), 16) == pending:
                 pending = None          # pas exécutée : interruption prise avant
+                stopped = int(m.group(1), 16)
             continue
         if line.startswith("Taking exception") or line.startswith("Exception return"):
             if pending is not None:     # l'instruction annoncée a bien été exécutée
@@ -90,8 +97,9 @@ def parse(lines: Iterable[str]) -> Iterator[Event]:
             if held_return:             # retour puis nouvelle exception sans instruction
                 yield ExcReturn()
                 held_return = False
-            yield ExcEntry(number, int(m.group(1), 16) & ~1, tailchain)
-            number, tailchain = None, False
+            yield ExcEntry(number, int(m.group(1), 16) & ~1, tailchain,
+                           ret=None if tailchain else stopped)
+            number, tailchain, stopped = None, False, None
     # Fin du journal : une instruction annoncée sans « Stopped execution » derrière a été
     # exécutée (ex. celle qui précède un point d'arrêt, dont l'instruction n'est jamais
     # annoncée).

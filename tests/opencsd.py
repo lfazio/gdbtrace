@@ -62,16 +62,40 @@ def make_snapshot(directory: str, image, framed_trace: bytes, trace_id: int = 2,
             fh.write(text)
 
 
+#: registres d'identification de l'ETM-M7 d'un STM32F746 (lus sur une Nucleo-F746ZG) :
+#: ETMv4.0, adresses 32 bits, profondeur de spéculation 1 (TRCIDR8)
+ETM_M7_IDR = {"TRCIDR0(0x078)": 0x080006E1, "TRCIDR1(0x079)": 0x4100F400,
+              "TRCIDR2(0x07A)": 0x00000004, "TRCIDR8(0x060)": 0x00000001,
+              "TRCIDR9(0x061)": 0, "TRCIDR10(0x062)": 0, "TRCIDR11(0x063)": 0,
+              "TRCIDR12(0x064)": 0x00000001, "TRCIDR13(0x065)": 0,
+              "TRCAUTHSTATUS(0x3EE)": 0x000000C0}
+
+
+def make_snapshot_etm4(directory: str, image, framed_trace: bytes, trace_id: int = 2,
+                       configr: int = 0x1) -> None:
+    """Snapshot d'un ETM-M7 (ETMv4). OpenCSD ne connaît pas le Cortex-M7 : on déclare un
+    Cortex-M4, de même architecture (ARMv7-M) et de même profil (M) — seuls ceux-ci comptent
+    pour le décodage ; les registres d'identification sont ceux du vrai ETM-M7."""
+    make_snapshot(directory, image, framed_trace, trace_id)
+    regs = {"TRCCONFIGR(0x004)": configr, "TRCTRACEIDR(0x010)": trace_id, **ETM_M7_IDR}
+    with open(os.path.join(directory, "etm_0.ini"), "w") as fh:
+        fh.write("[device]\nname=ETM_0\nclass=trace_source\ntype=ETM4\n\n[regs]\n"
+                 + "".join(f"{k}=0x{v:08X}\n" for k, v in regs.items()))
+
+
 _RANGE = re.compile(r"INSTR_RANGE\(exec range=0x([0-9a-f]+):\[0x([0-9a-f]+)\] num_i\((\d+)\)")
 _CC = re.compile(r"\[CC=(\d+)\]")
 _EXC = re.compile(r"OCSD_GEN_TRC_ELEM_EXCEPTION\(.*excep num \(0x([0-9a-f]+)\)")
 
 
-def decode(directory: str, image, with_cycles: bool = False) -> tuple[list, list[str]]:
+def decode(directory: str, image, with_cycles: bool = False,
+           etm4: bool = False) -> tuple[list, list[str]]:
     """Décode avec OpenCSD. Retourne (événements, lignes d'erreur). Événements :
     ("step", adresse) par instruction (plages développées avec l'image), ("exc", numéro),
     ("ret",). `with_cycles` : chaque événement reçoit en plus ses cycles ; les cycles sans
-    instruction (éléments CYCLE_COUNT) s'ajoutent à l'événement suivant, comme dans gdbtrace."""
+    instruction (éléments CYCLE_COUNT) s'ajoutent à l'événement suivant, comme dans gdbtrace.
+    `etm4` : OpenCSD donne le champ TYPE brut des exceptions ETMv4, converti en numéro."""
+    from gdbtrace.trace.etm.etm4 import exception_number
     exe, libdir = lister()
     env = dict(os.environ)
     if libdir:
@@ -103,7 +127,8 @@ def decode(directory: str, image, with_cycles: bool = False) -> tuple[list, list
             continue
         m = _EXC.search(line)
         if m:
-            events.append(("exc", int(m.group(1), 16)) + cyc(line))
+            num = int(m.group(1), 16)
+            events.append(("exc", exception_number(num) if etm4 else num) + cyc(line))
         elif "EXCEPTION_RET" in line:
             events.append(("ret",) + cyc(line))
         elif re.search(r"ERROR|ADDR_NACC|ADDR_UNKNOWN", line):
