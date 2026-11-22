@@ -18,14 +18,37 @@ from ..gui.view_base import View
 EXTERNAL = "Externes"
 
 
+def racine_projet(elf: str, files: list[str]) -> str | None:
+    """Le dossier du projet : parmi les dossiers qui contiennent l'ELF (sauf « / »), le plus
+    profond qui contient autant de fichiers sources que le plus fourni d'entre eux. Un ELF
+    construit loin des sources (`build/f746/src/platform/stm32f746/x.elf`) remonte ainsi
+    jusqu'au dépôt, et celui d'un exemple reste dans son dossier ; les fichiers de la chaîne
+    de compilation (`/usr/...`) ne comptent pour aucun. None si aucun ne contient de fichier."""
+    absolus = [f for f in files if os.path.isabs(f)]
+    meilleur, n_max = None, 0
+    d = os.path.dirname(os.path.abspath(elf))
+    while d and d != os.path.dirname(d):          # jusqu'à « / », exclu
+        n = sum(1 for f in absolus if f.startswith(d.rstrip("/") + "/"))
+        if n > n_max:                             # strictement : le plus profond à égalité
+            meilleur, n_max = d, n
+        d = os.path.dirname(d)
+    return meilleur
+
+
 def build_tree(files: list[str], root_hint: str | None = None) -> tuple[str, dict]:
     """Arbre {nom: sous-arbre | chemin du fichier} des fichiers, à partir de leur racine commune
     (les fichiers hors de `root_hint` vont sous « Externes ») ; les dossiers à enfant unique
-    sont fusionnés (`portable/GCC/ARM_CM3`)."""
-    inside = [f for f in files if root_hint and f.startswith(root_hint.rstrip("/") + "/")]
-    outside = [f for f in files if f not in inside]
+    sont fusionnés (`portable/GCC/ARM_CM3`).
+
+    Un chemin relatif va toujours sous « Externes » : la table des lignes d'une bibliothèque
+    précompilée (picolibc de Debian : `../../libc/machine/arm/memcpy-armv7m.S`) est relative
+    à un dossier de construction qui n'existe pas ici, et os.path.commonpath refuse de
+    mélanger relatifs et absolus (ValueError : la vue restait vide)."""
+    absolus = [f for f in files if os.path.isabs(f)]
+    inside = [f for f in absolus if root_hint and f.startswith(root_hint.rstrip("/") + "/")]
     if not inside:
-        inside, outside = files, []
+        inside = absolus
+    outside = [f for f in files if f not in inside]
     root = os.path.commonpath(inside) if len(inside) > 1 else os.path.dirname(inside[0]) if inside else ""
     if inside and os.path.isfile(root):
         root = os.path.dirname(root)
@@ -130,7 +153,7 @@ class FilesView(View):
             self.tree.insert("", "end", text="(aucun fichier)", tags=("missing",))
             return
         elf = self.session.elf if self.session else None
-        hint = os.path.dirname(os.path.dirname(os.path.abspath(elf))) if elf else None
+        hint = racine_projet(elf, files) if elf else None
         _root, tree = build_tree(files, hint)
         self._insert_node("", tree, open_all=bool(flt), flt=flt)
         self._mark_current()
