@@ -61,6 +61,9 @@ class CoverageAPI:
     def summary(self) -> str:
         s = self.db.summary()
         print(s)
+        tm = self._api.trace
+        if tm is not None and tm.etm is not None and not tm.etm.stats["instructions"]:
+            print(f"  aucune instruction tracée : {tm.trace_status()}")
         return s
 
     def list(self, top: int | None = 20, file: str | None = None):
@@ -184,7 +187,8 @@ class ScriptAPI:
     # trace d'instructions ETM
     def _etm(self):
         if self.trace is None or self.trace.etm is None:
-            raise RuntimeError("pas de trace ETM (--etm-sim sous QEMU, --trace/--trace-file sur matériel)")
+            raise RuntimeError("pas de trace ETM (--etm-sim sous QEMU ; --etm-config --etm-port swo, "
+                               "--trace/--trace-file sur matériel)")
         self.trace.wait_etm()
         return self.trace.etm
 
@@ -317,10 +321,21 @@ class ScriptAPI:
         cfg.apply(self.s)
         print(cfg.summary())
 
+    def etm_swo(self, cpu_hz: int | None = None, swo_hz: int = 2_000_000, stall: bool = False,
+                stm32: bool = False, port: int = 3443) -> None:
+        """ETM par SWO (cible arrêtée) : TPIU formaté, capture servie par OpenOCD sur `port`,
+        ETM programmé ; comme --etm-config --etm-port swo."""
+        if self.trace is None:
+            raise RuntimeError("pas de gestionnaire de trace")
+        for line in self.trace.start_etm_swo(self.s, self.s.target, cpu_hz or self.cpu_hz, swo_hz,
+                                             stall=stall, stm32=stm32, port=port):
+            print(line)
+
     def itm(self, port: int = 0) -> str:
         """Texte reçu sur un port ITM (capture SWO en cours ou terminée)."""
         if self.trace is None:
-            raise RuntimeError("pas de capture SWO (--swo, --swo-file ou vue ITM)")
+            raise RuntimeError("pas de capture SWO (--swo, --swo-file, --swo-config, "
+                               "--etm-config --etm-port swo ou vue ITM)")
         return self.trace.text.text(port)
 
     def swo_config(self, cpu_hz: int, **kw) -> None:

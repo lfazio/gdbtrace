@@ -177,6 +177,10 @@ par tâche FreeRTOS. Sources des échantillons :
 | Live | lecture de `DWT_PCSR` par l'AHB-AP, cœur non arrêté | OpenOCD, Cortex-M3/M4/M7 (pas M0) |
 | Live | PC de la vCPU lu par le moniteur (~2 000 éch./s) | QEMU |
 
+« Auto » prend le SWO si une capture tourne, sinon le Live. Un profil qui marche ne prouve
+donc pas que le SWO est capturé : la vue ITM et les vues Trace et Couverture disent si une
+capture tourne et ce qu'elle reçoit.
+
 L'onglet **Exceptions** compte les entrées dans chaque exception ou IRQ et, si l'horodatage
 ITM est actif, le temps total et maximal passé dedans. Ces données viennent du SWO.
 
@@ -202,7 +206,7 @@ Sources de trace :
 |---|---|---|
 | ETM simulé (QEMU) | `--etm-sim` | QEMU n'a pas d'ETM : son journal d'exécution est activé à chaque Go, puis converti à l'arrêt en flux ETMv3 (ETMv4 sur une machine Cortex-M7 : `--machine mps2-an500`), tel que l'émettrait un ETM-M, et décodé comme une vraie capture. QEMU tourne plus lentement (une instruction par bloc TCG). |
 | Port de trace parallèle | `--etm-config [--etm-width 4] [--stm32]` puis `--trace HOST:PORT` ou `--trace-file F` | flux TPIU formaté : ETM (ID 2) et ITM (ID 1) séparés automatiquement. Il faut une sonde de trace (ex. ORBTrace Mini avec Orbuculum, qui sert le flux brut en TCP) et une carte qui expose TRACECLK/TRACED0-3. |
-| Broche SWO | `--etm-config --etm-port swo --cpu-hz N [--swo-hz N] [--etm-stall] [--stm32]` (OpenOCD) ou `--swo HOST:PORT` / `--swo-file F` | même flux formaté, sur la broche SWO, capturé par la sonde de débogage (ST-Link, J-Link...). Faible débit : voir ci-dessous. |
+| Broche SWO | `--etm-config --etm-port swo --cpu-hz N [--swo-hz N] [--etm-stall] [--stm32]` (OpenOCD), dans le GUI **Trace › ETM par SWO…**, ou `--swo HOST:PORT` / `--swo-file F` | même flux formaté, sur la broche SWO, capturé par la sonde de débogage (ST-Link, J-Link...). Faible débit : voir ci-dessous. |
 
 `--etm-config` programme l'ETM (ID de trace 2, trace de tout le code), le TPIU en port
 parallèle 1/2/4 bits avec formateur, et avec `--stm32` les broches de trace (DBGMCU_CR).
@@ -323,10 +327,24 @@ En intégration continue, une campagne par script :
     --script examples/scripts/coverage.py --coverage-merge run1.json --coverage total.html  # cumul
 ```
 
-Sur matériel, il faut une sonde de trace parallèle (`--etm-config --trace HOST:PORT`, voir
-plus haut) et un Cortex-M3/M4/M7 avec ETM. Le débit du port limite la durée d'une capture
-sans perte. Pour un Cortex-M0+ sans ETM, la MTB (Micro Trace Buffer, trace des branchements
-en RAM) donnerait la même information ; elle n'est pas encore prise en charge.
+Sur matériel, trois sources de trace d'instructions :
+- **ETM par SWO**, avec la sonde de débogage d'une Nucleo (ST-Link) et OpenOCD :
+  `--etm-config --etm-port swo --cpu-hz N` à la connexion, ou **Trace › ETM par SWO…**
+  cible arrêtée. Sur une Nucleo-F746ZG à 216 MHz, ajouter `--etm-stall` : le cœur ralentit
+  au débit du SWO au lieu de perdre de la trace (voir plus bas) ;
+- une **sonde de trace parallèle** : `--etm-config --trace HOST:PORT` ;
+- la **MTB** d'un Cortex-M0+ (`--mtb`, voir plus bas).
+
+Le débit du port limite la durée d'une capture sans perte.
+
+Tant qu'aucune instruction n'arrive, les vues Couverture et Trace disent pourquoi :
+- pas de capture, avec la cause de l'échec de la mise en route ;
+- sonde qui ne sert pas le SWO (`--remote` sans `--tcl`) ;
+- flux sans formateur TPIU ;
+- octets reçus mais aucun de l'ETM (ID 2) : ETM non programmé, ou `--cpu-hz` / débit faux.
+
+Le journal de la mise en route s'affiche dans la console : registres, `tpiu enable`, port
+TCP et débit tenable sans perte. `gdbtrace.cov.summary()` donne le même diagnostic.
 
 Limites de l'ETM simulé : QEMU ne dit pas si la condition d'une instruction *non-branchement*
 d'un bloc IT était vraie. Elle est comptée exécutée, alors qu'un vrai ETM donne l'atome exact.
@@ -446,6 +464,7 @@ avec OpenOCD, comme un Break).
 | `gdbtrace.cov.summary()`, `gdbtrace.cov.list(20)`, `gdbtrace.cov.files()` | couverture : résumé, COVerage.ListFunc, ListModule |
 | `gdbtrace.cov.export("cov.html")`, `gdbtrace.cov.save(f)`, `gdbtrace.cov.load(f)`, `gdbtrace.cov.reset()` | rapports (.html, .info LCOV, .json), cumul de campagnes, RàZ |
 | `gdbtrace.etm_config(port_width=4, stm32=True)` | programme l'ETM et le TPIU (parallèle, ou `port="swo", cpu_hz=…`) |
+| `gdbtrace.etm_swo(cpu_hz=216_000_000, stall=True)` | ETM par SWO : TPIU formaté, capture servie par OpenOCD, ETM (comme `--etm-config --etm-port swo`) |
 | `gdbtrace.mtb(20)`, `gdbtrace.mtb_probe()` | paquets MTB bruts du dernier arrêt, symbolisés ; composants CoreSight de la cible |
 | `gdbtrace.mtb_stats()` | compteurs MTB : paquets, instructions, arrêts AUTOHALT, débordements, erreurs |
 | `gdbtrace.program("fw.elf")`, `gdbtrace.program()` | FLASH.ReProgram : écrit, vérifie et reset (ELF courant par défaut) |

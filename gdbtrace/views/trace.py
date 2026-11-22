@@ -59,6 +59,7 @@ class TraceView(View):
         self._generation = -1
         app.trace.etm_listeners.append(self._on_new_trace)
         self.render(force=True)
+        self.after(1000, self._tick)
 
     @staticmethod
     def _tree(master, cols, first, stretch):
@@ -102,19 +103,32 @@ class TraceView(View):
         f = sym.function_at(addr) if sym else None
         return (le.file, le.line) if le and f else None
 
+    def _update_info(self) -> None:
+        etm, tm = self.etm, self.app.trace
+        st = etm.stats
+        if not st["instructions"]:          # rien de décodé : d'où cela devrait venir, et pourquoi
+            self.info.configure(text=tm.trace_status())
+            return
+        self.info.configure(text=f"{tm.source_label()} — {st['instructions']} instructions décodées, "
+                                 f"{st['octets']} octets, {st['erreurs']} erreurs")
+
+    def _tick(self) -> None:
+        """Tant que rien n'est décodé, l'état de la capture est suivi (connexion, octets)."""
+        if not self.winfo_exists():
+            return
+        if self.etm is not None and not self.etm.stats["instructions"]:
+            self._update_info()
+        self.after(1000, self._tick)
+
     def render(self, force: bool = False) -> None:
         etm = self.etm
         if etm is None:
             self.info.configure(text="trace ETM indisponible (capstone requis, ou pas d'ELF)")
             return
+        self._update_info()
         if not force and etm.generation == self._generation:
             return
         self._generation = etm.generation
-        tm = self.app.trace
-        src = tm.source_label() if (tm.etm_sim or tm.mtb_sim or tm.mtb or tm.active) else "aucune source"
-        st = etm.stats
-        self.info.configure(text=f"{src} — {st['instructions']} instructions décodées, "
-                                 f"{st['octets']} octets, {st['erreurs']} erreurs")
         try:
             n = max(10, min(int(self.count_var.get()), 50_000))
         except ValueError:

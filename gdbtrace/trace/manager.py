@@ -39,6 +39,11 @@ class TraceManager:
         self.mtb_sim = None                 # QemuMtbSim
         self.etm_listeners: list[Callable[[], None]] = []
         self.etm_busy = False
+        #: ETM par SWO configuré (le formateur TPIU doit rester actif) ; journal et cause du
+        #: dernier échec de sa mise en route, montrés par les vues (`trace_status`)
+        self.etm_swo = False
+        self.setup_log: list[str] = []
+        self.setup_error: str | None = None
 
     # ------------------------------------------------------------------ ETM
     def setup_etm(self, elf: str, symbols, cycle_accurate: bool = False,
@@ -295,11 +300,81 @@ class TraceManager:
     def configure_etm(self, cfg, session) -> list[str]:
         """Programme l'ETM et le TPIU (cible arrêtée) ; le décodeur suit l'architecture de
         l'ETM détectée (v3 ou v4)."""
+        if self.etm is not None:                # ETM illisible (QEMU) : version déjà détectée
+            cfg.version = self.etm.version
         log = [f"{name} = {val:#010x}" for name, val in cfg.apply(session)]
         log.append(cfg.summary())
         self.set_etm_version(cfg.version)
         self.attach_session(session)            # ETMv4 : validation à chaque arrêt
         return log
+
+    def start_etm_swo(self, session, target=None, cpu_hz: int = 0, swo_hz: int = 2_000_000,
+                      stall: bool = False, stm32: bool = False, port: int = 3443,
+                      swo: str | None = None, swo_file: str | None = None,
+                      cycle_accurate: bool = False) -> list[str]:
+        """ETM par la broche SWO (cible arrêtée) : TPIU avec formateur (ETM ID 2, ITM ID 1),
+        capture du SWO, puis programmation de l'ETM. La capture est servie par OpenOCD
+        (`--openocd`, ou `--remote` avec `--tcl`) sur `port`, ou ailleurs : `swo` (HOST:PORT,
+        Orbuculum, J-Link) ou `swo_file` (capture rejouée). Retourne le journal ; en cas
+        d'échec, la cause reste dans `setup_error` (vues Couverture et Trace)."""
+        from ..core.target import OpenOcdTarget, RemoteTarget
+        from .etm.config import EtmConfig
+        self.setup_error = None
+        try:
+            served = isinstance(target, OpenOcdTarget) or (isinstance(target, RemoteTarget)
+                                                           and bool(target.tcl_port))
+            if not (served or swo or swo_file):
+                raise RuntimeError("la sonde ne sert pas le SWO : --openocd, ou --remote … avec "
+                                   "--tcl HOST:PORT (OpenOCD lancé à part), ou --swo HOST:PORT")
+            if self.etm is None:
+                raise RuntimeError("trace ETM indisponible (capstone requis, ou pas d'ELF)")
+            if cpu_hz <= 0:
+                raise ValueError("préciser la fréquence du cœur (--cpu-hz)")
+            host = (target.tcl_host or target.host) if isinstance(target, RemoteTarget) else "127.0.0.1"
+            cfg = SwoConfig(cpu_hz=cpu_hz, swo_hz=swo_hz, ports=0xFFFFFFFF, formatter=True)
+            log = self.configure_target(cfg, session, target, port, host)
+            if swo:
+                h, _, p = swo.rpartition(":")
+                self.start_tcp(h or "127.0.0.1", int(p), formatter=True)
+                log.append(f"capture SWO TCP {h or '127.0.0.1'}:{p} démarrée")
+            elif swo_file:
+                self.start_file(swo_file, formatter=True)
+                log.append(f"capture SWO rejouée : {swo_file}")
+            etm = EtmConfig(port="swo", cpu_hz=cpu_hz, swo_hz=swo_hz, stall=stall, stm32=stm32,
+                            cycle_accurate=cycle_accurate)
+            log += self.configure_etm(etm, session)
+        except Exception as exc:
+            self.setup_error = f"ETM par SWO : {exc}"
+            raise
+        self.etm_swo = True
+        self.setup_log = log
+        return log
+
+    def trace_status(self) -> str:
+        """Où en est la trace d'instructions, en une ligne (vues Couverture et Trace) : d'où
+        elle vient, ou pourquoi rien n'arrive et quoi faire."""
+        if self.etm is None:
+            return "trace ETM indisponible (capstone requis, ou pas d'ELF)"
+        if self.etm_sim is not None or self.mtb_sim is not None or self.mtb is not None:
+            return self.source_label()
+        src, sess = self.source, self.session
+        if src is None:
+            hint = ("aucune capture de trace d'instructions : Trace › ETM par SWO… (ou --etm-config "
+                    "--etm-port swo), --etm-config --trace HOST:PORT (sonde parallèle), --mtb (M0+)")
+            return f"{self.setup_error} — {hint}" if self.setup_error else hint
+        if src.error and not src.connected:
+            return f"{src.description} : {src.error}"
+        if sess is None or sess.deformatter is None:
+            return (f"{src.description} sans formateur TPIU : l'ETM n'y passe pas "
+                    "(Trace › ETM par SWO…, ou Formateur TPIU dans la vue ITM)")
+        if sess.etm_bytes == 0:
+            if not sess.bytes:
+                return f"{src.description} : rien reçu pour l'instant (cible arrêtée ?)"
+            return (f"{src.description} : {sess.bytes} octets reçus, aucun octet ETM (ID 2) : "
+                    "ETM programmé (--etm-config) ? débit SWO et --cpu-hz justes ?")
+        st = self.etm.stats
+        return (f"{src.description} : {sess.etm_bytes} octets ETM, {st['instructions']} instructions, "
+                f"{st['débordements']} débordements, {st['erreurs']} erreurs")
 
     def close(self) -> None:
         self.stop()

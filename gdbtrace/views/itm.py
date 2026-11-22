@@ -107,8 +107,9 @@ class ItmView(View):
     def _connect(self) -> None:
         host, _, port = self.addr_var.get().rpartition(":")
         self._apply_text_ports()
+        # ETM par SWO configuré : le flux est formaté (ETM ID 2, ITM ID 1)
         self.app.safe(self.app.trace.start_tcp, host or "127.0.0.1", int(port),
-                      self.formatter_var.get())
+                      self.formatter_var.get() or self.app.trace.etm_swo)
 
     def _open_file(self) -> None:
         path = filedialog.askopenfilename(filetypes=[("Capture SWO", "*.bin *.swo *.raw"), ("Tous", "*")])
@@ -140,7 +141,9 @@ class ItmView(View):
         if getattr(self.app, "api", None) is not None:
             self.app.api.cpu_hz = cpu
         port = int(self.addr_var.get().rpartition(":")[2] or 3443)
-        cfg = SwoConfig(cpu_hz=cpu, swo_hz=swo, ports=0xFFFFFFFF)
+        # avec l'ETM par SWO, le formateur TPIU reste actif : sinon l'ETM ne passerait plus
+        cfg = SwoConfig(cpu_hz=cpu, swo_hz=swo, ports=0xFFFFFFFF,
+                        formatter=self.formatter_var.get() or self.app.trace.etm_swo)
         log = self.app.safe(self.app.trace.configure_target, cfg, self.session,
                             self.session.target, port)
         if log:

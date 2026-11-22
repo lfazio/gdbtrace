@@ -47,7 +47,72 @@ def int_auto(text: str) -> int:
     return int(text, 0)
 
 
-def main(argv: list[str] | None = None) -> int:
+def setup_trace(args, trace, session, target, log=print) -> None:
+    """Options de trace, après la connexion (cible arrêtée) : programmation de la cible puis
+    démarrage des captures. Commun au mode --batch (`log` = print) et au GUI (console)."""
+    if args.etm_config and args.etm_port == "swo":      # ETM + ITM formatés sur le SWO
+        for line in trace.start_etm_swo(session, target, args.cpu_hz, args.swo_hz,
+                                         stall=args.etm_stall, stm32=args.stm32,
+                                         port=args.swo_port, swo=args.swo, swo_file=args.swo_file,
+                                         cycle_accurate=args.etm_cycle_accurate):
+            log(line)
+    else:
+        if args.swo_config:
+            from .trace.config import SwoConfig
+            cfg = SwoConfig(cpu_hz=args.cpu_hz, swo_hz=args.swo_hz, ports=0xFFFFFFFF)
+            for line in trace.configure_target(cfg, session, target, args.swo_port):
+                log(line)
+        if args.swo:
+            host, _, port = args.swo.rpartition(":")
+            trace.start_tcp(host or "127.0.0.1", int(port), args.swo_formatter)
+            log(f"capture SWO TCP {args.swo} démarrée")
+        elif args.swo_file:
+            trace.start_file(args.swo_file, args.swo_formatter)
+            log(f"capture SWO rejouée : {args.swo_file}")
+        if args.etm_config:
+            from .trace.etm.config import EtmConfig
+            cfg = EtmConfig(port_width=args.etm_width, stm32=args.stm32, stall=args.etm_stall,
+                            cycle_accurate=args.etm_cycle_accurate)
+            for line in trace.configure_etm(cfg, session):
+                log(line)
+    if args.mtb_probe:
+        from .trace.mtb import rom_components
+        comps = rom_components(session.read_u32)
+        log("Composants CoreSight :" if comps else "Aucune table ROM CoreSight lisible")
+        for c in comps:
+            log(f"  {'  ' * c.depth}{c.addr:#010x}  {c.name}")
+    if args.mtb is not None:
+        setup_mtb(args, trace, session, log)
+    if args.trace:                       # port parallèle : formateur TPIU, ETM + ITM
+        host, _, port = args.trace.rpartition(":")
+        trace.start_tcp(host or "127.0.0.1", int(port), formatter=True)
+        log(f"capture de trace TCP {args.trace} démarrée")
+    elif args.trace_file:
+        trace.start_file(args.trace_file, formatter=True)
+        log(f"capture de trace rejouée : {args.trace_file}")
+
+
+def setup_mtb(args, trace, session, log=print) -> None:
+    """--mtb : registres (auto-détection ou adresse), tampon (option ou symbole), programmation."""
+    from .trace.mtb import find_mtb
+    from .trace.mtb_capture import buffer_from_symbols, describe
+    base = find_mtb(session.read_u32) if args.mtb == "auto" else int(args.mtb, 0)
+    if base is None:
+        raise RuntimeError("MTB introuvable (ni dans les tables ROM CoreSight, ni aux adresses "
+                           "connues) : la puce en a-t-elle une ? Sinon --mtb ADRESSE ; voir --mtb-probe")
+    if args.mtb_buffer:
+        addr, _, size = args.mtb_buffer.partition(":")
+        buffer = (int(addr, 0), int(size, 0))
+    else:
+        buffer = buffer_from_symbols(trace.etm.symbols if trace.etm is not None else None)
+        if buffer is None:
+            raise RuntimeError("tampon MTB : réserver un tableau `__mtb_buffer__` aligné sur sa "
+                               "taille dans le firmware, ou --mtb-buffer ADRESSE:TAILLE")
+    log(describe(base, trace.setup_mtb(session, base, *buffer, autohalt=args.mtb_autohalt)))
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Options de la ligne de commande (aussi utilisées par les tests du GUI)."""
     p = argparse.ArgumentParser(prog="gdbtrace", description="GdbTrace : débogueur Cortex-M sur gdb")
     p.add_argument("elf", nargs="?",
                    help="firmware ELF avec symboles DWARF (facultatif en GUI : Fichier › Programmer un ELF…)")
@@ -125,15 +190,28 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--script", help="script Python exécuté après connexion (objet `gdbtrace`)")
     p.add_argument("--batch", action="store_true", help="sans GUI : exécute --script puis quitte")
     p.add_argument("--layout", default="gdbtrace-layout.json", help="fichier de layout des fenêtres")
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = build_parser()
     args = p.parse_args(argv)
     if args.program:
         if args.elf and os.path.abspath(args.elf) != os.path.abspath(args.program):
             p.error("deux ELF différents : l'ELF de la ligne de commande et celui de --program")
         args.elf = args.program
+    if not args.etm_config:              # options de programmation de l'ETM : sinon ignorées
+        stray = [opt for opt, on in (("--etm-port swo", args.etm_port == "swo"),
+                                     ("--etm-stall", args.etm_stall), ("--stm32", args.stm32),
+                                     ("--etm-width", args.etm_width != 4)) if on]
+        if stray:
+            p.error(f"{', '.join(stray)} : avec --etm-config (programmer l'ETM)")
+    etm_swo = args.etm_config and args.etm_port == "swo"
+    swo_etm = (args.swo or args.swo_file) and args.swo_formatter     # flux formaté : ETM ID 2
     if args.coverage and not (args.etm_sim or args.trace or args.trace_file or args.coverage_merge
-                              or args.mtb is not None or args.mtb_sim is not None):
-        p.error("--coverage : pas de trace d'instructions (--etm-sim / --mtb-sim sous QEMU, "
-                "--trace / --trace-file / --mtb sur matériel)")
+                              or etm_swo or swo_etm or args.mtb is not None or args.mtb_sim is not None):
+        p.error("--coverage : pas de trace d'instructions (--etm-sim / --mtb-sim sous QEMU ; "
+                "--etm-config --etm-port swo, --trace / --trace-file ou --mtb sur matériel)")
     if args.mtb_autohalt and args.mtb is None and args.mtb_sim is None:
         p.error("--mtb-autohalt : avec --mtb (cible) ou --mtb-sim (QEMU)")
     program = args.program is not None
@@ -146,58 +224,6 @@ def main(argv: list[str] | None = None) -> int:
 
     target = build_target(args, elf) if elf else None
     load = False if (args.no_load or program) else None
-
-    def setup_trace(trace, session) -> None:
-        """Options SWO : configuration de la cible puis démarrage de la capture."""
-        etm_swo = args.etm_config and args.etm_port == "swo"   # ETM + ITM formatés sur le SWO
-        if args.swo_config or etm_swo:
-            from .trace.config import SwoConfig
-            cfg = SwoConfig(cpu_hz=args.cpu_hz, swo_hz=args.swo_hz, ports=0xFFFFFFFF, formatter=etm_swo)
-            for line in trace.configure_target(cfg, session, target, args.swo_port):
-                print(line)
-        if args.swo:
-            host, _, port = args.swo.rpartition(":")
-            trace.start_tcp(host or "127.0.0.1", int(port), args.swo_formatter or etm_swo)
-        elif args.swo_file:
-            trace.start_file(args.swo_file, args.swo_formatter or etm_swo)
-        if args.etm_config:
-            from .trace.etm.config import EtmConfig
-            cfg = EtmConfig(port_width=args.etm_width, stm32=args.stm32, port=args.etm_port,
-                            cpu_hz=args.cpu_hz, swo_hz=args.swo_hz, stall=args.etm_stall,
-                            cycle_accurate=args.etm_cycle_accurate)
-            for line in trace.configure_etm(cfg, session):
-                print(line)
-        if args.mtb_probe:
-            from .trace.mtb import rom_components
-            comps = rom_components(session.read_u32)
-            print("Composants CoreSight :" if comps else "Aucune table ROM CoreSight lisible")
-            for c in comps:
-                print(f"  {'  ' * c.depth}{c.addr:#010x}  {c.name}")
-        if args.mtb is not None:
-            setup_mtb(trace, session)
-        if args.trace:                       # port parallèle : formateur TPIU, ETM + ITM
-            host, _, port = args.trace.rpartition(":")
-            trace.start_tcp(host or "127.0.0.1", int(port), formatter=True)
-        elif args.trace_file:
-            trace.start_file(args.trace_file, formatter=True)
-
-    def setup_mtb(trace, session) -> None:
-        """--mtb : registres (auto-détection ou adresse), tampon (option ou symbole), programmation."""
-        from .trace.mtb import find_mtb
-        from .trace.mtb_capture import buffer_from_symbols, describe
-        base = find_mtb(session.read_u32) if args.mtb == "auto" else int(args.mtb, 0)
-        if base is None:
-            raise RuntimeError("MTB introuvable (ni dans les tables ROM CoreSight, ni aux adresses "
-                               "connues) : la puce en a-t-elle une ? Sinon --mtb ADRESSE ; voir --mtb-probe")
-        if args.mtb_buffer:
-            addr, _, size = args.mtb_buffer.partition(":")
-            buffer = (int(addr, 0), int(size, 0))
-        else:
-            buffer = buffer_from_symbols(trace.etm.symbols if trace.etm is not None else None)
-            if buffer is None:
-                raise RuntimeError("tampon MTB : réserver un tableau `__mtb_buffer__` aligné sur sa "
-                                   "taille dans le firmware, ou --mtb-buffer ADRESSE:TAILLE")
-        print(describe(base, trace.setup_mtb(session, base, *buffer, autohalt=args.mtb_autohalt)))
 
     if args.batch:
         from .core.scripting import ScriptAPI
@@ -234,7 +260,7 @@ def main(argv: list[str] | None = None) -> int:
         api.cpu_hz = args.cpu_hz
         api.on_program = lambda e: trace.retarget(e, api._symbols(), args.etm_cycle_accurate)
         try:
-            setup_trace(trace, s)
+            setup_trace(args, trace, s, target)
             for path in args.coverage_merge:
                 api.cov.load(path)
             if args.script:
@@ -263,11 +289,15 @@ def main(argv: list[str] | None = None) -> int:
     app.verify_program = verify
     app.verify_var.set(verify)
     app.target_factory = lambda e: build_target(args, e)     # Fichier › Programmer un ELF…
+    # valeurs initiales de Trace › ETM par SWO…
+    app.swo_hz, app.swo_port, app.etm_stall, app.stm32 = args.swo_hz, args.swo_port, args.etm_stall, args.stm32
     if args.svd:
         app.safe(app.load_svd, args.svd)
 
     def after_connect(_res=None) -> None:
-        app.safe(setup_trace, app.trace, app.session)
+        # journal de la mise en route de la trace dans la console (pas sur le terminal)
+        app.safe(setup_trace, args, app.trace, app.session, app.session.target or target,
+                 lambda line: app.write_console(line + "\n", "gdb"))
         if args.script:
             app.run_script(args.script)
         if args.go:

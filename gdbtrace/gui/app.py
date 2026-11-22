@@ -5,7 +5,7 @@ import json
 import os
 import tkinter as tk
 import traceback
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Callable
 
 from ..core import svd
@@ -88,6 +88,11 @@ class App:
         self.cpu_hz = 25_000_000
         self.coverage_in_source = False        # couverture ETM affichée dans la vue Source
         self.etm_cycle_accurate = False        # ETM matériel en mode cycle-accurate (ETMCR bit 12)
+        # Trace › ETM par SWO… : débit SWO, port TCP servi par OpenOCD, stall, broches STM32
+        self.swo_hz = 2_000_000
+        self.swo_port = 3443
+        self.etm_stall = False
+        self.stm32 = False
         # programmation : exécutable gdb, fabrique de cible (ligne de commande), ELF récents
         self.gdb_path = "gdb-multiarch"
         self.target_factory: Callable[[str], TargetServer] | None = None
@@ -135,6 +140,11 @@ class App:
                                ("Step instruction", self.stepi, "F7"), ("Reset", self.reset, "")]:
             r.add_command(label=label, command=fn, accelerator=key)
         mb.add_cascade(label="Run", menu=r)
+
+        t = tk.Menu(mb, tearoff=False)
+        t.add_command(label="ETM par SWO…", command=self._ask_etm_swo)
+        t.add_command(label="Arrêter la capture", command=lambda: self.trace.stop())
+        mb.add_cascade(label="Trace", menu=t)
 
         v = tk.Menu(mb, tearoff=False)
         for kind, cls in view_classes().items():
@@ -517,6 +527,41 @@ class App:
     def reset(self) -> None:
         self.run_action(self.session.reset)
 
+    # ================================================================== trace
+    def start_etm_swo(self, cpu_hz: int | None = None, swo_hz: int | None = None,
+                      stall: bool | None = None, stm32: bool | None = None) -> list[str] | None:
+        """Trace › ETM par SWO… (cible arrêtée) : TPIU formaté sur la broche SWO, capture
+        servie par OpenOCD, ETM. Journal dans la console ; None si impossible (la cause est
+        aussi affichée par les vues Couverture et Trace)."""
+        if not self._need("stopped"):
+            self.status.set("Arrêter la cible pour configurer la trace (Break)")
+            return None
+        self.cpu_hz = cpu_hz or self.cpu_hz
+        self.swo_hz = swo_hz or self.swo_hz
+        self.etm_stall = self.etm_stall if stall is None else stall
+        self.stm32 = self.stm32 if stm32 is None else stm32
+        if self.api is not None:
+            self.api.cpu_hz = self.cpu_hz
+        log = self.safe(lambda: self.trace.start_etm_swo(
+            self.session, self.session.target, self.cpu_hz, self.swo_hz, stall=self.etm_stall,
+            stm32=self.stm32, port=self.swo_port, cycle_accurate=self.etm_cycle_accurate))
+        if log:
+            self.write_console("\n".join(log) + "\n", "gdb")
+            self.status.set(log[-1][:200])
+        self.views.refresh_all()
+        return log
+
+    def _ask_etm_swo(self) -> None:
+        if not self._need("stopped"):
+            self.status.set("Arrêter la cible pour configurer la trace (Break)")
+            return
+        from ..trace.etm.config import swo_core_limit_hz
+        version = self.trace.etm.version if self.trace.etm is not None else 3
+        stall = self.etm_stall or self.cpu_hz > swo_core_limit_hz(self.swo_hz, version)
+        d = EtmSwoDialog(self.root, self.cpu_hz, self.swo_hz, stall, self.stm32)
+        if d.values:
+            self.start_etm_swo(*d.values)
+
     def toggle_breakpoint_at(self, file: str | None = None, line: int | None = None,
                              addr: int | None = None) -> None:
         if not self._need("stopped"):
@@ -642,3 +687,41 @@ class App:
 
 def ask_yes_no(title: str, msg: str) -> bool:
     return messagebox.askyesno(title, msg)
+
+
+class EtmSwoDialog(simpledialog.Dialog):
+    """Trace › ETM par SWO… : fréquence du cœur, débit SWO, stall, broches STM32. `values` :
+    (cpu_hz, swo_hz, stall, stm32), ou None si annulé."""
+
+    def __init__(self, parent, cpu_hz: int, swo_hz: int, stall: bool, stm32: bool):
+        self.values = None
+        self._init = (cpu_hz, swo_hz, stall, stm32)
+        super().__init__(parent, "ETM par SWO")
+
+    def body(self, master):
+        cpu, swo, stall, stm32 = self._init
+        self.cpu_var, self.swo_var = tk.StringVar(value=str(cpu)), tk.StringVar(value=str(swo))
+        self.stall_var, self.stm32_var = tk.BooleanVar(value=stall), tk.BooleanVar(value=stm32)
+        ttk.Label(master, text="Fréquence du cœur (Hz) :").grid(row=0, column=0, sticky="w")
+        first = ttk.Entry(master, textvariable=self.cpu_var, width=14)
+        first.grid(row=0, column=1, padx=4, pady=2)
+        ttk.Label(master, text="Débit SWO (Hz) :").grid(row=1, column=0, sticky="w")
+        ttk.Entry(master, textvariable=self.swo_var, width=14).grid(row=1, column=1, padx=4, pady=2)
+        ttk.Checkbutton(master, text="Ralentir le cœur plutôt que perdre de la trace (stall)",
+                        variable=self.stall_var).grid(row=2, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(master, text="Broches de trace STM32 (DBGMCU_CR)",
+                        variable=self.stm32_var).grid(row=3, column=0, columnspan=2, sticky="w")
+        ttk.Label(master, text="Capture servie par OpenOCD ; formateur TPIU : ETM (ID 2) et ITM (ID 1).",
+                  foreground="#555555").grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        return first
+
+    def validate(self) -> bool:
+        try:
+            cpu, swo = int(self.cpu_var.get(), 0), int(self.swo_var.get(), 0)
+        except ValueError:
+            cpu = swo = 0
+        if cpu <= 0 or swo <= 0:
+            messagebox.showerror("ETM par SWO", "Fréquences en Hz, entières et positives", parent=self)
+            return False
+        self.values = (cpu, swo, self.stall_var.get(), self.stm32_var.get())
+        return True

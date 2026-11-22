@@ -133,7 +133,11 @@ Une fonctionnalité complète touche en général : le module métier (`core/` o
 vue (`views/`), une méthode de `ScriptAPI` (`core/scripting.py`), une option CLI dans
 `__main__.py`, la section du README et les tests. `__main__.py` câble la trace **deux fois**
 (chemin `--batch` et chemin GUI via `App._setup_live` / `App.attach`) : garder les deux
-synchronisés.
+synchronisés. Les options de capture passent par `setup_trace(args, trace, session, target,
+log)` (fonction du module, commune aux deux chemins ; `log` = console dans le GUI), et l'ETM
+par SWO par `TraceManager.start_etm_swo` (aussi Trace › ETM par SWO… et
+`gdbtrace.etm_swo()`). Une capture qui ne démarre pas doit le dire : `setup_error` et
+`trace_status()` (vues Couverture et Trace), jamais un silence.
 
 ## Limites connues (ne pas « corriger » côté gdbtrace)
 

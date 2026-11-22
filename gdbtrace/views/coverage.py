@@ -74,6 +74,7 @@ class CoverageView(View):
         self._gen = None
         app.trace.etm_listeners.append(self._on_new_trace)
         self.render(force=True)
+        self.after(1000, self._tick)
 
     def destroy(self) -> None:
         if self._on_new_trace in self.app.trace.etm_listeners:
@@ -99,20 +100,32 @@ class CoverageView(View):
         self._gen = None
         self.render(force=True)
 
+    def _update_info(self) -> None:
+        db, tm = self.db, self.app.trace
+        # rien de décodé : dire d'où la trace devrait venir et pourquoi elle n'arrive pas
+        src = tm.trace_status() if not tm.etm.stats["instructions"] else tm.source_label()
+        self.info.configure(text=f"{db.summary()} — {src}")
+
+    def _tick(self) -> None:
+        """Tant que rien n'est décodé, l'état de la capture est suivi (connexion, octets)."""
+        if not self.winfo_exists():
+            return
+        if self.db is not None and not self.app.trace.etm.stats["instructions"]:
+            self._update_info()
+        self.after(1000, self._tick)
+
     def render(self, force: bool = False) -> None:
         db = self.db
         if db is None:
-            self.info.configure(text="Pas de trace d'instructions : --etm-sim / --mtb-sim sous QEMU, ou --mtb / --trace / "
-                                     "--trace-file avec une sonde de trace")
+            self.info.configure(text="Pas de trace d'instructions : --etm-sim / --mtb-sim sous QEMU ; "
+                                     "ETM par SWO, --trace / --trace-file ou --mtb sur matériel")
             self.tree.delete(*self.tree.get_children())
             return
+        self._update_info()
         key = (id(db), db.generation, self.hide_var.get())
         if not force and key == self._gen:
             return
         self._gen = key
-        tm = self.app.trace
-        src = tm.source_label()
-        self.info.configure(text=f"{db.summary()} — {src}")
         opened = {self.tree.item(i, "text") for i in self.tree.get_children() if self.tree.item(i, "open")}
         first = not self.tree.get_children()
         self.tree.delete(*self.tree.get_children())

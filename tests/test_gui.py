@@ -688,3 +688,45 @@ def test_mtb_autohalt_views(m0_elf, tmp_path):
         assert a.trace.etm.stats["instructions"] == sim.logged and sim.decoder.stats.errors == 0
     finally:
         close_app(a)
+
+
+def test_etm_over_swo_in_gui(app, qemu_paths, tmp_path):
+    """Chemin de l'utilisateur sur la F746 : --etm-config --etm-port swo dans le GUI. Le journal
+    de la mise en route va dans la console, la capture démarre, la couverture se remplit ; sans
+    OpenOCD, Trace › ETM par SWO… dit pourquoi (console, vues Couverture et Trace)."""
+    from gdbtrace.__main__ import build_parser, setup_trace
+    from gdbtrace.trace.etm.encoder import encode
+    from gdbtrace.trace.etm.qemu_log import Step
+    from gdbtrace.trace.tpiu import frame_bytes
+    from gdbtrace.views.console import ConsoleView
+    from gdbtrace.views.coverage import CoverageView
+    from gdbtrace.views.trace import TraceView
+    con = app.views.find(ConsoleView)
+    cv, tv = app.views.show(CoverageView), app.views.show(TraceView)
+    assert "aucune capture" in cv.info.cget("text") and "ETM par SWO" in tv.info.cget("text")
+    # Trace › ETM par SWO… sous QEMU : aucune sonde ne sert le SWO
+    assert app.start_etm_swo(216_000_000) is None
+    assert pump(app, lambda: "ne sert pas le SWO" in con.out.get("1.0", "end"))
+    assert "la sonde ne sert pas le SWO" in cv.info.cget("text")
+    assert "la sonde ne sert pas le SWO" in tv.info.cget("text")
+    # --etm-config --etm-port swo, la capture rejouée tenant lieu du port SWO d'OpenOCD
+    img, events = qemu_paths["bare"]
+    events = events[:20_000]
+    n = sum(isinstance(e, Step) for e in events)
+    capture = tmp_path / "swo.bin"
+    capture.write_bytes(frame_bytes(2, encode(events, img)))
+    args = build_parser().parse_args([app.session.elf, "--etm-config", "--etm-port", "swo",
+                                      "--cpu-hz", "4000000", "--swo-file", str(capture)])
+    app.safe(setup_trace, args, app.trace, app.session, app.session.target,
+             lambda line: app.write_console(line + "\n", "gdb"))
+    text = con.out.get("1.0", "end")
+    assert "TPIU_FFCR = 0x00000102" in text and "capture SWO rejouée" in text
+    assert "ETM par SWO (ETMv3)" in text and app.trace.etm_swo
+    assert app.trace.status() != "pas de capture SWO"
+    assert pump(app, lambda: app.trace.etm.stats["instructions"] >= n), app.trace.trace_status()
+    pump(app, lambda: False, timeout=0.3)
+    assert "instructions" in cv.info.cget("text") and "aucune capture" not in cv.info.cget("text")
+    t, _, _ = app.trace.etm.cov.total()
+    assert t.covered > 100 and cv.tree.get_children()
+    assert "instructions décodées" in tv.info.cget("text")
+    app.trace.stop()
