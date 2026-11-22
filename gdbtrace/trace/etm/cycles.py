@@ -26,7 +26,8 @@ _REGLIST = re.compile(r"\{([^}]*)\}")
 
 
 def _base(ins: Instr) -> str:
-    return ins.text.split()[0].split(".")[0]
+    """Mnémonique de base, sans condition (`popne` → `pop`) ni « .w »."""
+    return ins.op or ins.text.split()[0].split(".")[0]
 
 
 def _nregs(ins: Instr) -> int:

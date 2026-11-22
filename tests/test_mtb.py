@@ -302,3 +302,23 @@ def test_simulated_mtb_feeds_trace_and_coverage(m0_path):
     assert 128 * 2 < small.stats["instructions"] < st["instructions"] // 10   # 128 derniers branchements
     import shutil
     shutil.rmtree(sim.dir), shutil.rmtree(sim2.dir)
+
+
+@needs_qemu
+@pytest.mark.parametrize("name", ["bare", "rtos", "m0"])
+def test_etm_and_mtb_agree(qemu_paths, m0_path, name):
+    """Deux chaînes indépendantes (ETMv3 : atomes ; MTB : paquets de branchement) donnent,
+    instruction par instruction, les mêmes issues sur le même chemin réel — blocs IT compris."""
+    from gdbtrace.trace.etm.encoder import encode as etm_encode
+    from gdbtrace.trace.etm.flow import decode as etm_decode
+    img, events = m0_path if name == "m0" else qemu_paths[name]
+    etm, pk, _ = etm_decode(etm_encode(events, img), img)
+    assert pk.errors == 0
+    packets = mtb.encode(events, img)
+    first = next(i for i, e in enumerate(events) if isinstance(e, Step) and e.addr == packets[0].src)
+    last_step = max(i for i, e in enumerate(events) if isinstance(e, Step))
+    d = mtb.MtbDecoder(img)
+    got = steps(d.decode(packets, end_pc=events[last_step].addr))
+    skip = sum(isinstance(e, Step) for e in events[:first])
+    assert d.stats.errors == 0 and len(got) > 100_000
+    assert steps(etm)[skip:skip + len(got)] == got

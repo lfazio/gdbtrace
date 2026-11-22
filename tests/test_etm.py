@@ -376,3 +376,49 @@ def test_etm_config_cycle_accurate():
     from gdbtrace.trace.etm.config import EtmConfig
     w = {r.name: r for r in EtmConfig(cycle_accurate=True).register_writes()}
     assert w["ETMCR"].value == 1 << 12
+
+
+def test_it_block_branch_is_conditional(elf):
+    """`bxeq lr` s'encode comme `bx lr` : décodé seul, il paraît inconditionnel. L'image
+    balaie la fonction d'un seul tenant et lui rend sa condition."""
+    import capstone
+    from capstone import arm as cs_arm
+    from gdbtrace.trace.etm.cycles import cycles_of, outcome
+    img = CodeImage(elf)
+    found = []
+    for start, end in img._funcs:
+        addr = start
+        while addr < end:
+            ins = img.instr(addr)
+            if ins is None:
+                addr += 2
+                continue
+            if ins.op == "bx" and ins.cond:
+                found.append(ins)
+            addr += ins.size
+    assert found, "la démo doit contenir un `bx<c> lr` dans un bloc IT (libgcc soft-float)"
+    cs = capstone.Cs(capstone.CS_ARCH_ARM, capstone.CS_MODE_THUMB | capstone.CS_MODE_MCLASS)
+    cs.detail = True
+    for ins in found:
+        alone = next(cs.disasm(img.read(ins.addr, 2), ins.addr, 1))
+        assert alone.mnemonic == "bx" and alone.cc == cs_arm.ARM_CC_AL     # le piège
+        assert ins.kind == INDIRECT and ins.ret and ins.text.startswith("bx") and ins.text != "bx lr"
+        seq = ins.addr + ins.size
+        assert outcome(ins, ins.addr, seq) == (False, False)               # non pris : atome N
+        assert outcome(ins, ins.addr, 0x2000_0000) == (True, True)
+        assert cycles_of(ins, executed=False) == 1
+
+
+@needs_qemu
+def test_simulated_etm_not_taken_it_branch(qemu_paths):
+    """ETM simulé : un `bx<c> lr` non pris d'un bloc IT est encodé et décodé « non exécuté »."""
+    from gdbtrace.trace.etm.flow import decode
+    img, events = qemu_paths["bare"]
+    steps = [e for e in events if isinstance(e, ql.Step)]
+    skipped = {s.addr for s, n in zip(steps, steps[1:])
+               if (i := img.instr(s.addr)).op == "bx" and i.cond and n.addr == s.addr + i.size}
+    assert skipped, "le chemin doit traverser un `bx<c> lr` non pris"
+    decoded, pk, _ = decode(encode(events, img), img)
+    assert pk.errors == 0 and as_tuples(decoded) == as_tuples(events)
+    flags = {e.executed for e in decoded if isinstance(e, ql.Step) and e.addr in skipped}
+    assert flags == {False}

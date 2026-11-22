@@ -94,7 +94,9 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
   (`itm.py`) → abonnés (texte ITM, profil, stats d'exceptions). Sur un port parallèle
   formaté, l'ID 1 va à l'ITM et l'ID 2 à l'ETM.
 - ETM (`trace/etm/`) : `etm3.py` (paquets ETMv3.5) → `flow.py` (reconstruction avec
-  `image.py`, classification Thumb-2 par capstone) → `trace.py` (historique, couverture,
+  `image.py`, classification Thumb-2 par capstone ; chaque fonction est balayée d'un seul
+  tenant pour connaître la condition des instructions d'un bloc IT — `bxeq lr` décodé seul
+  paraît inconditionnel ; `Instr.op` = mnémonique sans condition) → `trace.py` (historique, couverture,
   appels). Les événements `Step` / `ExcEntry` / `ExcReturn` portent des cycles mesurés
   (cycle-accurate) ou estimés par `cycles.py` ; `trace/timing.py` en tire le temps brut/net
   par fonction et par exception (vue Timing).
@@ -129,9 +131,6 @@ synchronisés.
 - Non validé sur sonde réelle : `--rtos`, capture SWO, `DWT_PCSR` via OpenOCD, trace ETM
   matérielle, ETM par SWO, MTB (dont le sens de l'adresse source d'une entrée d'exception :
   prise comme adresse de retour). ETMv4 (M7, M33, M55) non pris en charge.
-- `cycles.outcome()` ignore le contexte IT : un `bxeq lr` non pris dans un bloc IT est
-  encodé « exécuté » par l'ETM simulé (la MTB, elle, le décode non pris). À corriger en
-  suivant l'état IT dans l'encodeur ETM, sans casser l'identité avec OpenCSD.
 - OpenOCD 0.12 recopie dans son journal (stderr, et console gdb cible en marche) le
   résultat de chaque commande TCL : passer par `OpenOcdTcl.query()`, jamais `command()`,
   pour tout ce qui renvoie des données. Le stderr des serveurs doit rester drainé
