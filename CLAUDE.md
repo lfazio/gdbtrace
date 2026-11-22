@@ -53,6 +53,11 @@ Aucun linter n'est configuré.
 - `Session` : utilisable depuis n'importe quel thread ; état `disconnected | stopped |
   running` ; événements via `on_event(kind, data)` ; `add_resume_hook()` est appelé avant
   **toute** reprise (go, step, next, finish, until), quel que soit l'appelant.
+  Arrêts internes (MTB en AUTOHALT) : `set_stop_interceptor(fn)` peut déclarer interne un arrêt
+  `signal-received` **non demandé pendant un Go** (jamais après `halt()`, ni pendant un pas)
+  — aucun événement, état « running » ; le propriétaire vide la MTB puis appelle
+  `resume_internal()` (relance silencieuse) ou `deliver_stop()`. L'intercepteur tourne dans le
+  thread lecteur : il ne fait que lancer un fil de travail.
 - `TargetServer` (`core/target.py`) : `QemuTarget` (défaut, charge l'ELF lui-même,
   `needs_load=False`), `OpenOcdTarget`, `RemoteTarget` (+ `--tcl` optionnel).
   `live_memory()` fournit le canal mémoire latéral, ou `None`.
@@ -115,7 +120,9 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
   `ExcReturn` et versés dans la même `EtmTrace` (`feed_events`). `TraceManager` gère ETM
   simulé, MTB simulée et MTB réelle sur le même cycle reprise / arrêt ; `source_label()`
   pour les vues. Validation : chemin QEMU → `mtb.encode` → `MtbDecoder` == chemin réel
-  (`tests/test_mtb.py`, bare, rtos, m0).
+  (`tests/test_mtb.py`, bare, rtos, m0). AUTOHALT : `TraceManager._intercept` /
+  `_internal_stop` ; en simulation, QMP `stop` périodique et tronçons de journal convertis à
+  l'arrêt visible (convertir pendant la course figerait la GUI : GIL).
 - Validation sans matériel : chemin réel QEMU → encodeur → notre décodeur **et** OpenCSD
   (`tests/opencsd.py`) doivent retrouver exactement le même chemin. Toute modification de
   l'encodeur ou du décodeur doit garder ces tests verts (`bare` et `rtos`).

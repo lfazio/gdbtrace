@@ -389,6 +389,7 @@ unsigned char __mtb_buffer__[1024];      /* 128 paquets ; section NOLOAD de l'é
 | `--mtb-buffer ADRESSE:TAILLE` | tampon, à défaut du symbole `__mtb_buffer__` / `mtb_buffer` / `__MTB_BUFFER` |
 | `--mtb-probe` | liste les composants CoreSight de la cible : pour savoir si la puce a une MTB |
 | `--mtb-sim [TAILLE]` | QEMU : MTB simulée (taille du firmware, 1024 par défaut ; 0 = illimitée) |
+| `--mtb-autohalt` | avec `--mtb` ou `--mtb-sim` : trace complète (voir ci-dessous) |
 
 `examples/m0plus` compile la démo pour Cortex-M0+ (QEMU `-M microbit`, Cortex-M0) avec ce
 tampon. Validation sans matériel : chemins réels de QEMU (Cortex-M3 bare-metal et FreeRTOS,
@@ -402,10 +403,31 @@ y compris exception prise au milieu d'un bloc IT, enchaînements et changements 
   décodeur compte toute incohérence (`erreurs` dans la vue Trace) ;
 - la MTB est optionnelle : les STM32L0 (L031, L072), à notre connaissance, n'en ont pas
   (`--mtb-probe` tranche) ; on la trouve sur SAM D21/L21, Kinetis KL, LPC800... ;
-- pour la couverture, un enregistreur de vol ne garde que la fin de chaque exécution.
-  `--mtb-sim 0` montre ce que donne une trace complète. Sur carte, le mode AUTOHALT de la MTB
-  (arrêt du cœur quand le tampon est plein, vidage, reprise) donnerait une trace complète au
-  prix de nombreux arrêts : non implémenté.
+- pour la couverture, un enregistreur de vol ne garde que la fin de chaque exécution : voir
+  le mode AUTOHALT.
+
+**Mode AUTOHALT (trace complète).** Avec `--mtb-autohalt`, GdbTrace programme un seuil
+(`FLOW.WATERMARK`, fin du tampon moins une marge de 4 paquets) et `FLOW.AUTOHALT`. Quand le
+tampon est presque plein, la MTB arrête elle-même le cœur (`MASTER.HALTREQ`). GdbTrace vide
+alors le tampon, efface HALTREQ, remet le pointeur à zéro et relance aussitôt. Ces arrêts sont
+**internes** : la cible reste « en marche » pour l'interface, les vues et `wait()` des
+scripts ; Break et les points d'arrêt fonctionnent normalement. On obtient ainsi toute
+l'exécution : Trace.List complète, couverture des instructions et des branches.
+
+Le prix : un arrêt par tampon plein, soit une dizaine d'échanges avec la sonde (20 à 40 ms).
+La cible tourne donc beaucoup plus lentement : à réserver aux campagnes de couverture, avec
+un tampon de 4 à 8 Ko (512 à 1024 branchements par arrêt) plutôt que 1 Ko. Un pas à pas qui
+traverse un tampon plein s'arrête au seuil (le relancer en Go perdrait le pas).
+`gdbtrace.mtb_stats()` donne le nombre d'arrêts, de débordements (marge insuffisante) et
+d'erreurs.
+
+En simulation (`--mtb-sim N --mtb-autohalt`), un fil arrête QEMU régulièrement (commande QMP
+`stop`, vue par gdb comme l'arrêt non demandé qu'enverrait la MTB) : tout le mécanisme
+d'arrêts internes est éprouvé avec le vrai gdb. La conversion des tronçons de journal QEMU,
+coûteuse, est faite à l'arrêt visible (sur carte, vider la MTB est léger). Validé : nombre
+d'instructions décodées égal à celui exécuté par QEMU, couverture identique à un tampon
+illimité. À confirmer sur carte : le signal d'arrêt que rapporte la sonde (SIGINT attendu
+avec OpenOCD, comme un Break).
 
 ### Console
 
@@ -425,6 +447,7 @@ y compris exception prise au milieu d'un bloc IT, enchaînements et changements 
 | `gdbtrace.cov.export("cov.html")`, `gdbtrace.cov.save(f)`, `gdbtrace.cov.load(f)`, `gdbtrace.cov.reset()` | rapports (.html, .info LCOV, .json), cumul de campagnes, RàZ |
 | `gdbtrace.etm_config(port_width=4, stm32=True)` | programme l'ETM et le TPIU (parallèle, ou `port="swo", cpu_hz=…`) |
 | `gdbtrace.mtb(20)`, `gdbtrace.mtb_probe()` | paquets MTB bruts du dernier arrêt, symbolisés ; composants CoreSight de la cible |
+| `gdbtrace.mtb_stats()` | compteurs MTB : paquets, instructions, arrêts AUTOHALT, débordements, erreurs |
 | `gdbtrace.program("fw.elf")`, `gdbtrace.program()` | FLASH.ReProgram : écrit, vérifie et reset (ELF courant par défaut) |
 | `gdbtrace.timing(20, unit="us")`, `gdbtrace.timeline(30)` | durées par fonction / derniers appels (trace ETM) |
 | `!info breakpoints` | Commande CLI gdb brute |
