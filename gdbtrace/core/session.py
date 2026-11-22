@@ -73,6 +73,16 @@ class Session:
         self._listeners: list[EventFn] = []
         self._resume_hooks: list[Callable[[], None]] = []
         self._reg_names: list[str] = []
+        # arrêts internes (MTB en AUTOHALT) : la cible s'arrête d'elle-même, le propriétaire
+        # de l'intercepteur traite l'arrêt puis relance ; vu de l'extérieur, elle tourne
+        self._intercept: Callable[[dict], bool] | None = None
+        self._internal = False
+        self._internal_reason: dict = {}
+        self._resuming = False
+        self._quiet_running = False
+        self._halt_requested = False
+        self._halt_wanted = False
+        self._lock = threading.Lock()
 
     # ------------------------------------------------------------------ événements
     def on_event(self, fn: EventFn) -> None:
@@ -84,6 +94,61 @@ class Session:
         until), quel que soit l'appelant (GUI, console, script) : ex. démarrer une trace
         sans perdre les premières instructions."""
         self._resume_hooks.append(fn)
+
+    def set_stop_interceptor(self, fn: Callable[[dict], bool] | None) -> None:
+        """fn(raison) est appelée dans le thread lecteur (sans bloquer ni appeler gdb) pour
+        chaque arrêt `signal-received` que le débogueur n'a pas demandé. Si elle renvoie vrai,
+        l'arrêt est **interne** : aucun événement, `state` reste « running », `wait_stopped()`
+        continue d'attendre ; son propriétaire doit ensuite appeler `resume_internal()` ou
+        `deliver_stop()`. Un arrêt demandé (`halt()`, point d'arrêt, pas à pas) n'est jamais
+        intercepté."""
+        self._intercept = fn
+
+    @property
+    def internal_stop(self) -> bool:
+        return self._internal
+
+    def resume_internal(self) -> None:
+        """Fin d'un arrêt interne : relance la cible sans hooks ni événement `running`. Si
+        `halt()` a été demandé entre-temps, l'arrêt est livré à la place."""
+        with self._lock:
+            if not self._internal:
+                return
+            if self._halt_wanted:
+                self._halt_wanted = False
+                deliver = True
+            else:
+                deliver = False
+                self._internal = False
+                self._resuming = True
+                self._quiet_running = True
+        if deliver:
+            self.deliver_stop(force=True)
+            return
+        try:
+            self.gdb.command("-exec-continue")
+        except GdbError:
+            self._quiet_running = False
+            raise
+        finally:
+            with self._lock:
+                self._resuming = False
+                wanted, self._halt_wanted = self._halt_wanted, False
+                if wanted:
+                    self._halt_requested = True
+        if wanted:                          # halt() arrivé pendant la relance : on l'exécute
+            self.gdb.command("-exec-interrupt")
+
+    def deliver_stop(self, force: bool = False) -> None:
+        """L'arrêt intercepté devient visible (ce n'était pas la MTB, ou halt() le demande)."""
+        with self._lock:
+            if not self._internal and not force:
+                return
+            self._internal = self._halt_wanted = False
+            self.state = "stopped"
+            self.stop_reason = self._internal_reason
+        self._emit("stopped", self.stop_reason)
+        self._stopped.set()
 
     def _before_resume(self) -> None:
         for fn in list(self._resume_hooks):
@@ -102,8 +167,21 @@ class Session:
     def _on_mi(self, rec: dict) -> None:
         t, msg, payload = rec.get("type"), rec.get("message"), rec.get("payload")
         if t == "notify" and msg == "stopped":
+            payload = payload or {}
+            with self._lock:
+                requested, self._halt_requested = self._halt_requested, False
+                if (self._intercept is not None and not requested and self.state == "running"
+                        and payload.get("reason") == "signal-received"):
+                    self._internal, self._internal_reason = True, payload
+                    try:
+                        internal = bool(self._intercept(payload))
+                    except Exception:  # noqa: BLE001 - un intercepteur en échec : arrêt normal
+                        internal = False
+                    if internal:
+                        return
+                    self._internal = False
             self.state = "stopped"
-            self.stop_reason = payload or {}
+            self.stop_reason = payload
             # abonnés d'abord (ex. la trace ETM se marque « en conversion ») : quand halt() ou
             # wait_stopped() rendent la main, leur réaction à l'arrêt est déjà engagée
             self._emit("stopped", self.stop_reason)
@@ -111,6 +189,9 @@ class Session:
         elif t == "notify" and msg == "running":
             self.state = "running"
             self._stopped.clear()
+            if self._quiet_running:             # relance après un arrêt interne : silencieuse
+                self._quiet_running = False
+                return
             self._emit("running", payload or {})
         elif t == "notify" and msg and msg.startswith("breakpoint-"):
             self._emit("breakpoints", payload or {})
@@ -206,9 +287,21 @@ class Session:
         self.gdb.command("-exec-continue")
 
     def halt(self, wait: float = 5.0) -> None:
-        if self.state != "running":
-            return
-        self.gdb.command("-exec-interrupt")
+        with self._lock:
+            if self.state != "running":
+                return
+            internal = self._internal or self._resuming
+            if internal:                        # arrêt interne en cours : il sera livré
+                self._halt_wanted = True
+            else:
+                self._halt_requested = True
+        if not internal:
+            try:
+                self.gdb.command("-exec-interrupt")
+            except GdbError:
+                if self.state != "running":     # arrêtée entre-temps (ex. point d'arrêt)
+                    return
+                raise
         self.wait_stopped(wait)
 
     def step(self) -> None:          # Step.single (source, entre dans les fonctions)

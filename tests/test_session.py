@@ -131,3 +131,84 @@ def test_download_progress_not_echoed(session):
     session.on_event(lambda kind, data: out.append(data.get("text", "")) if kind == "output" else None)
     session.program(session.elf, verify=False)
     assert not any("+download" in t for t in out)
+
+
+# ====================================================================== arrêts internes
+class FakeGdb:
+    def __init__(self):
+        self.sent = []
+
+    def command(self, cmd, timeout=None):
+        self.sent.append(cmd)
+        return {}
+
+
+def _internal_session(intercept=True):
+    from gdbtrace.core.session import Session
+    s = Session()
+    s.gdb = FakeGdb()
+    s.state = "running"
+    events, taken = [], []
+    s.on_event(lambda kind, data: events.append(kind))
+
+    def interceptor(reason):
+        taken.append(reason)
+        return intercept
+    s.set_stop_interceptor(interceptor)
+    return s, events, taken
+
+
+SIGINT = {"type": "notify", "message": "stopped",
+          "payload": {"reason": "signal-received", "signal-name": "SIGINT"}}
+RUNNING = {"type": "notify", "message": "running", "payload": {"thread-id": "all"}}
+
+
+def test_internal_stop_is_invisible():
+    """Arrêt non demandé intercepté (MTB en AUTOHALT) : aucun événement, la cible « tourne »
+    toujours, wait_stopped() n'est pas réveillé ; la relance est silencieuse."""
+    s, events, taken = _internal_session()
+    s._on_mi(SIGINT)
+    assert taken and s.internal_stop and s.state == "running" and events == []
+    assert not s._stopped.is_set()
+    s.resume_internal()
+    assert s.gdb.sent == ["-exec-continue"] and not s.internal_stop
+    s._on_mi(RUNNING)
+    assert events == [] and s.state == "running"
+    s._on_mi({"type": "notify", "message": "stopped", "payload": {"reason": "breakpoint-hit"}})
+    assert events == ["stopped"] and s.state == "stopped"         # un point d'arrêt : visible
+
+
+def test_requested_stop_is_never_intercepted():
+    s, events, taken = _internal_session()
+    s._stopped.set()                                    # halt() n'attend pas dans ce test
+    s.halt()                                            # Break de l'utilisateur
+    assert s.gdb.sent == ["-exec-interrupt"]
+    s._on_mi(SIGINT)
+    assert taken == [] and events == ["stopped"] and s.state == "stopped"
+
+
+def test_declined_or_delivered_stop_becomes_visible():
+    s, events, _ = _internal_session(intercept=False)   # l'intercepteur refuse : arrêt normal
+    s._on_mi(SIGINT)
+    assert events == ["stopped"] and s._stopped.is_set()
+    s, events, _ = _internal_session()
+    s._on_mi(SIGINT)
+    s.deliver_stop()                                    # ce n'était pas la MTB
+    assert events == ["stopped"] and s.state == "stopped" and s._stopped.is_set()
+    assert s.stop_reason["signal-name"] == "SIGINT"
+
+
+def test_halt_during_internal_stop_delivers_it():
+    """Break pendant un arrêt interne : pas d'interruption envoyée, l'arrêt est livré au lieu
+    de la relance."""
+    import threading
+    s, events, _ = _internal_session()
+    s._on_mi(SIGINT)
+    t = threading.Thread(target=s.halt, kwargs={"wait": 5})
+    t.start()
+    import time
+    time.sleep(0.05)
+    assert t.is_alive() and s.gdb.sent == []            # halt() attend la livraison
+    s.resume_internal()
+    t.join(2)
+    assert not t.is_alive() and events == ["stopped"] and s.gdb.sent == []
