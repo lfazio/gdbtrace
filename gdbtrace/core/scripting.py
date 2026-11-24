@@ -41,14 +41,29 @@ def hexdump(data: bytes, base: int, width: int = 16) -> str:
 
 class StopRecord(dict):
     """Enregistrement d'arrêt de gdb (`reason`, `frame`, `bkptno`, `wpt`, `value`,
-    `return-value`...) : un dict, affiché en une ligne dans la console."""
+    `return-value`...) : un dict, affiché en une ligne dans la console. Après Step.Till /
+    Step.Change : aussi `what`, `expr`, `steps`, `met` (condition atteinte), `old` / `new`."""
 
     def __repr__(self) -> str:
-        f = self.get("frame") or {}
-        where = f.get("func") or f.get("addr") or "?"
-        if f.get("file") and f.get("line"):
-            where += f" ({f['file']}:{f['line']})"
-        return f"<arrêt : {self.get('reason', '?')} — {where}>"
+        return f"<arrêt : {stop_summary(self)}>"
+
+
+def stop_summary(rec: dict) -> str:
+    """Arrêt en une ligne : raison (ou bilan d'un Step.Till / Step.Change) — lieu."""
+    f = rec.get("frame") or {}
+    where = f.get("func") or f.get("addr") or "?"
+    if f.get("file") and f.get("line"):
+        where += f" ({f['file']}:{f['line']})"
+    if "what" not in rec:
+        return f"{rec.get('reason', '?')} — {where}"
+    what = f"{rec['what']} {rec.get('expr', '')}, {rec.get('steps', 0)} pas"
+    if "new" in rec and rec.get("met"):
+        what += f", {rec['old']} → {rec['new']}"
+    if not rec.get("met"):
+        reason = rec.get("reason", "?")
+        what += ", " + (rec.get("error") or ("limite atteinte" if reason == "end-stepping-range"
+                                             else reason))
+    return f"{what} — {where}"
 
 
 class CoverageAPI:
@@ -111,6 +126,13 @@ class CoverageAPI:
         fmt = export(self.db, path, note)
         print(f"couverture exportée ({fmt}) : {path}")
         return fmt
+
+
+def _record_action(fn):
+    """Une action de script reçoit l'arrêt en StopRecord."""
+    if fn is None:
+        return None
+    return lambda payload: fn(StopRecord(payload))
 
 
 class ScriptAPI:
@@ -580,8 +602,44 @@ class ScriptAPI:
     @property
     def running(self) -> bool: return self.s.state == "running"
 
+    def go_till(self, cond: str) -> None:
+        """Go.Till : Go jusqu'à ce que l'expression C `cond` devienne vraie (watchpoint matériel
+        sur ses variables, retiré à la reprise suivante) ; n'attend pas l'arrêt (`wait()`).
+        Registres et valeurs sans adresse : `step_till()`."""
+        self.s.go_till(cond)
+
+    def step_till(self, cond: str, asm: bool = False, max_steps: int = 1000) -> StopRecord:
+        """Step.Till : pas à pas (ligne, ou instruction si `asm`) jusqu'à ce que `cond` soit
+        vraie ; `max_steps` pas au plus (`met` faux si la limite est atteinte)."""
+        return StopRecord(self.s.step_till(cond, asm, max_steps))
+
+    def step_change(self, expr: str, asm: bool = False, max_steps: int = 1000) -> StopRecord:
+        """Step.Change : pas à pas jusqu'à ce que la valeur de `expr` change (`old`, `new`)."""
+        return StopRecord(self.s.step_change(expr, asm, max_steps))
+
     # breakpoints
-    def break_(self, loc: str, **kw): return self.s.break_(loc, **kw)
+    def break_(self, loc: str, hw: bool = False, temporary: bool = False,
+               condition: str | None = None, count: int | None = None, log: str | None = None,
+               action: Callable[[StopRecord], object] | None = None, stop: bool = False):
+        """Break.Set. `count` : arrêt au Nᵉ passage ; `log` : message à chaque passage
+        (`{expr}`, `{expr:hex}`…), la cible repart ; `action(arret)` : fonction appelée à chaque
+        passage, cible arrêtée (vrai : arrêt, texte : journalisé) ; `stop` : arrêt après l'action."""
+        return self.s.break_(loc, hw=hw, temporary=temporary, condition=condition, count=count,
+                             log=log, action=_record_action(action), stop=stop)
+
+    def break_options(self, num, **options) -> None:
+        """Change `condition`, `count`, `log`, `action` ou `stop` d'un breakpoint ou d'un
+        watchpoint existant (options omises gardées ; None ou "" retire)."""
+        if "action" in options:
+            options["action"] = _record_action(options["action"])
+        self.s.break_options(str(num), **options)
+
+    def break_log(self, n: int | None = 20) -> list[str]:
+        """Derniers messages des actions de breakpoints (`log=`, texte renvoyé par `action`) ;
+        `n=None` : tous (1000 au plus)."""
+        msgs = list(self.s.action_log)
+        return msgs[-n:] if n else msgs
+
     def watch(self, expr: str, access: str = "write"): return self.s.watch(expr, access)
     def delete(self, num: str) -> None: self.s.delete_break(str(num))
     def enable(self, num: str, on: bool = True) -> None:

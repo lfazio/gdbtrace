@@ -181,10 +181,64 @@ gdbtrace.halt()                                 # Break
 print(gdbtrace.wait()["signal-name"])           # SIGINT
 ```
 
+### Go.Till, Step.Till, Step.Change
+
+| Appel | Effet | Attend l'arrêt ? |
+|---|---|---|
+| `go_till(cond)` | Go.Till : Go jusqu'à ce que l'expression C `cond` devienne vraie, en temps réel | **non** : `wait()` |
+| `step_till(cond, asm=False, max_steps=1000)` | Step.Till : pas à pas jusqu'à ce que `cond` soit vraie | oui |
+| `step_change(expr, asm=False, max_steps=1000)` | Step.Change : pas à pas jusqu'à ce que la valeur de `expr` change | oui |
+
+`go_till` pose un watchpoint matériel sur les variables de l'expression, avec l'expression
+pour condition. gdb trouve lui-même ces variables : `counter >= 20` surveille `counter`. La
+cible tourne à pleine vitesse et s'arrête quand l'expression **devient** vraie.
+- Le watchpoint est retiré à la reprise suivante et n'apparaît pas dans `breaks()`.
+- Il occupe un ou plusieurs comparateurs du DWT.
+- Une expression sur une locale arrête aussi la cible à la sortie de sa fonction (`reason`
+  vaut `watchpoint-scope`).
+- Une expression qu'aucun watchpoint matériel ne peut suivre (registre `$r0`, valeur sans
+  adresse) lève `ValueError` : utiliser `step_till`.
+
+`step_till` et `step_change` avancent d'une ligne source à chaque pas (comme `step()`), ou
+d'une instruction avec `asm=True`.
+- Toute expression convient, registres compris.
+- C'est lent : un aller-retour avec la cible à chaque pas. `max_steps` borne la boucle.
+- Vue de l'extérieur, la boucle est **une seule** reprise : le GUI ne se rafraîchit qu'à la
+  fin, et Break (`halt()` depuis un autre fil) l'interrompt.
+- Un breakpoint ou un signal l'arrête aussi.
+
+L'enregistrement d'arrêt final porte en plus :
+
+| Champ | Contenu |
+|---|---|
+| `what`, `expr` | `Step.Till` ou `Step.Change`, et l'expression |
+| `steps` | nombre de pas faits |
+| `met` | `True` si la condition est atteinte ; `False` : limite `max_steps`, breakpoint, Break |
+| `old`, `new` | Step.Change : valeurs avant et après, en texte |
+| `error` | expression devenue illisible (locale hors de portée) |
+
+<!-- test -->
+```python
+gdbtrace.go_till("counter >= 20")
+print(gdbtrace.wait(5))                         # <arrêt : watchpoint-trigger — main (main.c:59)>
+assert gdbtrace.eval("counter") == "20"
+
+gdbtrace.break_("fib", condition="n == 5", temporary=True)
+gdbtrace.go()
+gdbtrace.wait(5)
+gdbtrace.over()                                 # a = 0, b = 1
+print(gdbtrace.step_change("a"))                # <arrêt : Step.Change a, 3 pas, 0 → 1 — fib (main.c:38)>
+print(gdbtrace.step_till("i == 3"))             # <arrêt : Step.Till i == 3, 10 pas — fib (main.c:36)>
+assert gdbtrace.eval("i") == "3"
+r = gdbtrace.step_till("$r0 == 0x1234", asm=True, max_steps=20)
+print(r["met"], r["steps"])                     # False 20 : limite atteinte
+```
+
 ## 5. Breakpoints et watchpoints
 
-`gdbtrace.break_(emplacement, hw=False, temporary=False, condition=None)` pose un breakpoint
-et renvoie un objet `Breakpoint`. L'emplacement s'écrit comme dans gdb :
+`gdbtrace.break_(emplacement, hw=False, temporary=False, condition=None, count=None,
+log=None, action=None, stop=False)` pose un breakpoint et renvoie un objet `Breakpoint`.
+L'emplacement s'écrit comme dans gdb :
 
 | Emplacement | Exemple |
 |---|---|
@@ -197,6 +251,9 @@ et renvoie un objet `Breakpoint`. L'emplacement s'écrit comme dans gdb :
 | `temporary=True` | supprimé au premier arrêt |
 | `condition="tick == 6"` | ne s'arrête que si l'expression C est vraie |
 | `hw=True` | breakpoint matériel (comparateur du FPB) : indispensable en flash quand gdb ne peut pas y écrire |
+| `count=5` | arrêt au 5ᵉ passage, puis à chaque passage (voir plus bas) |
+| `log="n={counter}"` | message à chaque passage, puis la cible repart (voir plus bas) |
+| `action=fonction` | fonction Python appelée à chaque passage, cible arrêtée (voir plus bas) |
 
 `gdbtrace.watch(expression, access="write")` pose un watchpoint sur une variable et renvoie
 son numéro. `access` vaut `"write"`, `"read"` ou `"rw"`. Les watchpoints sont matériels
@@ -211,8 +268,12 @@ Breakpoints matériels et watchpoints sont en nombre limité. Typiquement : 6 br
 | `enable(numéro, False)` / `enable(numéro)` | désactiver / réactiver sans supprimer |
 | `delete(numéro)` | supprimer |
 
-Un `Breakpoint` a les champs `number`, `type` (`breakpoint`, `hw breakpoint`, `hw
-watchpoint`…), `enabled`, `addr`, `func`, `file`, `line` et `hits` (nombre d'arrêts).
+Un `Breakpoint` a les champs suivants :
+- `number`, `type` (`breakpoint`, `hw breakpoint`, `hw watchpoint`…) et `enabled` ;
+- `addr`, `func`, `file`, `line`, et `expr` (expression d'un watchpoint) ;
+- `hits` : nombre de passages ;
+- `condition`, `count` et `ignore` (passages encore ignorés) ;
+- `action` : description de l'action, vide s'il n'y en a pas.
 
 <!-- test -->
 ```python
@@ -236,6 +297,74 @@ gdbtrace.go()
 arret = gdbtrace.wait(10)                       # mode écrit
 print(arret["wpt"]["exp"], arret["value"]["old"], "→", arret["value"]["new"])
 gdbtrace.delete(w)
+```
+
+### Breakpoints à action et à compteur
+
+**Compteur.** `count=N` arrête la cible au **Nᵉ passage**. Les N-1 premiers passages sont
+comptés par gdb, sans arrêt visible. Ensuite, le breakpoint arrête la cible à chaque passage,
+jusqu'à un nouveau `count`.
+
+**Message.** `log` est un texte, écrit à chaque passage, après quoi la cible repart. Le texte
+peut contenir :
+- `{expression}` : remplacé par la valeur de l'expression C ;
+- `{expression:format}` : la même chose dans un format de `eval()` (`hex`, `dec`, `bin`…).
+  Le format doit être collé aux deux-points : `{a ? b : c}` reste une expression ;
+- `{{` et `}}` : des accolades littérales.
+
+Les messages s'affichent dans la console du GUI, ou sur la sortie standard en `--batch`.
+`break_log(n=20)` rend les derniers.
+
+**Action.** `action` est une fonction appelée à chaque passage, cible arrêtée. Elle reçoit
+l'enregistrement d'arrêt et peut tout lire avec `gdbtrace`. Ce qu'elle renvoie décide de la
+suite :
+
+| Retour | Suite |
+|---|---|
+| `True` | la cible s'arrête : `wait()` rend cet arrêt |
+| un texte | journalisé comme un message ; la cible repart |
+| `None`, `False` | la cible repart |
+
+Avec `stop=True`, la cible s'arrête après chaque message ou action. Une action qui lève une
+exception arrête la cible, et l'erreur s'affiche.
+
+Messages et actions s'exécutent pendant un Go, sur un arrêt **interne** : aucun arrêt visible,
+le GUI ne se rafraîchit pas, et la bannière « Breakpoint N » de gdb est masquée. Ils valent
+aussi pour un watchpoint. Pendant un pas, l'action s'exécute, mais l'arrêt reste visible.
+
+`break_options(numéro, condition=…, count=…, log=…, action=…, stop=…)` change les options
+d'un breakpoint ou d'un watchpoint existant. Une option omise est gardée ; `None` ou `""`
+la retire. Dans le GUI : vue Breakpoints, bouton **Options…** ou clic droit.
+
+<!-- test -->
+```python
+b = gdbtrace.break_("animate", count=5)
+gdbtrace.go()
+gdbtrace.wait(5)
+print(gdbtrace.eval("tick"), gdbtrace.breaks()[0].hits)    # 5 5
+
+m = gdbtrace.break_("update_sensor", log="capteur n={counter} tick={tick:hex}")
+gdbtrace.break_options(b.number, condition="tick == 8")
+gdbtrace.go()
+gdbtrace.wait(5)                                # animate, tick == 8
+print(gdbtrace.break_log(3))                    # ['capteur n=6 tick=0x6', …, 'capteur n=8 tick=0x8']
+assert gdbtrace.break_log(1) == ["capteur n=8 tick=0x8"]
+gdbtrace.delete(b.number)
+gdbtrace.delete(m.number)
+
+vus = []
+def mesure(arret):                              # appelée à chaque passage, cible arrêtée
+    vus.append(int(gdbtrace.eval("tick", "dec")))
+    if len(vus) == 30:
+        return True                             # vrai : la cible s'arrête
+    if len(vus) % 10 == 0:
+        return f"{len(vus)} passages"           # texte : journalisé, la cible repart
+
+gdbtrace.break_("animate", action=mesure)
+gdbtrace.go()
+gdbtrace.wait(10)
+print(vus[0], vus[-1], gdbtrace.break_log(2))   # 9 38 ['10 passages', '20 passages']
+assert len(vus) == 30
 ```
 
 ## 6. Lire et modifier les données
@@ -478,8 +607,12 @@ gdbtrace.delete(b.number)
 print(f"{passages} passages, tick = {gdbtrace.eval('tick')}")
 ```
 
-Quand la condition ne dépend que de la fonction, un breakpoint conditionnel
-(`condition="tick >= 10"`) fait la même chose sans aller-retour avec le script.
+Sans aller-retour avec le script :
+- une condition qui ne dépend que de la fonction : breakpoint conditionnel
+  (`condition="tick >= 10"`) ;
+- le Nᵉ passage : `count=N` ;
+- une condition sur des globales, où qu'elle devienne vraie : `go_till("ticks >= 10")`, en
+  temps réel (section 4).
 
 ### Test automatique pour l'intégration continue
 
@@ -618,6 +751,16 @@ gdbtrace.cov.export("couverture.html")
   ignorées (RAM et registres du cœur seulement), et il n'y a ni ITM ni SWO.
 - **Laisser la cible propre** : supprimer les breakpoints posés par le script si la session
   continue dans le GUI.
+- **Actions de breakpoint.**
+  - L'action tourne dans un fil à part, cible arrêtée : elle lit ce qu'elle veut, mais ne
+    relance pas la cible (`go()`, `step()`). Elle renvoie `True` pour arrêter la cible.
+  - Son `print()` n'atteint la console du GUI que pendant qu'un script de la console
+    s'exécute. Renvoyer un texte, ou utiliser `log=` : ils vont toujours dans la console et
+    dans `break_log()`.
+  - Chaque passage coûte un aller-retour avec la cible, de l'ordre de la milliseconde : sur
+    une fonction appelée des milliers de fois par seconde, la cible ralentit d'autant.
+- **Go.Till ou Step.Till.** `go_till` est en temps réel mais exige un watchpoint matériel :
+  une variable en mémoire, pas un registre. `step_till` accepte tout mais avance pas à pas.
 
 ## 14. Référence
 
@@ -629,6 +772,9 @@ gdbtrace.cov.export("couverture.html")
 | `wait(timeout=10.0)` | attend l'arrêt ; renvoie l'enregistrement d'arrêt |
 | `halt()` | Break |
 | `step(n=1)`, `over(n=1)`, `out()`, `stepi(n=1)` | pas à pas ; renvoient l'enregistrement d'arrêt |
+| `go_till(cond)` | Go.Till : Go jusqu'à ce que `cond` devienne vraie (watchpoint matériel) ; n'attend pas |
+| `step_till(cond, asm=False, max_steps=1000)` | Step.Till : pas à pas jusqu'à `cond` vraie |
+| `step_change(expr, asm=False, max_steps=1000)` | Step.Change : pas à pas jusqu'au changement de `expr` |
 | `reset()` | reset, arrêt au vecteur de reset |
 | `running` | la cible tourne-t-elle ? |
 
@@ -636,7 +782,9 @@ gdbtrace.cov.export("couverture.html")
 
 | Appel | Rôle |
 |---|---|
-| `break_(loc, hw=False, temporary=False, condition=None)` | pose un breakpoint → `Breakpoint` |
+| `break_(loc, hw=False, temporary=False, condition=None, count=None, log=None, action=None, stop=False)` | pose un breakpoint → `Breakpoint` |
+| `break_options(n, condition=…, count=…, log=…, action=…, stop=…)` | change les options d'un breakpoint ou d'un watchpoint |
+| `break_log(n=20)` | derniers messages des actions |
 | `watch(expr, access="write")` | watchpoint (`"write"`, `"read"`, `"rw"`) → numéro |
 | `breaks()` | liste → `[Breakpoint]` |
 | `enable(n, on=True)` | active / désactive |

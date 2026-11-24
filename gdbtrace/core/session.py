@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import threading
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -56,10 +57,86 @@ class Breakpoint:
     file: str | None
     line: int | None
     hits: int
+    condition: str | None = None     # Break.Set /CONDition
+    ignore: int = 0                  # passages encore ignorés avant l'arrêt
+    count: int | None = None         # Break.Set /COUNT : arrêt au Nᵉ passage
+    action: str = ""                 # description de l'action (message, script Python)
+    expr: str | None = None          # expression surveillée (watchpoint)
+
+
+@dataclass
+class BreakAction:
+    """Action d'un breakpoint ou d'un watchpoint (Break.Set /CMD), exécutée à chaque arrêt sur
+    lui pendant un Go, cible arrêtée : `log` (texte, `{expr}` / `{expr:fmt}` remplacés par leur
+    valeur), `fn(arret)` (vrai : arrêt ; texte : journalisé). La cible repart ensuite, sauf
+    `stop` ou si `fn` le demande."""
+    log: str | None = None
+    fn: Callable[[dict], Any] | None = None
+    stop: bool = False
+
+    def describe(self) -> str:
+        parts = [f"« {self.log} »"] if self.log else []
+        if self.fn is not None:
+            parts.append("script Python")
+        if self.stop:
+            parts.append("→ arrêt")
+        elif self.fn is None:
+            parts.append("→ continue")
+        return " ".join(parts)
+
+
+_FIELD = re.compile(r"\{\{|\}\}|\{([^{}]+)\}")
+
+
+def expand_log(text: str, value: Callable[[str, str], str]) -> str:
+    """Message d'action : `{expr}` → valeur de l'expression C, `{expr:fmt}` dans un format de
+    core/formats.py (hex, dec, bin…, collé aux deux-points : `{a ? b : c}` reste une
+    expression) ; `{{` et `}}` → accolades. `value(expr, format)` évalue (cible arrêtée) ; une
+    erreur s'affiche à la place de la valeur."""
+    from .formats import normalize
+
+    def field_(m: re.Match) -> str:
+        tok = m.group(0)
+        if tok in ("{{", "}}"):
+            return tok[0]
+        body, fmt = m.group(1), "natural"
+        expr, sep, suffix = body.rpartition(":")
+        if sep and suffix and suffix == suffix.strip() and expr.strip() and not expr.endswith(":"):
+            try:
+                fmt = normalize(suffix)
+            except ValueError:
+                expr = body
+        else:
+            expr = body
+        try:
+            return value(expr.strip(), fmt)
+        except Exception as exc:  # noqa: BLE001 - une expression fautive n'arrête pas le message
+            return f"<erreur : {exc}>"
+    return _FIELD.sub(field_, text)
+
+
+def _stop_number(payload: dict) -> str | None:
+    """Numéro du breakpoint ou du watchpoint qui a arrêté la cible."""
+    if payload.get("bkptno"):
+        return str(payload["bkptno"])
+    for key in ("wpt", "hw-awpt", "hw-rwpt"):
+        if isinstance(payload.get(key), dict):
+            return payload[key].get("number")
+    return None
+
+
+_ACTION_REASONS = ("breakpoint-hit", "watchpoint-trigger", "read-watchpoint-trigger",
+                   "access-watchpoint-trigger")
+_KEEP: Any = object()
 
 
 def _int(v: Any) -> int:
     return int(str(v), 0)
+
+
+def _mi_quote(text: str) -> str:
+    """Contenu d'une chaîne C de GDB/MI (« \\ » et « \" » échappés)."""
+    return text.replace("\\", "\\\\").replace('"', '\\"')
 
 
 class Session:
@@ -84,6 +161,21 @@ class Session:
         self._halt_wanted = False
         self._continuing = False        # dernière reprise : Go (et non un pas ou un « until »)
         self._lock = threading.Lock()
+        # breakpoints à action et à compteur ; watchpoints de Go.Till (supprimés à la reprise
+        # suivante, masqués de breakpoints()) ; messages des actions
+        self._actions: dict[str, BreakAction] = {}
+        self._counts: dict[str, int] = {}
+        self._transient: set[str] = set()
+        self.action_log: deque[str] = deque(maxlen=1000)
+        # boucle de pas (Step.Till, Step.Change) : une seule reprise vue de l'extérieur
+        self._looping = False
+        self._loop_first = False
+        self._loop_inflight = False
+        self._loop_stop = threading.Event()
+        self._loop_reason: dict = {}
+        # sortie console de gdb retenue pendant la marche quand des actions sont posées : la
+        # bannière « Breakpoint N, … » d'un arrêt d'action est jetée, le reste livré à l'arrêt
+        self._held: list[str] = []
 
     # ------------------------------------------------------------------ événements
     def on_event(self, fn: EventFn) -> None:
@@ -153,6 +245,10 @@ class Session:
         self._stopped.set()
 
     def _before_resume(self) -> None:
+        self._drop_transient()
+        self._run_resume_hooks()
+
+    def _run_resume_hooks(self) -> None:
         for fn in list(self._resume_hooks):
             try:
                 fn()
@@ -171,7 +267,21 @@ class Session:
         if t == "notify" and msg == "stopped":
             payload = payload or {}
             with self._lock:
+                if self._looping:               # pas intermédiaire d'une boucle : silencieux
+                    self._loop_reason = payload
+                    self._loop_inflight = False
+                    self._loop_stop.set()
+                    return
                 requested, self._halt_requested = self._halt_requested, False
+                free = not requested and self.state == "running" and self._continuing
+                act = (self._actions.get(_stop_number(payload) or "")
+                       if free and payload.get("reason") in _ACTION_REASONS else None)
+                if act is not None:             # breakpoint à action : arrêt interne
+                    self._internal, self._internal_reason = True, payload
+                    self._held.clear()
+                    threading.Thread(target=self._run_action, args=(act, payload),
+                                     name="gdbtrace-action", daemon=True).start()
+                    return
                 if (self._intercept is not None and not requested and self.state == "running"
                         and self._continuing and payload.get("reason") == "signal-received"):
                     self._internal, self._internal_reason = True, payload
@@ -182,6 +292,9 @@ class Session:
                     if internal:
                         return
                     self._internal = False
+                held, self._held = self._held, []
+            for text in held:                   # sortie retenue pendant la marche
+                self._emit("output", {"stream": "console", "text": text})
             self.state = "stopped"
             self.stop_reason = payload
             # abonnés d'abord (ex. la trace ETM se marque « en conversion ») : quand halt() ou
@@ -191,6 +304,10 @@ class Session:
         elif t == "notify" and msg == "running":
             self.state = "running"
             self._stopped.clear()
+            if self._looping:                   # boucle de pas : un seul « running »
+                if not self._loop_first:
+                    return
+                self._loop_first = False
             if self._quiet_running:             # relance après un arrêt interne : silencieuse
                 self._quiet_running = False
                 return
@@ -200,8 +317,12 @@ class Session:
         elif t == "notify" and msg == "gdb-exited":
             self.state = "disconnected"
             self._stopped.set()
+            self._loop_stop.set()
             self._emit("disconnected", {})
         elif t in ("console", "target", "output"):
+            if t == "console" and self._actions and self.state == "running" and not self._looping:
+                self._held.append(payload or "")
+                return
             self._emit("output", {"stream": t, "text": payload or ""})
         elif t == "log":
             self._emit("output", {"stream": "log", "text": payload or ""})
@@ -296,11 +417,20 @@ class Session:
         with self._lock:
             if self.state != "running":
                 return
+            looping, inflight = self._looping, self._loop_inflight
             internal = self._internal or self._resuming
-            if internal:                        # arrêt interne en cours : il sera livré
+            if looping or internal:             # boucle de pas, arrêt interne : livré à la fin
                 self._halt_wanted = True
             else:
                 self._halt_requested = True
+        if looping:                             # pas en cours interrompu, ou plus de pas
+            if inflight:
+                try:
+                    self.gdb.command("-exec-interrupt")
+                except GdbError:                # pas terminé entre-temps
+                    pass
+            self.wait_stopped(wait)
+            return
         if not internal:
             try:
                 self.gdb.command("-exec-interrupt")
@@ -331,6 +461,110 @@ class Session:
         self.gdb.command(f"-exec-until {location}")
         if timeout is not None:
             self.wait_stopped(timeout)
+
+    def go_till(self, cond: str) -> str:
+        """Go.Till : Go jusqu'à ce que l'expression C `cond` **devienne** vraie, en temps réel :
+        watchpoint matériel sur les variables de l'expression (gdb les trouve), conditionné par
+        `cond`. Le watchpoint est retiré à la reprise suivante (masqué de breakpoints() d'ici
+        là). Une expression qu'un watchpoint matériel ne peut suivre (registre…) est refusée :
+        step_till() la teste pas à pas. N'attend pas l'arrêt. Retourne le numéro du watchpoint."""
+        self._drop_transient()
+        res = self.gdb.command(f'-break-watch "{_mi_quote(cond)}"')
+        num = (res.get("wpt") or {}).get("number")
+        if num is None:
+            raise GdbError(f"Go.Till : watchpoint non posé ({res})")
+        self._transient.add(num)
+        body = self.gdb.command(f"-break-info {num}")["BreakpointTable"].get("body", [])
+        if not body or not body[0].get("type", "").startswith("hw"):
+            self._drop_transient()
+            raise ValueError(f"Go.Till : « {cond} » ne peut pas être suivie par un watchpoint "
+                             "matériel (registre, valeur sans adresse) : utiliser step_till()")
+        try:
+            self.gdb.command(f'-break-condition {num} "{_mi_quote(cond)}"')
+        except GdbError:
+            self._drop_transient()
+            raise
+        self._continuing = True
+        self._stopped.clear()
+        self._run_resume_hooks()
+        self.gdb.command("-exec-continue")
+        return num
+
+    def step_till(self, cond: str, asm: bool = False, max_steps: int = 1000) -> dict:
+        """Step.Till : pas à pas (ligne source, ou instruction si `asm`) jusqu'à ce que `cond`
+        soit vraie, `max_steps` pas au plus. Toute expression convient (registres compris) ;
+        lent : un aller-retour gdb par pas. Retourne l'arrêt final avec `steps` et `met`."""
+        test = f"(int)!!({cond})"
+        self.evaluate(test)                     # expression valide avant le premier pas
+        return self._step_loop(lambda: self.evaluate(test) == "1", asm, max_steps,
+                               {"what": "Step.Till", "expr": cond})
+
+    def step_change(self, expr: str, asm: bool = False, max_steps: int = 1000) -> dict:
+        """Step.Change : pas à pas jusqu'à ce que la valeur de `expr` change. L'arrêt final
+        porte `old` et `new` (valeurs affichées par gdb), `steps` et `met`."""
+        old = self.evaluate(expr)
+        extra = {"what": "Step.Change", "expr": expr, "old": old}
+
+        def changed() -> bool:
+            extra["new"] = self.evaluate(expr)
+            return extra["new"] != old
+        return self._step_loop(changed, asm, max_steps, extra)
+
+    def _step_loop(self, done: Callable[[], bool], asm: bool, max_steps: int, extra: dict) -> dict:
+        """Pas répétés vus comme UNE reprise : hooks de reprise une fois, un seul `running`,
+        arrêts intermédiaires silencieux (`state` reste « running »), un seul `stopped` final.
+        S'arrête quand `done()` est vrai, au premier arrêt qui n'est pas une fin de pas
+        (breakpoint, signal), après `max_steps` pas ou sur `halt()`."""
+        cmd = "-exec-step-instruction" if asm else "-exec-step"
+        with self._lock:
+            if self.state != "stopped":
+                raise GdbError("la cible doit être arrêtée")
+            self._looping, self._loop_first, self._halt_wanted = True, True, False
+        self._continuing = False
+        self._stopped.clear()
+        steps, met, rec, error = 0, False, dict(self.stop_reason), None
+        try:
+            self._before_resume()
+            while steps < max_steps:
+                with self._lock:
+                    if self._halt_wanted:
+                        break
+                    self._loop_inflight = True
+                self._loop_stop.clear()
+                self.gdb.command(cmd)
+                if not self._loop_stop.wait(60):    # pas sans fin (boucle infinie sur la ligne)
+                    try:
+                        self.gdb.command("-exec-interrupt")
+                    except GdbError:
+                        pass
+                    self._loop_stop.wait(5)
+                    error = "pas trop long : interrompu"
+                steps += 1
+                rec = self._loop_reason
+                if error or self.state == "disconnected" or rec.get("reason") != "end-stepping-range":
+                    break
+                try:
+                    if done():
+                        met = True
+                        break
+                except GdbError as exc:         # expression hors de portée
+                    error = str(exc)
+                    break
+        finally:
+            with self._lock:
+                self._looping = self._loop_inflight = False
+                self._halt_wanted = False
+            final = dict(rec)
+            final.update(extra)
+            final.update(steps=steps, met=met)
+            if error:
+                final["error"] = error
+            if self.state != "disconnected":
+                self.state = "stopped"
+            self.stop_reason = final
+            self._emit("stopped", final)
+            self._stopped.set()
+        return final
 
     def reset(self) -> None:
         """Reset de la cible et arrêt au vecteur de reset (dépend du serveur gdb)."""
@@ -368,12 +602,87 @@ class Session:
 
     # ------------------------------------------------------------------ breakpoints
     def break_(self, location: str, hw: bool = False, temporary: bool = False,
-               condition: str | None = None) -> Breakpoint:
+               condition: str | None = None, count: int | None = None, log: str | None = None,
+               action: Callable[[dict], Any] | None = None, stop: bool = False) -> Breakpoint:
+        """Break.Set. `count` : arrêt au Nᵉ passage (gdb ignore les N-1 premiers, puis s'arrête
+        à chaque passage) ; `log` / `action` / `stop` : voir BreakAction et break_options()."""
         flags = ("-h " if hw else "") + ("-t " if temporary else "")
         if condition:
-            flags += f'-c "{condition}" '
+            flags += f'-c "{_mi_quote(condition)}" '
+        if count and count > 1:
+            flags += f"-i {count - 1} "
         bkpt = self.gdb.command(f"-break-insert {flags}{location}")["bkpt"]
+        num = bkpt.get("number", "?")
+        if count and count > 1:
+            self._counts[num] = count
+        if log or action is not None:
+            self._actions[num] = BreakAction(log or None, action, bool(stop))
         return self._bp(bkpt)
+
+    def break_options(self, number: str, *, condition: Any = _KEEP, count: Any = _KEEP,
+                      log: Any = _KEEP, action: Any = _KEEP, stop: Any = _KEEP) -> None:
+        """Change les options d'un breakpoint ou d'un watchpoint ; un argument omis est gardé.
+        `condition` : expression C ("" ou None la retire) ; `count` : arrêt au Nᵉ passage à
+        partir de maintenant (None ou 1 : à chaque passage) ; `log` : message journalisé à
+        chaque passage ; `action(arret)` : rappel Python ; `stop` : s'arrêter après l'action.
+        Une action ne s'exécute que pendant un Go ; pendant un pas, l'arrêt reste visible."""
+        number = str(number)
+        if condition is not _KEEP:
+            cmd = f"-break-condition {number}"
+            self.gdb.command(f'{cmd} "{_mi_quote(condition)}"' if condition else cmd)
+        if count is not _KEEP:
+            n = int(count or 0)
+            self.gdb.command(f"-break-after {number} {max(n - 1, 0)}")
+            if n > 1:
+                self._counts[number] = n
+            else:
+                self._counts.pop(number, None)
+        if not (log is _KEEP and action is _KEEP and stop is _KEEP):
+            cur = self._actions.get(number, BreakAction())
+            new = BreakAction(cur.log if log is _KEEP else (log or None),
+                              cur.fn if action is _KEEP else action,
+                              cur.stop if stop is _KEEP else bool(stop))
+            if new.log or new.fn is not None:
+                self._actions[number] = new
+            else:
+                self._actions.pop(number, None)
+
+    def break_action(self, number: str) -> BreakAction | None:
+        """Action posée sur un breakpoint (None : aucune)."""
+        return self._actions.get(str(number))
+
+    def log_action(self, text: str, error: bool = False) -> None:
+        """Message d'une action : journal `action_log` (sauf erreur) et événement `output`
+        (stream « action ») pour la console et le mode batch."""
+        if not error:
+            self.action_log.append(text)
+        self._emit("output", {"stream": "action", "text": text + "\n", "error": error})
+
+    def _run_action(self, act: BreakAction, payload: dict) -> None:
+        """Fil d'une action (cible arrêtée, arrêt interne) : message, rappel, puis relance
+        silencieuse ou arrêt visible. Une action en échec arrête la cible et le dit."""
+        stop = act.stop
+        try:
+            if act.log:
+                self.log_action(expand_log(act.log, self.format_value))
+            if act.fn is not None:
+                res = act.fn(payload)
+                if isinstance(res, str):
+                    self.log_action(res)
+                elif res:
+                    stop = True
+        except Exception as exc:  # noqa: BLE001 - signalé, et la cible reste arrêtée
+            self.log_action(f"Erreur dans l'action du breakpoint {_stop_number(payload)} : "
+                            f"{type(exc).__name__}: {exc}", error=True)
+            stop = True
+        try:
+            if stop:
+                self.deliver_stop()
+            else:
+                self.resume_internal()
+        except Exception as exc:  # noqa: BLE001 - relance impossible : arrêt visible
+            self.log_action(f"Erreur à la relance après l'action : {exc}", error=True)
+            self.deliver_stop(force=True)
 
     def watch(self, expr: str, access: str = "write") -> str:
         flag = {"write": "", "read": "-r ", "rw": "-a "}[access]
@@ -383,21 +692,39 @@ class Session:
 
     def delete_break(self, number: str) -> None:
         self.gdb.command(f"-break-delete {number}")
+        for registry in (self._actions, self._counts):
+            registry.pop(str(number), None)
+        self._transient.discard(str(number))
+
+    def _drop_transient(self) -> None:
+        """Retire les watchpoints de Go.Till (déjà supprimés par gdb : hors de portée)."""
+        while self._transient:
+            num = self._transient.pop()
+            self._actions.pop(num, None)
+            try:
+                self.gdb.command(f"-break-delete {num}")
+            except GdbError:
+                pass
 
     def enable_break(self, number: str, enabled: bool = True) -> None:
         self.gdb.command(f"-break-{'enable' if enabled else 'disable'} {number}")
 
     def breakpoints(self) -> list[Breakpoint]:
         body = self.gdb.command("-break-list")["BreakpointTable"].get("body", [])
-        return [self._bp(b) for b in body]
+        return [self._bp(b) for b in body if b.get("number") not in self._transient]
 
-    @staticmethod
-    def _bp(b: dict) -> Breakpoint:
+    def _bp(self, b: dict) -> Breakpoint:
+        num = b.get("number", "?")
+        act = self._actions.get(num)
+        kind = b.get("type", "")
         return Breakpoint(
-            number=b.get("number", "?"), type=b.get("type", ""),
+            number=num, type=kind,
             enabled=b.get("enabled") == "y", addr=b.get("addr"), func=b.get("func"),
             file=b.get("file"), line=int(b["line"]) if b.get("line") else None,
-            hits=int(b.get("times", 0)),
+            hits=int(b.get("times", 0)), condition=b.get("cond") or None,
+            ignore=int(b.get("ignore", 0) or 0), count=self._counts.get(num),
+            action=act.describe() if act else "",
+            expr=b.get("what") or b.get("exp") if "watchpoint" in kind else None,
         )
 
     # ------------------------------------------------------------------ état
@@ -454,7 +781,7 @@ class Session:
         self.write_memory(addr, (value & 0xFFFFFFFF).to_bytes(4, "little"))
 
     def evaluate(self, expr: str) -> str:
-        escaped = expr.replace("\\", "\\\\").replace('"', '\\"')
+        escaped = _mi_quote(expr)
         return self.gdb.command(f'-data-evaluate-expression "{escaped}"')["value"]
 
     def set_var(self, expr: str, value: str) -> None:

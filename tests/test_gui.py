@@ -920,3 +920,49 @@ def test_tasktime_view(rtos_app, tmp_path):
     v._motion(type("E", (), {"x": (x0 + x1) / 2, "y": y + 8})())
     tip = [v.canvas.itemcget(i, "text") for i in v.canvas.find_withtag("hover") if v.canvas.type(i) == "text"]
     assert tip and "100.00 µs" in tip[0]
+
+
+def test_breakpoint_options_view(app):
+    """Vue Breakpoints : condition et arrêt au Nᵉ passage, message à chaque passage (console),
+    colonne « Condition / action »."""
+    from gdbtrace.views.console import ConsoleView
+    from gdbtrace.views.data import BreakpointsView
+    s = app.session
+    v = app.views.show(BreakpointsView)
+    con = app.views.find(ConsoleView)
+    stops = []
+    s.on_event(lambda kind, data: stops.append(data) if kind == "stopped" else None)
+    b = s.break_("animate")
+    app.breakpoints_changed()
+    v.apply_options(b.number, count=3, condition="tick > 0")
+    assert pump(app, lambda: v.tree.set(b.number, "opts") == "si tick > 0 · au 3ᵉ passage (reste 2)")
+    n = len(stops)
+    app.go()
+    assert pump(app, lambda: len(stops) > n and s.state == "stopped")
+    assert s.evaluate("counter") == "3"
+    assert pump(app, lambda: v.tree.set(b.number, "hits") == "3" and "(reste" not in v.tree.set(b.number, "opts"))
+    m = s.break_("update_sensor")
+    app.breakpoints_changed()
+    v.apply_options(m.number, log="capteur {tick}")
+    assert pump(app, lambda: v.tree.set(m.number, "opts") == "« capteur {tick} » → continue")
+    n = len(stops)
+    app.go()
+    assert pump(app, lambda: len(stops) > n and s.state == "stopped")
+    assert s.evaluate("counter") == "4" and len(stops) == n + 1     # passage par le message : invisible
+    assert pump(app, lambda: "capteur 4\n" in con.out.get("1.0", "end"))
+
+
+def test_go_till_and_step_change(app):
+    """Run › Go.Till puis Step.Change : arrêts et bilan dans la barre d'état."""
+    s = app.session
+    stops = []
+    s.on_event(lambda kind, data: stops.append(data) if kind == "stopped" else None)
+    app.go_till("counter >= 7")
+    assert pump(app, lambda: len(stops) == 1 and s.state == "stopped")
+    assert s.evaluate("counter") == "7" and app.cached_breakpoints == []
+    app.step_loop("last_char", change=True)
+    assert pump(app, lambda: len(stops) == 2 and s.state == "stopped"), app.status.get()
+    assert pump(app, lambda: "Step.Change last_char" in app.status.get()), app.status.get()
+    assert "71 'G' → 72 'H'" in app.status.get() and app.current_frame.func == "animate"
+    app.step_loop("0", change=False, max_steps=3)
+    assert pump(app, lambda: "limite atteinte" in app.status.get()), app.status.get()

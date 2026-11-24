@@ -58,6 +58,15 @@ Aucun linter n'est configuré.
   — aucun événement, état « running » ; le propriétaire vide la MTB puis appelle
   `resume_internal()` (relance silencieuse) ou `deliver_stop()`. L'intercepteur tourne dans le
   thread lecteur : il ne fait que lancer un fil de travail.
+  Breakpoints à action (`BreakAction`, `break_options`) : un arrêt sur un breakpoint ou
+  watchpoint à action pendant un Go est interne aussi. L'action tourne dans un fil
+  `gdbtrace-action`, puis `resume_internal()` ou `deliver_stop()`.
+  - Tant que des actions existent, la sortie console de gdb est retenue pendant la marche :
+    la bannière d'un arrêt d'action est jetée, le reste est livré à l'arrêt visible.
+  - Watchpoint de Go.Till : transitoire (`_transient`), masqué de `breakpoints()` et
+    supprimé à la reprise suivante.
+  - `step_till` / `step_change` (`_step_loop`) font une seule reprise : arrêts intermédiaires
+    silencieux (`_looping`, `state` reste « running »), un `running` et un `stopped`.
 - `TargetServer` (`core/target.py`) : `QemuTarget` (défaut, charge l'ELF lui-même,
   `needs_load=False`), `OpenOcdTarget`, `RemoteTarget` (+ `--tcl` optionnel).
   `live_memory()` fournit le canal mémoire latéral, ou `None`.

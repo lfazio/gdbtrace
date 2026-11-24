@@ -47,6 +47,13 @@ def int_auto(text: str) -> int:
     return int(text, 0)
 
 
+def _print_action(kind: str, data: dict) -> None:
+    """--batch : messages des breakpoints à action sur stdout, leurs erreurs sur stderr."""
+    if kind == "output" and data.get("stream") == "action":
+        print(data.get("text", ""), end="", flush=True,
+              file=sys.stderr if data.get("error") else sys.stdout)
+
+
 def setup_trace(args, trace, session, target, log=print) -> None:
     """Options de trace, après la connexion (cible arrêtée) : programmation de la cible puis
     démarrage des captures. Commun au mode --batch (`log` = print) et au GUI (console)."""
@@ -262,6 +269,7 @@ def main(argv: list[str] | None = None) -> int:
         from .trace.manager import TraceManager
         device = svd.parse(args.svd) if args.svd else None
         s = Session(args.gdb)
+        s.on_event(_print_action)                # messages des breakpoints à action
         s.connect(elf, target, load)
         rc = 0
         if program:

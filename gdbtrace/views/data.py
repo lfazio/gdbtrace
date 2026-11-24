@@ -2,11 +2,13 @@
 
 Clic droit sur une variable (Watch, locales) : format d'affichage de sa valeur (Naturel,
 Décimal, Hexadécimal, Octal, Binaire, ASCII), gardé en marche et dans le layout.
+Options d'un breakpoint (condition, arrêt au Nᵉ passage, message à chaque passage) : bouton
+Options… ou clic droit de la vue Breakpoints.
 """
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import simpledialog, ttk
+from tkinter import messagebox, simpledialog, ttk
 
 from ..core.formats import FORMATS, GDB_FORMAT, from_zero_hex, normalize
 from ..core.live_vars import LeafLayout, compute_layout, decode
@@ -52,6 +54,66 @@ def _tree(master, columns: list[tuple[str, str, int]], tree_col: tuple[str, int]
     return tv
 
 
+def options_text(bp) -> str:
+    """Colonne « Condition / action » : si COND · au Nᵉ passage (reste k) · action."""
+    parts = [f"si {bp.condition}"] if bp.condition else []
+    if bp.count:
+        parts.append(f"au {bp.count}ᵉ passage" + (f" (reste {bp.ignore})" if bp.ignore else ""))
+    elif bp.ignore:
+        parts.append(f"{bp.ignore} passage(s) ignoré(s)")
+    if bp.action:
+        parts.append(bp.action)
+    return " · ".join(parts)
+
+
+class BreakOptionsDialog(simpledialog.Dialog):
+    """Options d'un breakpoint ou d'un watchpoint. `values` : dict des options modifiées
+    (condition, count, log, stop), à passer à Session.break_options(), ou None si annulé."""
+
+    def __init__(self, parent, bp, action):
+        self.values = None
+        self.bp, self.act = bp, action
+        super().__init__(parent, f"Options du breakpoint {bp.number}")
+
+    def body(self, master):
+        bp, act = self.bp, self.act
+        self.init = {"condition": bp.condition or "", "count": bp.count or 1,
+                     "log": (act.log if act else None) or "", "stop": bool(act and act.stop)}
+        self.cond_var = tk.StringVar(value=self.init["condition"])
+        self.count_var = tk.StringVar(value=str(self.init["count"]))
+        self.log_var = tk.StringVar(value=self.init["log"])
+        self.stop_var = tk.BooleanVar(value=self.init["stop"])
+        rows = [("Condition C :", self.cond_var, "s'arrêter seulement si elle est vraie (vide : toujours)"),
+                ("Arrêt au passage n° :", self.count_var, "1 : à chaque passage ; compté à partir de maintenant"),
+                ("Message :", self.log_var, "à chaque passage, puis la cible repart : n={counter} t={tick:hex}")]
+        first = None
+        for r, (label, var, hint) in enumerate(rows):
+            ttk.Label(master, text=label).grid(row=2 * r, column=0, sticky="w")
+            e = ttk.Entry(master, textvariable=var, width=40)
+            e.grid(row=2 * r, column=1, padx=4, pady=(4, 0), sticky="w")
+            ttk.Label(master, text=hint, foreground="#555555").grid(row=2 * r + 1, column=1, sticky="w", padx=4)
+            first = first or e
+        ttk.Checkbutton(master, text="S'arrêter après le message", variable=self.stop_var).grid(
+            row=6, column=1, sticky="w", padx=4, pady=(4, 0))
+        if act is not None and act.fn is not None:
+            ttk.Label(master, text="Action Python posée par un script : conservée.",
+                      foreground="#555555").grid(row=7, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        return first
+
+    def validate(self) -> bool:
+        try:
+            count = int(self.count_var.get() or "1", 0)
+        except ValueError:
+            count = 0
+        if count < 1:
+            messagebox.showerror(self.title(), "Numéro de passage : entier ≥ 1", parent=self)
+            return False
+        new = {"condition": self.cond_var.get().strip(), "count": count,
+               "log": self.log_var.get().strip(), "stop": self.stop_var.get()}
+        self.values = {k: v for k, v in new.items() if v != self.init[k]}
+        return True
+
+
 class BreakpointsView(View):
     title = "Breakpoints"
     kind = "breakpoints"
@@ -69,21 +131,25 @@ class BreakpointsView(View):
         ttk.Button(bar, text="Ajouter", command=self._add).pack(side="left", padx=2)
         ttk.Button(bar, text="Watchpoint", command=self._add_watch).pack(side="left", padx=2)
         ttk.Button(bar, text="On/Off", command=self._toggle).pack(side="left", padx=2)
+        ttk.Button(bar, text="Options…", command=self._edit_options).pack(side="left", padx=2)
         ttk.Button(bar, text="Supprimer", command=self._delete).pack(side="left", padx=2)
         body = ttk.Frame(self)
         body.pack(fill="both", expand=True)
-        self.tree = _tree(body, [("num", "#", 40), ("type", "Type", 110), ("addr", "Adresse", 90),
-                                 ("hits", "Hits", 50), ("loc", "Emplacement", 260)])
+        self.tree = _tree(body, [("num", "#", 40), ("type", "Type", 110), ("addr", "Adresse", 100),
+                                 ("hits", "Hits", 50), ("loc", "Emplacement", 220),
+                                 ("opts", "Condition / action", 260)])
         self.tree.bind("<Double-1>", self._goto)
+        self.tree.bind("<Button-3>", self._menu)
+        self.menu: tk.Menu | None = None
 
     def refresh(self) -> None:
         if not self.connected:
             return
         self.tree.delete(*self.tree.get_children())
         for bp in self.app.cached_breakpoints:
-            loc = f"{bp.func or ''} {bp.file or ''}:{bp.line}" if bp.line else (bp.func or "")
+            loc = f"{bp.func or ''} {bp.file or ''}:{bp.line}" if bp.line else (bp.func or bp.expr or "")
             self.tree.insert("", "end", iid=bp.number, values=(bp.number, bp.type, bp.addr or "",
-                                                               bp.hits, loc.strip()),
+                                                               bp.hits, loc.strip(), options_text(bp)),
                              tags=() if bp.enabled else ("disabled",))
 
     def on_running(self) -> None:
@@ -109,6 +175,33 @@ class BreakpointsView(View):
         if bp:
             self.app.run_action(lambda: self.session.enable_break(num, not bp.enabled),
                                 then=lambda _r: self.app.breakpoints_changed())
+
+    def _menu(self, event) -> None:
+        item = self.tree.identify_row(event.y)
+        if not item:
+            return
+        self.tree.focus(item)
+        self.tree.selection_set(item)
+        if self.menu is not None:
+            self.menu.destroy()
+        m = self.menu = tk.Menu(self, tearoff=False)
+        m.add_command(label="Options…", command=self._edit_options)
+        m.add_command(label="Activer / désactiver", command=self._toggle)
+        m.add_command(label="Supprimer", command=self._delete)
+        m.tk_popup(event.x_root, event.y_root)
+
+    def _edit_options(self) -> None:
+        bp = next((b for b in self.app.cached_breakpoints if b.number == self.tree.focus()), None)
+        if bp is None:
+            return
+        d = BreakOptionsDialog(self, bp, self.session.break_action(bp.number))
+        if d.values:
+            self.apply_options(bp.number, **d.values)
+
+    def apply_options(self, number: str, **options) -> None:
+        """Condition, arrêt au Nᵉ passage, message (`log`), arrêt après le message (`stop`)."""
+        self.app.run_action(lambda: self.session.break_options(number, **options),
+                            then=lambda _r: self.app.breakpoints_changed())
 
     def _delete(self) -> None:
         num = self.tree.focus()

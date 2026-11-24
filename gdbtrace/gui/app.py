@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 from ..core import svd
 from ..core.live import LiveMemory, LivePoller
-from ..core.scripting import Console, ScriptAPI
+from ..core.scripting import Console, ScriptAPI, stop_summary
 from ..core.session import Breakpoint, Frame, Session
 from ..core.symbols import SymbolTable
 from ..core.target import TargetServer
@@ -98,6 +98,8 @@ class App:
         self.swo_port = 3443
         self.etm_stall = False
         self.stm32 = False
+        self._last_till = ""                    # dernières saisies de Go.Till, Step.Till/Change
+        self._last_step: tuple | None = None
         # programmation : exécutable gdb, fabrique de cible (ligne de commande), ELF récents
         self.gdb_path = "gdb-multiarch"
         self.target_factory: Callable[[str], TargetServer] | None = None
@@ -144,6 +146,9 @@ class App:
                                ("Step Out (Go.Return)", self.out, "Shift+F11"),
                                ("Step instruction", self.stepi, "F7"), ("Reset", self.reset, "")]:
             r.add_command(label=label, command=fn, accelerator=key)
+        r.add_separator()
+        r.add_command(label="Go.Till (jusqu'à une condition)…", command=self._ask_go_till)
+        r.add_command(label="Step.Till / Step.Change…", command=self._ask_step_loop)
         mb.add_cascade(label="Run", menu=r)
 
         t = tk.Menu(mb, tearoff=False)
@@ -447,13 +452,15 @@ class App:
             reason = data.get("reason", "")
             if reason == "signal-received":
                 reason = f"signal {data.get('signal-name', '')}"
-            self.status.set(f"Arrêt : {reason}")
+            self.status.set(f"Arrêt : {stop_summary(data) if 'what' in data else reason}")
         elif kind == "running":
             self.current_frame = None
             self.views.running_all()
             self.status.set("En marche")
         elif kind == "breakpoints":
             self.breakpoints_changed()
+        elif kind == "output" and data.get("stream") == "action":   # breakpoints à action
+            self.write_console(data.get("text", ""), "err" if data.get("error") else "action")
         elif kind == "output":
             text = data.get("text", "")
             tag = {"target": "target", "log": "err"}.get(data.get("stream", ""), "gdb")
@@ -578,6 +585,42 @@ class App:
             self.write_console("\n".join(log) + "\n", "gdb")
             self.status.set(log[-1][:200])
         return log
+
+    def go_till(self, cond: str) -> None:
+        """Run › Go.Till : Go jusqu'à ce que la condition C devienne vraie (watchpoint matériel)."""
+        cond = cond.strip()
+        if not cond:
+            return
+        if not self._need("stopped"):
+            self.status.set("Arrêter la cible d'abord (Break)")
+            return
+        self._last_till = cond
+        self.run_action(lambda: self.session.go_till(cond))
+
+    def step_loop(self, expr: str, change: bool = True, asm: bool = False,
+                  max_steps: int = 1000) -> None:
+        """Run › Step.Change (`change`) ou Step.Till : pas à pas jusqu'au changement de valeur
+        de `expr`, ou jusqu'à ce qu'elle soit vraie ; Break interrompt la boucle."""
+        expr = expr.strip()
+        if not expr:
+            return
+        if not self._need("stopped"):
+            self.status.set("Arrêter la cible d'abord (Break)")
+            return
+        self._last_step = (expr, change, asm, max_steps)
+        fn = self.session.step_change if change else self.session.step_till
+        self.run_action(lambda: fn(expr, asm, max_steps))
+
+    def _ask_go_till(self) -> None:
+        cond = simpledialog.askstring("Go.Till", "Go jusqu'à ce que cette condition C devienne vraie :",
+                                      initialvalue=self._last_till, parent=self.root)
+        if cond:
+            self.go_till(cond)
+
+    def _ask_step_loop(self) -> None:
+        d = StepTillDialog(self.root, self._last_step)
+        if d.values:
+            self.step_loop(*d.values)
 
     def _ask_etm_filter(self) -> None:
         cur = self.trace.etm_filter_specs or ([], [], [])
@@ -721,6 +764,50 @@ class App:
 
 def ask_yes_no(title: str, msg: str) -> bool:
     return messagebox.askyesno(title, msg)
+
+
+class StepTillDialog(simpledialog.Dialog):
+    """Run › Step.Till / Step.Change… : expression, mode, pas assembleur, pas au plus.
+    `values` : (expression, change, asm, max_steps), ou None si annulé."""
+
+    def __init__(self, parent, init: tuple | None):
+        self.values = None
+        self._init = init or ("", True, False, 1000)
+        super().__init__(parent, "Step.Till / Step.Change")
+
+    def body(self, master):
+        expr, change, asm, max_steps = self._init
+        self.expr_var = tk.StringVar(value=expr)
+        self.mode_var = tk.StringVar(value="change" if change else "till")
+        self.asm_var = tk.BooleanVar(value=asm)
+        self.max_var = tk.StringVar(value=str(max_steps))
+        ttk.Label(master, text="Expression C :").grid(row=0, column=0, sticky="w")
+        first = ttk.Entry(master, textvariable=self.expr_var, width=36)
+        first.grid(row=0, column=1, padx=4, pady=2)
+        ttk.Radiobutton(master, text="jusqu'à ce que sa valeur change (Step.Change)", value="change",
+                        variable=self.mode_var).grid(row=1, column=0, columnspan=2, sticky="w")
+        ttk.Radiobutton(master, text="jusqu'à ce qu'elle soit vraie (Step.Till)", value="till",
+                        variable=self.mode_var).grid(row=2, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(master, text="Pas assembleur (sinon : ligne source)",
+                        variable=self.asm_var).grid(row=3, column=0, columnspan=2, sticky="w")
+        ttk.Label(master, text="Pas au plus :").grid(row=4, column=0, sticky="w")
+        ttk.Entry(master, textvariable=self.max_var, width=10).grid(row=4, column=1, sticky="w", padx=4)
+        ttk.Label(master, text="Un aller-retour avec la cible par pas ; Break arrête la boucle.",
+                  foreground="#555555").grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        return first
+
+    def validate(self) -> bool:
+        try:
+            n = int(self.max_var.get(), 0)
+        except ValueError:
+            n = 0
+        if not self.expr_var.get().strip() or n <= 0:
+            messagebox.showerror("Step.Till / Step.Change",
+                                 "Une expression, et un nombre de pas entier positif", parent=self)
+            return False
+        self.values = (self.expr_var.get().strip(), self.mode_var.get() == "change",
+                       self.asm_var.get(), n)
+        return True
 
 
 class EtmFilterDialog(simpledialog.Dialog):

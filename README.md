@@ -18,7 +18,7 @@ Interface en **tkinter**.
 | 8. Couverture de code | Couverture du code objet par la trace ETM, sans instrumentation : instructions, branches prises / non prises, lignes, fonctions ; cumul et fusion de campagnes ; rapports HTML et LCOV | ✅ |
 | 9. MTB et ETM par SWO | Trace MTB des Cortex-M0+ (décodage validé sur chemins QEMU, démo M0+, MTB simulée) ; ETM d'un M3/M4 par la broche SWO, sans sonde de trace | ✅ (à valider sur carte) |
 | 10. ETMv4 (Cortex-M7) | Trace d'instructions de l'ETM-M7 (ETMv4.0) : décodage validé contre QEMU, OpenCSD et une vraie capture par SWO sur Nucleo-F746ZG ; version de l'ETM détectée ; ETM simulé v4 sous QEMU (`mps2-an500`) | 🚧 (cycle-accurate et horodatage à venir) |
-| 11. Trace ciblée et débogage avancé | Filtres de l'ETM (plages, start/stop) ; trace de données du DWT ; temps par tâche RTOS par ITM ; breakpoints à action et à compteur, Go.Till, Step.Change | 🚧 |
+| 11. Trace ciblée et débogage avancé | Filtres de l'ETM (plages, start/stop) ; trace de données du DWT ; temps par tâche RTOS par ITM ; breakpoints à action et à compteur, Go.Till, Step.Change | ✅ |
 
 ## Installation
 
@@ -80,6 +80,29 @@ réécrit après le reset, car QEMU recharge l'image passée au démarrage.
 Raccourcis : `F5` Go, `F8` Break, `F11` Step, `F10` Over, `Shift+F11` Out, `F7` Step assembleur,
 `Ctrl+O` Programmer un ELF, `Ctrl+R` Reprogrammer.
 Un double-clic dans la marge de la vue Source ou Désassemblage pose ou retire un breakpoint.
+- **Breakpoints à action et à compteur** (vue Breakpoints, bouton **Options…** ou clic droit).
+  La colonne « Condition / action » résume les options. Elles valent aussi pour un watchpoint.
+  - **Condition C** : arrêt seulement si elle est vraie.
+  - **Arrêt au passage n°** (Break.Set /COUNT) : gdb compte les passages sans arrêter la
+    cible, puis l'arrête à ce passage et aux suivants.
+  - **Message** (Break.Set /CMD), par exemple `capteur n={counter} tick={tick:hex}` :
+    - à chaque passage, les `{expression}` sont remplacées par leur valeur (avec un format
+      au besoin), le texte s'écrit dans la console, puis la cible repart ;
+    - c'est un arrêt interne : rien ne se rafraîchit et la bannière de gdb est masquée ;
+    - avec « S'arrêter après le message », la cible reste arrêtée.
+  - Un script peut aussi poser une **action Python** (`gdbtrace.break_(…, action=fonction)`),
+    qui décide de l'arrêt.
+- **Go.Till** (menu Run) : Go jusqu'à ce qu'une condition C devienne vraie, par exemple
+  `counter >= 20`.
+  - Temps réel : watchpoint matériel sur les variables de l'expression, retiré à la reprise
+    suivante.
+  - Un registre ne peut pas être suivi ainsi : utiliser Step.Till.
+- **Step.Till / Step.Change** (menu Run) : pas à pas, par ligne source ou par instruction,
+  jusqu'à ce que la condition soit vraie, ou jusqu'à ce que la valeur de l'expression change.
+  - C'est une seule reprise : la GUI ne se rafraîchit qu'à la fin, Break interrompt la
+    boucle, et un nombre de pas maximum la borne.
+  - La barre d'état donne le bilan, par exemple
+    `Step.Change last_char, 39 pas, 71 'G' → 72 'H'` (après un Go.Till `counter >= 7`).
 - **Fichiers** (panneau de gauche) : les fichiers sources du programme (table des lignes DWARF),
   par dossier, les bibliothèques de la chaîne sous « Externes ». Chaque fichier se déplie sur ses
   fonctions ; double-clic : la source s'ouvre. Le filtre cherche dans les noms de fichiers et de
@@ -542,6 +565,10 @@ avec OpenOCD, comme un Break).
 | `gdbtrace.break_("animate", condition="tick == 6")`, `break_("fib", hw=True, temporary=True)` | breakpoint conditionnel, matériel, temporaire |
 | `gdbtrace.enable(n, False)`, `gdbtrace.delete(n)`, `gdbtrace.breaks()`, `gdbtrace.watch("mode")` | Break.DISable / ENable, Break.Delete, Break.List, watchpoint (`access="read"` / `"rw"`) |
 | `gdbtrace.step()`, `over()`, `out()`, `stepi()`, `go(until="fib")` | Step, Step.Over, Go.Return, pas assembleur, Go jusqu'à |
+| `gdbtrace.break_("animate", count=5)`, `break_("update_sensor", log="n={counter} t={tick:hex}")`, `break_("fib", action=f)` | Break.Set /COUNT (arrêt au 5ᵉ passage), message à chaque passage, action Python (vrai : arrêt) |
+| `gdbtrace.break_options(n, condition=…, count=…, log=…)`, `gdbtrace.break_log()` | options d'un breakpoint ou d'un watchpoint existant, derniers messages |
+| `gdbtrace.go_till("counter >= 20")` | Go.Till : Go jusqu'à ce que la condition devienne vraie (watchpoint matériel) |
+| `gdbtrace.step_till("i == 3")`, `gdbtrace.step_change("a", asm=True)` | Step.Till, Step.Change : pas à pas jusqu'à la condition, jusqu'au changement |
 | `gdbtrace.var_watch("sensors", "hex")` | Var.Watch : ajoute l'expression à la vue Watch avec son format ; sans GUI, affiche sa valeur |
 | `gdbtrace.d("sensors", 32)`, `gdbtrace.r()`, `gdbtrace.bt()` | Data.dump, Register.view, pile |
 | `gdbtrace.eval("offset", "hex")` | valeur d'une expression ; format : naturel, `dec`, `hex`, `oct`, `bin`, `ascii` |
@@ -581,7 +608,8 @@ de variables, lectures cible en marche), `demo.py`, `rtos.py` (FreeRTOS), `cover
 ```
 gdbtrace/
   core/gdb_backend.py   pilote GDB/MI asynchrone (thread lecteur, jetons, événements)
-  core/session.py       API haut niveau (run-control, mémoire, registres, varobjs)
+  core/session.py       API haut niveau (run-control, mémoire, registres, varobjs ; breakpoints
+                        à action et à compteur, Go.Till, Step.Till / Step.Change)
   core/target.py        serveurs gdb : QEMU, OpenOCD, distant
   core/symbols.py       ELF/DWARF direct (pyelftools) : fonctions, table des lignes
   core/live.py          canal mémoire latéral (OpenOCD TCL, QEMU QMP) + LivePoller
