@@ -376,6 +376,64 @@ class ScriptAPI:
             print(f"  {smp.t * 1e6:>14,.1f} µs  {smp.kind:<6} {var.text(smp, fmt)}{where}".replace(",", " "))
         return rows
 
+    # temps par tâche (changements de tâche tracés par l'ITM)
+    def _task_namer(self) -> None:
+        """Noms des tâches relus dans les TCB (disposition FreeRTOS, calculée une fois cible
+        arrêtée ; lectures par gdb à l'arrêt, par le canal live en marche)."""
+        tt = self.trace.tasktrace
+        if tt.namer is not None:
+            return
+        if self._rtos is None and self.s.state == "stopped":
+            try:
+                self._rtos = freertos.FreeRtosLayout.from_session(self.s)
+            except GdbError:
+                return                              # pas de FreeRTOS : adresses des TCB
+        if self._rtos is not None:
+            from ..trace.tasktrace import freertos_namer
+            tt.namer = freertos_namer(self._rtos, self.mem)
+
+    def task_times(self, top: int | None = 20, unit: str = "us"):
+        """Temps par tâche mesuré par l'ITM : le firmware écrit l'adresse du TCB entrant sur le
+        port ITM 31 à chaque changement de tâche (FreeRTOS : traceTASK_SWITCHED_IN, voir
+        examples/freertos). Activations, temps brut, net (sans les exceptions), part du temps,
+        tranches maximale et moyenne. Retourne les lignes (`TaskTime`)."""
+        if self.trace is None:
+            raise RuntimeError("pas de gestionnaire de trace")
+        tt = self.trace.tasktrace
+        self._task_namer()
+        rows = tt.rows()
+        conv, u = self._time_unit(unit)
+        if not rows:
+            print("aucun changement de tâche reçu : traceTASK_SWITCHED_IN → port ITM 31, et une "
+                  "capture SWO ou de trace")
+            return rows
+        if not tt.timestamps:
+            print("horodatage ITM absent : durées inconnues (activer l'horodatage de l'ITM)")
+        span = tt.span or 1
+        print(f"{conv(tt.span):,.2f} {u} mesurés, {tt.switches} changements de tâche, "
+              f"{conv(tt.exception_cycles):,.2f} {u} en exceptions".replace(",", " "))
+        print(f"  {'tâche':<16} {'activations':>11} {'brut':>12} {'net':>12} {'%':>6} "
+              f"{'tranche max':>12} {'moyenne':>10}")
+        for t in rows[:top]:
+            print(f"  {t.name:<16} {t.activations:>11} {conv(t.gross):>12,.2f} {conv(t.net):>12,.2f} "
+                  f"{100 * t.gross / span:>6.1f} {conv(t.max_slice):>12,.2f} {conv(t.avg_slice):>10,.2f}"
+                  .replace(",", " "))
+        return rows
+
+    def task_timeline(self, n: int = 30, unit: str = "us"):
+        """Les `n` dernières tranches d'exécution : début, durée, tâche."""
+        if self.trace is None:
+            raise RuntimeError("pas de gestionnaire de trace")
+        tt = self.trace.tasktrace
+        self._task_namer()
+        conv, u = self._time_unit(unit)
+        rows = tt.timeline(n)
+        t0 = rows[0].start if rows else 0
+        for sl in rows:
+            print(f"  {conv(sl.start - t0):>12,.2f}  {conv(sl.end - sl.start):>10,.2f} {u}  "
+                  f"{tt.name(sl.tcb)}".replace(",", " "))
+        return rows
+
     def etm_filter(self, *ranges: str, start=(), stop=()) -> None:
         """Filtre de la trace ETM : plages (`"fib"`, `"main.c"`, `"0x100-0x200"`), lieux de
         démarrage et d'arrêt (`start="fib"`, `stop=["main.c:59"]`) ; sans argument : tout le

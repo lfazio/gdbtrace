@@ -29,7 +29,9 @@ class TraceManager:
         self.text = ItmTextSink(text_ports={0}, on_line=self._line)
         self.exceptions = ExceptionStats()
         from .datatrace import DataTraceSink
+        from .tasktrace import TaskTraceSink
         self.datatrace = DataTraceSink()     # trace de données du DWT (Var.TRACE)
+        self.tasktrace = TaskTraceSink()     # temps par tâche (changements de tâche par l'ITM)
         self.line_listeners: list[LineListener] = []
         self._profile: Profile | None = None
         self._profile_sink = None
@@ -518,6 +520,7 @@ class TraceManager:
         self.session.add_sink(lambda pkts: [self.text.add(p) for p in pkts])
         self.session.add_sink(self.exceptions)
         self.session.add_sink(self.datatrace)
+        self.session.add_sink(self.tasktrace)
         if self._profile is not None:
             self._attach_profile()
         self.source = source

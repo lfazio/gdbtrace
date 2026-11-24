@@ -79,6 +79,15 @@ void itm_u32(unsigned port, uint32_t value)
     ITM_PORT32(port) = value;
 }
 
+/* ---- Temps par tâche (GdbTrace, vue Temps des tâches) : à chaque changement de tâche, le
+ * noyau appelle traceTASK_SWITCHED_IN() (FreeRTOSConfig.h) ; l'adresse du TCB qui prend le
+ * processeur part sur le port ITM GDBTRACE_TASK_PORT. GdbTrace relit le nom de la tâche dans
+ * ce TCB et, avec l'horodatage ITM, en tire le temps de chaque tâche. */
+void gdbtrace_task_switched_in(void *tcb)
+{
+    itm_u32(GDBTRACE_TASK_PORT, (uint32_t)tcb);
+}
+
 static char *u32_to_dec(uint32_t v, char *end)
 {
     *--end = '\0';

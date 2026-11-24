@@ -165,6 +165,35 @@ Configuration conseillée du noyau : `configUSE_TRACE_FACILITY 1`,
 (remplissage 0xA5), `configQUEUE_REGISTRY_SIZE` > 0, `configGENERATE_RUN_TIME_STATS 1`. Ports
 gérés pour le contexte des tâches : ARM_CM3 (testé) et ARM_CM4F.
 
+### Temps des tâches (vue Temps des tâches, TASK.STATistic)
+
+Le temps de chaque tâche RTOS, mesuré exactement (pas d'échantillonnage). À chaque
+changement de tâche, le firmware écrit l'adresse du TCB entrant sur le port ITM 31 ; avec
+l'horodatage ITM, chaque tranche d'exécution est datée. GdbTrace relit le nom de la tâche
+dans le TCB.
+
+La vue donne, par tâche :
+- le nombre d'activations ;
+- le temps brut, et le temps net sans les exceptions (d'après la trace des exceptions du
+  DWT) ;
+- la part du temps, et les tranches maximale et moyenne.
+
+Le chronogramme montre les dernières tranches, une rangée par tâche, avec la durée au survol.
+
+Côté firmware FreeRTOS, trois lignes dans `FreeRTOSConfig.h` et une fonction, comme dans
+`examples/freertos` (inerte tant que le débogueur n'a pas activé l'ITM) :
+
+```c
+#define GDBTRACE_TASK_PORT 31
+void gdbtrace_task_switched_in(void *tcb);         /* écrit tcb sur le port ITM 31 */
+#define traceTASK_SWITCHED_IN() gdbtrace_task_switched_in((void *)pxCurrentTCB)
+```
+
+Il faut une capture SWO ou de trace avec l'horodatage ITM (`--swo-config`, Trace › ETM par
+SWO…). Script : `gdbtrace.task_times()`, `gdbtrace.task_timeline(30)`. Validé : le crochet de
+la démo reçoit exactement `pxCurrentTCB` à chaque changement (vérifié sous QEMU), calculs
+sur des flux ITM reconstitués ; la capture réelle reste à valider sur carte.
+
 ### Trace SWO/ITM et profilage
 
 **ITM (vue ITM, l'équivalent de TERM)** : le firmware écrit sur les ports de stimulus de l'ITM
@@ -519,6 +548,7 @@ avec OpenOCD, comme un Break).
 | `gdbtrace.mem(addr, n)`, `gdbtrace.live_read(addr, n)` | lecture mémoire, y compris cible en marche |
 | `gdbtrace.periph("TIMER0")` | PER.view : registres et champs décodés, retourne `{registre: valeur}` |
 | `gdbtrace.tasks()`, `gdbtrace.queues()` | TASK.List / objets du noyau FreeRTOS (aussi cible en marche) |
+| `gdbtrace.task_times()`, `gdbtrace.task_timeline(30)` | temps par tâche mesuré par l'ITM (changements de tâche tracés par le firmware) |
 | `gdbtrace.task("consumer")` | contexte et pile d'appels d'une tâche |
 | `gdbtrace.profile(2.0, per_task=True)` | PERF : profil statistique pendant 2 s (relance puis arrête la cible si besoin) |
 | `gdbtrace.itm(0)` | texte reçu sur le port ITM 0 |
@@ -558,6 +588,7 @@ gdbtrace/
   core/live_vars.py     disposition et décodage des variables sans gdb (Watch en marche)
   core/formats.py       formats d'affichage (décimal, hexa, octal, binaire, ASCII), comme gdb
   trace/datatrace.py    trace de données du DWT (Var.TRACE) : comparateurs, échantillons typés
+  trace/tasktrace.py    temps par tâche par l'ITM : tranches, brut, net, chronologie
   core/svd.py           parseur CMSIS-SVD (derivedFrom, dim, clusters, champs, énumérations)
   core/rtos/freertos.py awareness FreeRTOS : disposition via DWARF, parcours des listes,
                         piles, objets du noyau, contexte et pile d'appels des tâches

@@ -102,6 +102,10 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
   0xF/0xE/0x3) programmés par `TraceManager.trace_variable` (cible arrêtée, pris par le haut,
   partagés avec le filtre ETMv3 : `EtmConfig.dwt_reserved` / `dwt_used`) ; `DataTraceSink`
   (abonné ITM) range les paquets en échantillons typés par variable ; vue `vartrace`.
+- Temps par tâche (`trace/tasktrace.py`) : le firmware écrit le TCB entrant sur le port ITM 31
+  (`traceTASK_SWITCHED_IN`, démo FreeRTOS) ; `TaskTraceSink` en tire tranches, brut/net (trace
+  des exceptions du DWT) ; noms relus dans les TCB à l'affichage (`namer`), jamais depuis le
+  fil de capture ; vue `tasktime`.
 - ETM (`trace/etm/`) : `etm3.py` (paquets ETMv3.5) → `flow.py` (reconstruction avec
   `image.py`, classification Thumb-2 par capstone ; chaque fonction est balayée d'un seul
   tenant pour connaître la condition des instructions d'un bloc IT — `bxeq lr` décodé seul

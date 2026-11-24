@@ -356,6 +356,11 @@ regs = gdbtrace.periph("SysTick")                # affiche CTRL, LOAD, VAL, CALI
 print(f"période SysTick : {regs['LOAD'] + 1} cycles")
 ```
 
+**Temps par tâche** (sur carte, capture SWO avec horodatage ITM ; firmware qui écrit le TCB
+entrant sur le port ITM 31 à chaque changement de tâche, voir `examples/freertos`) :
+`task_times()` donne activations, temps brut, net (sans les exceptions), part du temps et
+tranches ; `task_timeline(30)` les dernières tranches.
+
 **FreeRTOS** : `tasks()` (TASK.List), `queues()` (objets du noyau), `task("nom")`
 (registres et pile d'appels d'une tâche) et `rtos()` (instantané complet). Un premier arrêt
 est nécessaire pour lire la disposition des structures du noyau ; ensuite ces appels
@@ -656,6 +661,7 @@ gdbtrace.cov.export("couverture.html")
 | `live` | canal live, ou `None` |
 | `load_svd(f)`, `periph(nom, force=False)`, `device` | périphériques (SVD) |
 | `rtos()`, `tasks()`, `queues()`, `task(nom)` | FreeRTOS |
+| `task_times(top=20, unit="us")`, `task_timeline(n=30)` | temps par tâche mesuré par l'ITM |
 
 ### Programmation
 

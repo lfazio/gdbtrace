@@ -879,3 +879,44 @@ def test_vartrace_view(app, tmp_path):
     app.trace.untrace_variable(app.session)
     v.render(force=True)
     assert not v.tree.get_children() and "aucune variable tracée" in v.info.cget("text")
+
+
+def test_tasktime_view(rtos_app, tmp_path):
+    """Temps des tâches : changements reçus par l'ITM (flux bâti sur les vrais TCB du firmware),
+    noms relus dans les TCB, tableau et chronogramme."""
+    from test_datatrace import lts
+    from test_itm import SYNC
+    from test_tasktrace import switch
+    from gdbtrace.views.tasktime import TaskTimeView
+    app = rtos_app
+    s = app.session
+    s.break_("gdbtrace_task_switched_in")
+    stops = []                  # arrêts reçus : l'état « stopped » d'avant le Go ne compte pas
+    s.on_event(lambda kind, data: stops.append(data) if kind == "stopped" else None)
+    seq = []
+    for _ in range(8):
+        n = len(stops)
+        app.go()
+        assert pump(app, lambda: len(stops) > n and s.state == "stopped")
+        assert stops[-1].get("frame", {}).get("func") == "gdbtrace_task_switched_in", stops[-1]
+        seq.append(int(s.evaluate("(unsigned long)tcb")))
+        pump(app, lambda: False, timeout=0.05)
+    for b in s.breakpoints():
+        s.delete_break(b.number)
+    cap = tmp_path / "itm.bin"
+    cap.write_bytes(SYNC + b"".join(switch(t) + lts(2500) for t in seq) + switch(seq[0]))
+    v = app.views.show(TaskTimeView)
+    app.cpu_hz = 25_000_000
+    app.trace.start_file(str(cap)).done.wait(5)
+    assert pump(app, lambda: app.trace.tasktrace.switches == len(seq) + 1)
+    v.render(force=True)
+    rows = {v.tree.item(i, "text"): v.tree.item(i, "values") for i in v.tree.get_children()}
+    assert not any(n.startswith("TCB ") for n in rows)                  # noms relus
+    assert sum(int(r[0]) for r in rows.values()) == len(seq) + 1
+    assert "changements de tâche sur 800.0 µs" in v.info.cget("text")    # 8 × 2500 cycles à 25 MHz
+    bars = [i for i in v.canvas.find_all() if v.canvas.type(i) == "rectangle"]
+    assert len(bars) == len(seq)
+    x0, x1, y, _sl = v._bars[0]
+    v._motion(type("E", (), {"x": (x0 + x1) / 2, "y": y + 8})())
+    tip = [v.canvas.itemcget(i, "text") for i in v.canvas.find_withtag("hover") if v.canvas.type(i) == "text"]
+    assert tip and "100.00 µs" in tip[0]

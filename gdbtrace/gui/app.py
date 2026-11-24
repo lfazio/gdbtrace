@@ -34,8 +34,10 @@ def view_classes() -> dict[str, type[View]]:
     from ..views.timing import TimingView
     from ..views.trace import TraceView
     from ..views.vartrace import VarTraceView
+    from ..views.tasktime import TaskTimeView
     classes = [FilesView, SourceView, DisasmView, TraceView, TimingView, CoverageView, RegistersView, WatchView, PeripheralsView,
-               RtosView, StackView, BreakpointsView, MemoryView, ConsoleView, ItmView, ProfileView, VarTraceView]
+               RtosView, StackView, BreakpointsView, MemoryView, ConsoleView, ItmView, ProfileView, VarTraceView,
+               TaskTimeView]
     return {c.kind: c for c in classes}
 
 
@@ -57,6 +59,7 @@ DEFAULT_LAYOUT = [
     {"kind": "itm", "where": "bottom"},
     {"kind": "profile", "where": "bottom"},
     {"kind": "vartrace", "where": "bottom"},
+    {"kind": "tasktime", "where": "bottom"},
 ]
 
 
