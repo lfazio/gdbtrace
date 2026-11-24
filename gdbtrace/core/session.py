@@ -227,7 +227,10 @@ class Session:
         n'arrête pas le cœur quand on la quitte)."""
         try:
             if self.state == "running" and halt:
-                self.halt()
+                try:
+                    self.halt()
+                except (GdbError, TimeoutError):   # cible ou gdb qui ne répond plus : on ferme quand même
+                    pass
             self.gdb.stop()
         finally:
             if self.target:
@@ -319,7 +322,9 @@ class Session:
     def step_asm(self) -> None:      # Step.single en mode assembleur
         self._sync("-exec-step-instruction")
 
-    def go_until(self, location: str, timeout: float | None = None) -> None:  # Go <addr>
+    def go_until(self, location: str, timeout: float | None = None) -> None:
+        """`until LIEU` de gdb : ne s'arrête au lieu que dans la frame courante (sinon au
+        retour de celle-ci). Pour un Go jusqu'à n'importe où : `gdbtrace.go(until=…)`."""
         self._continuing = False
         self._stopped.clear()
         self._before_resume()

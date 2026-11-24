@@ -146,3 +146,20 @@ def test_example_session_script(elf):
                      "sensors[0].value en hexadécimal : 0x4d2", "fib(n = ", "== Fin : 0 breakpoint"):
         assert expected in out, (expected, out)
     assert "Traceback" not in out + r.stderr
+
+
+def test_go_until_anywhere(elf, tmp_path):
+    """gdbtrace.go(until=…) : Go jusqu'à n'importe où (breakpoint temporaire), même depuis le
+    vecteur de reset ; arrêté avant par un autre breakpoint, le temporaire est retiré."""
+    script = tmp_path / "s.py"
+    script.write_text(
+        "r = gdbtrace.wait(); gdbtrace.go(until='main'); r = gdbtrace.wait(5)\n"
+        "assert (r['reason'], r['frame']['func']) == ('breakpoint-hit', 'main'), r\n"
+        "gdbtrace.break_('update_sensor')\n"
+        "gdbtrace.go(until='animate'); r = gdbtrace.wait(5)\n"
+        "assert r['frame']['func'] == 'update_sensor', r\n"
+        "assert [b.func for b in gdbtrace.breaks()] == ['update_sensor'], gdbtrace.breaks()\n"
+        "print(repr(gdbtrace.out()))\n")
+    r = run(elf, "--batch", "--script", str(script))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "<arrêt : function-finished — main (main.c:" in r.stdout

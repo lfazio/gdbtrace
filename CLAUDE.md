@@ -138,6 +138,8 @@ log)` (fonction du module, commune aux deux chemins ; `log` = console dans le GU
 par SWO par `TraceManager.start_etm_swo` (aussi Trace › ETM par SWO… et
 `gdbtrace.etm_swo()`). Une capture qui ne démarre pas doit le dire : `setup_error` et
 `trace_status()` (vues Couverture et Trace), jamais un silence.
+Une méthode ajoutée à `ScriptAPI` se documente aussi dans `docs/scripting.md` (notice) ; ses
+blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et doivent rester verts.
 
 ## Limites connues (ne pas « corriger » côté gdbtrace)
 

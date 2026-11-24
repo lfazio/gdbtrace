@@ -487,7 +487,7 @@ avec OpenOCD, comme un Break).
 | `!info breakpoints` | Commande CLI gdb brute |
 | `mon reset halt` | Commande `monitor` vers OpenOCD |
 
-Voir `gdbtrace/core/scripting.py` pour l'API complète. Exemples dans `examples/scripts/` :
+**Notice complète du scripting Python (débogage programmatique) : [`docs/scripting.md`](docs/scripting.md)** — lancement, run-control, breakpoints, données, cible en marche, trace, recettes (CI, journal CSV, injection de fautes), référence de l'API. Exemples dans `examples/scripts/` :
 `session.py` (session de débogage complète : programmation, breakpoints simple, temporaire,
 conditionnel et matériel, watchpoint, Watch avec formats, pas à pas, lecture et modification
 de variables, lectures cible en marche), `demo.py`, `rtos.py` (FreeRTOS), `coverage.py`.

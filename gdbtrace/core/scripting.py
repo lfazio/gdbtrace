@@ -39,6 +39,18 @@ def hexdump(data: bytes, base: int, width: int = 16) -> str:
     return "\n".join(lines)
 
 
+class StopRecord(dict):
+    """Enregistrement d'arrêt de gdb (`reason`, `frame`, `bkptno`, `wpt`, `value`,
+    `return-value`...) : un dict, affiché en une ligne dans la console."""
+
+    def __repr__(self) -> str:
+        f = self.get("frame") or {}
+        where = f.get("func") or f.get("addr") or "?"
+        if f.get("file") and f.get("line"):
+            where += f" ({f['file']}:{f['line']})"
+        return f"<arrêt : {self.get('reason', '?')} — {where}>"
+
+
 class CoverageAPI:
     """COVerage : couverture de code mesurée par la trace ETM, sans instrumentation.
 
@@ -122,6 +134,7 @@ class ScriptAPI:
         self.on_var_watch: Callable[[str, str], None] | None = None
         #: COVerage : couverture de code depuis la trace ETM
         self.cov = CoverageAPI(self)
+        self._until: str | None = None      # breakpoint temporaire de go(until=…)
 
     def program(self, elf: str | None = None, verify: bool = True, quiet: bool = False):
         """FLASH.ReProgram : programme `elf` dans la cible (par défaut l'ELF courant, par ex.
@@ -405,24 +418,54 @@ class ScriptAPI:
 
     # run-control
     def go(self, until: str | None = None) -> None:
+        """Go ; n'attend pas l'arrêt (`wait()`). `until` : Go jusqu'à cet emplacement, où qu'il
+        soit (breakpoint temporaire) ; si un autre breakpoint arrête la cible avant, `wait()`
+        ou `halt()` retire le temporaire."""
         if until:
-            self.s.go_until(until)
-        else:
-            self.s.go()
+            self._until = self.s.break_(until, temporary=True).number
+        self.s.go()
 
-    def halt(self) -> None: self.s.halt()
-    def step(self, n: int = 1) -> None:
+    def _drop_until(self, rec: dict) -> None:
+        n, self._until = self._until, None
+        if n is not None and rec.get("bkptno") != n:
+            try:
+                self.s.delete_break(n)
+            except GdbError:                    # déjà supprimé
+                pass
+
+    def halt(self) -> None:
+        self.s.halt()
+        self._drop_until(self.s.stop_reason)
+
+    # pas à pas : chaque pas attend l'arrêt ; retourne l'enregistrement du dernier arrêt
+    # (`reason`, `frame`, et pour out() `return-value`)
+    def step(self, n: int = 1) -> StopRecord:
         for _ in range(n):
             self.s.step()
-    def over(self, n: int = 1) -> None:
+        return StopRecord(self.s.stop_reason)
+
+    def over(self, n: int = 1) -> StopRecord:
         for _ in range(n):
             self.s.step_over()
-    def out(self) -> None: self.s.step_out()
-    def stepi(self, n: int = 1) -> None:
+        return StopRecord(self.s.stop_reason)
+
+    def out(self) -> StopRecord:
+        self.s.step_out()
+        return StopRecord(self.s.stop_reason)
+
+    def stepi(self, n: int = 1) -> StopRecord:
         for _ in range(n):
             self.s.step_asm()
+        return StopRecord(self.s.stop_reason)
+
     def reset(self) -> None: self.s.reset()
-    def wait(self, timeout: float = 10.0) -> dict: return self.s.wait_stopped(timeout)
+
+    def wait(self, timeout: float = 10.0) -> StopRecord:
+        """Attend l'arrêt de la cible (`timeout` s au plus, sinon TimeoutError) ; revient tout
+        de suite si elle est déjà arrêtée. Retourne l'enregistrement du dernier arrêt."""
+        rec = StopRecord(self.s.wait_stopped(timeout))
+        self._drop_until(rec)
+        return rec
 
     @property
     def running(self) -> bool: return self.s.state == "running"
@@ -526,7 +569,9 @@ class ScriptAPI:
     def monitor(self, cmd: str) -> str: return self.s.monitor(cmd)
 
     def run_script(self, path: str) -> None:
-        runpy.run_path(path, init_globals={"gdbtrace": self, "session": self.s})
+        """Exécute un script avec les mêmes globales que la console : `gdbtrace`, `session`,
+        `hexdump`."""
+        runpy.run_path(path, init_globals={"gdbtrace": self, "session": self.s, "hexdump": hexdump})
 
 
 class Console:
