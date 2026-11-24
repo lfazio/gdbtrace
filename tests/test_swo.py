@@ -38,6 +38,7 @@ def test_register_values():
 def test_openocd_commands():
     cfg = SwoConfig(cpu_hz=168_000_000, swo_hz=2_000_000)
     assert openocd_tpiu_commands(cfg, "stm32f4x.tpiu", 3443) == [
+        "stm32f4x.tpiu disable",                     # reconfiguration d'un TPIU activé
         "stm32f4x.tpiu configure -protocol uart -traceclk 168000000 -pin-freq 2000000 "
         "-output :3443 -formatter 0",
         "stm32f4x.tpiu enable"]

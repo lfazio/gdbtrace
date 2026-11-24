@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import collections
 import os
+import queue
 import shutil
 import socket
 import subprocess
@@ -22,6 +23,50 @@ def _wait_port(host: str, port: int, timeout: float) -> None:
         except OSError:
             time.sleep(0.1)
     raise TimeoutError(f"{host}:{port} n'écoute pas après {timeout}s")
+
+
+def _die_with_parent() -> None:
+    """Dans le processus du serveur (Linux) : SIGTERM quand GdbTrace meurt, même brutalement.
+    Sinon un OpenOCD orphelin garde la sonde et ses ports, et la session suivante s'y connecte
+    à son insu."""
+    try:
+        import ctypes
+        import signal
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)   # PR_SET_PDEATHSIG
+    except Exception:  # noqa: BLE001 - autre système : pas de filet
+        pass
+
+
+_spawner: "queue.Queue | None" = None
+_spawner_lock = threading.Lock()
+
+
+def _spawn(cmd: list[str], **kw) -> subprocess.Popen:
+    """Popen exécuté par un thread qui vit autant que GdbTrace. PR_SET_PDEATHSIG suit le
+    *thread* créateur, pas le processus : lancé depuis un thread de travail (connexion en
+    tâche de fond du GUI), le serveur recevrait SIGTERM dès la fin de ce thread."""
+    global _spawner
+    with _spawner_lock:
+        if _spawner is None:
+            q: queue.Queue = queue.Queue()
+
+            def run() -> None:
+                while True:
+                    args, kwargs, box, done = q.get()
+                    try:
+                        box.append(subprocess.Popen(args, **kwargs))
+                    except BaseException as exc:  # noqa: BLE001 - renvoyée à l'appelant
+                        box.append(exc)
+                    done.set()
+            threading.Thread(target=run, name="server-spawner", daemon=True).start()
+            _spawner = q
+    box: list = []
+    done = threading.Event()
+    _spawner.put((cmd, kw, box, done))
+    done.wait()
+    if isinstance(box[0], BaseException):
+        raise box[0]
+    return box[0]
 
 
 def free_port() -> int:
@@ -59,11 +104,34 @@ class TargetServer:
     def remote(self) -> str:
         return f"{self.host}:{self.gdb_port}"
 
+    def ports(self) -> list[int]:
+        """Ports TCP que le serveur va ouvrir : vérifiés libres avant de le lancer."""
+        return [self.gdb_port]
+
+    def _check_ports(self) -> None:
+        """Un port déjà tenu par un autre serveur (un OpenOCD resté en marche…) ferait échouer
+        le nôtre en silence, et la session se connecterait à l'autre, sur une cible dans un
+        état inconnu. SO_REUSEADDR comme OpenOCD : un port en TIME_WAIT reste utilisable."""
+        for port in self.ports():
+            if not port:
+                continue
+            with socket.socket() as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    s.bind((self.host, port))
+                except OSError:
+                    raise RuntimeError(
+                        f"port {port} déjà utilisé sur {self.host} : un autre serveur (OpenOCD, "
+                        f"QEMU…) tourne-t-il encore ? L'arrêter, ou changer de port "
+                        f"(--gdb-port)") from None
+
     def start(self, timeout: float = 10.0) -> None:
         cmd = self.command_line()
         if not shutil.which(cmd[0]):
             raise FileNotFoundError(f"{cmd[0]} introuvable dans le PATH")
-        self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        self._check_ports()
+        self.proc = _spawn(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                           preexec_fn=_die_with_parent)
         # stderr est lu en continu : un tube plein (64 Kio) bloque tout le serveur, gdb et
         # port TCL compris, et OpenOCD y journalise toute la session.
         self.log.clear()
@@ -171,6 +239,9 @@ class OpenOcdTarget(TargetServer):
     extra: list[str] = field(default_factory=list)
     #: support RTOS d'OpenOCD (« auto », « FreeRTOS »...) : gdb voit alors les tâches comme threads
     rtos: str | None = None
+
+    def ports(self) -> list[int]:
+        return [self.gdb_port, self.tcl_port, self.telnet_port]
 
     def command_line(self) -> list[str]:
         cmd = [self.openocd]

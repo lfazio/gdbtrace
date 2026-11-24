@@ -86,7 +86,8 @@ class TraceView(View):
         return self.app.trace.etm
 
     def _on_new_trace(self) -> None:
-        if self.winfo_exists():
+        # cible en marche : la liste changerait sans cesse ; refresh() la dessine à l'arrêt
+        if self.winfo_exists() and not (self.session is not None and self.session.state == "running"):
             self.render()
 
     def refresh(self) -> None:

@@ -6,6 +6,8 @@ PC du DWT. `post(fn, *args)` sert à rappeler les abonnés dans le bon thread (G
 """
 from __future__ import annotations
 
+import threading
+import time
 from typing import Callable
 
 from .config import SwoConfig, openocd_tpiu_commands, openocd_tpiu_name
@@ -13,6 +15,7 @@ from .itm import ItmTextSink
 from .profile import Profile
 from .swo import ExceptionStats, FileSwoSource, SwoSource, TcpSwoSource, TraceSession, profile_sink
 
+ETM_NOTIFY_PERIOD = 0.5               # s : rafraîchissement des vues pendant une capture
 CPUID = 0xE000ED00
 CORTEX_M7 = 0xC27                      # CPUID.PARTNO
 
@@ -42,6 +45,9 @@ class TraceManager:
         self.mtb = None                     # MtbCapture
         self.mtb_sim = None                 # QemuMtbSim
         self.etm_listeners: list[Callable[[], None]] = []
+        self._notify_lock = threading.Lock()
+        self._notify_pending = False
+        self._notify_last = 0.0
         self.etm_busy = False
         #: ETM par SWO configuré (le formateur TPIU doit rester actif) ; journal et cause du
         #: dernier échec de sa mise en route, montrés par les vues (`trace_status`)
@@ -248,8 +254,28 @@ class TraceManager:
         self._etm_changed()
 
     def _etm_changed(self) -> None:
+        """Prévient les vues que la trace a changé. Pendant une capture continue, la trace
+        change à chaque paquet reçu : une seule notification en attente à la fois, et au plus
+        une par ETM_NOTIFY_PERIOD ; la dernière part toujours (fin de flux). Sinon le thread
+        GUI ne fait plus que redessiner les vues, et la fenêtre gèle."""
+        with self._notify_lock:
+            if self._notify_pending:
+                return
+            self._notify_pending = True
+            delay = self._notify_last + ETM_NOTIFY_PERIOD - time.monotonic()
+        if delay <= 0:
+            self.post(self._fire_etm_changed)
+        else:
+            t = threading.Timer(delay, self.post, args=(self._fire_etm_changed,))
+            t.daemon = True
+            t.start()
+
+    def _fire_etm_changed(self) -> None:
+        with self._notify_lock:
+            self._notify_pending = False
+            self._notify_last = time.monotonic()
         for fn in list(self.etm_listeners):
-            self.post(fn)
+            fn()
 
     def _sims(self) -> list:
         return [s for s in (self.etm_sim, self.mtb_sim) if s is not None]

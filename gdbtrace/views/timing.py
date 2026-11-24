@@ -105,7 +105,9 @@ class TimingView(View):
 
     # ------------------------------------------------------------------ analyse
     def _on_new_trace(self) -> None:
-        if self.winfo_exists():
+        # cible en marche : l'analyse de tout l'historique est coûteuse ; refresh() la refait à
+        # l'arrêt si la trace a changé
+        if self.winfo_exists() and not (self.session is not None and self.session.state == "running"):
             self.analyze()
 
     def refresh(self) -> None:

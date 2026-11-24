@@ -1,5 +1,6 @@
 """Canal mémoire en direct : regroupement, poller, client TCL OpenOCD (faux serveur et vrai
 OpenOCD sans sonde), sortie des serveurs gdb, QEMU QMP."""
+import os
 import re
 import shutil
 import socket
@@ -232,3 +233,56 @@ def test_qemu_live_read_while_running(session):
         assert len(lm.read(0x20000000, 9000)) == 9000
     finally:
         lm.close()
+
+
+def test_server_refuses_a_port_already_in_use():
+    """Un autre serveur tient le port (OpenOCD resté en marche) : erreur claire au lancement,
+    au lieu de se connecter en silence à l'autre serveur."""
+    with socket.socket() as other:
+        other.bind(("127.0.0.1", 0))
+        other.listen(1)
+        port = other.getsockname()[1]
+        t = _server("import time; time.sleep(30)", port)
+        with pytest.raises(RuntimeError, match=f"port {port} déjà utilisé"):
+            t.start(timeout=1)
+        assert t.proc is None
+
+
+def test_server_dies_with_gdbtrace(tmp_path):
+    """Un GdbTrace tué brutalement n'abandonne pas son serveur (OpenOCD orphelin : sonde et
+    ports tenus, session suivante connectée à lui)."""
+    port, pidfile = free_port(), tmp_path / "pid"
+    server = (f"import os, socket, time\nopen({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
+              f"s = socket.socket(); s.bind(('127.0.0.1', {port})); s.listen(1); time.sleep(60)\n")
+    gdbtrace = tmp_path / "launcher.py"           # le « GdbTrace » qui lance le serveur
+    gdbtrace.write_text(f"import sys, time\nsys.path.insert(0, {os.path.dirname(__file__)!r})\n"
+                        f"from test_live import _server\n_server({server!r}, {port}).start(timeout=5)\n"
+                        f"time.sleep(60)\n")
+    gt = subprocess.Popen([sys.executable, str(gdbtrace)], cwd=os.path.dirname(os.path.dirname(__file__)))
+    deadline = time.monotonic() + 10
+    while not pidfile.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    server_pid = int(pidfile.read_text())
+    gt.kill()                                             # sans aucun nettoyage
+    gt.wait()
+    deadline = time.monotonic() + 5
+    while os.path.exists(f"/proc/{server_pid}") and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not os.path.exists(f"/proc/{server_pid}")
+
+
+def test_server_outlives_the_thread_that_started_it():
+    """Le GUI se connecte dans un thread de travail : le serveur doit lui survivre
+    (PR_SET_PDEATHSIG suit le thread créateur ; sans précaution, OpenOCD recevait SIGTERM à
+    la fin de la connexion, et gdb perdait la cible : « No registers »)."""
+    port = free_port()
+    t = _server("import socket, time\ns = socket.socket(); s.bind(('127.0.0.1', %d)); "
+                "s.listen(1); time.sleep(30)" % port, port)
+    th = threading.Thread(target=t.start, kwargs={"timeout": 5})
+    th.start()
+    th.join()
+    try:
+        time.sleep(0.5)
+        assert t.proc is not None and t.proc.poll() is None
+    finally:
+        t.stop()

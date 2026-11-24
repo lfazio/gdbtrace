@@ -166,6 +166,23 @@ def test_stack_high_water_marks_match_freertos(rtos):
 
 
 @needs_qemu
+def test_current_task_stack_when_stopped_in_an_interrupt(rtos):
+    """Arrêt dans une interruption : `sp` est le MSP ; la tâche interrompue est sur PSP.
+    Avec `sp`, sa pile utilisée paraissait négative (relevé sur une Nucleo-F746ZG)."""
+    s, L = rtos
+    bp = s.break_("xPortSysTickHandler")
+    s.go()
+    s.wait_stopped(5)
+    s.delete_break(bp.number)
+    assert s.register("sp") != s.task_sp()                          # MSP / PSP
+    cur = next(t for t in fr.snapshot(L, s.read_memory, current_sp=s.task_sp()).tasks if t.current)
+    assert 0 < cur.stack_used <= cur.stack_size
+    wrong = next(t for t in fr.snapshot(L, s.read_memory, current_sp=s.register("sp")).tasks
+                 if t.current)
+    assert not 0 < wrong.stack_used <= wrong.stack_size             # le défaut corrigé
+
+
+@needs_qemu
 def test_kernel_objects(rtos):
     s, L = rtos
     snap = fr.snapshot(L, s.read_memory)

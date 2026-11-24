@@ -509,7 +509,7 @@ class ScriptAPI:
                 raise RuntimeError(f"pas de FreeRTOS dans l'ELF ({exc})") from None
         if self.s.state == "stopped":
             return freertos.snapshot(self._rtos, self.s.read_memory,
-                                     current_sp=self.s.register("sp"))
+                                     current_sp=self.s.task_sp())
         snap = freertos.snapshot(self._rtos, self.live_read, attempts=8)
         if snap.incoherent:
             raise RuntimeError(f"instantané incohérent : {snap.incoherent}")

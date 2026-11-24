@@ -88,10 +88,16 @@ class CoverageView(View):
         return etm.cov if etm is not None else None
 
     def _on_new_trace(self) -> None:
-        if self.winfo_exists():
-            self.render()
-            if self.annotate_var.get():
-                self._annotate_views()
+        if not self.winfo_exists():
+            return
+        if self.session is not None and self.session.state == "running" and self.db is not None:
+            # capture continue : seul le résumé suit (reconstruire l'arbre de milliers de
+            # fonctions à chaque paquet gèle le GUI) ; refresh() redessine à l'arrêt
+            self._update_info()
+            return
+        self.render()
+        if self.annotate_var.get():
+            self._annotate_views()
 
     def refresh(self) -> None:
         self.render()
@@ -126,13 +132,22 @@ class CoverageView(View):
         if not force and key == self._gen:
             return
         self._gen = key
+        if not db.e and not db.n:
+            # aucune trace reçue : toutes les fonctions « jamais » en rouge induiraient en erreur
+            self.tree.delete(*self.tree.get_children())
+            self._loc.clear()
+            return
         opened = {self.tree.item(i, "text") for i in self.tree.get_children() if self.tree.item(i, "open")}
         first = not self.tree.get_children()
         self.tree.delete(*self.tree.get_children())
         self._loc.clear()
         sym = self.app.symbols
-        hint = os.path.dirname(os.path.dirname(os.path.abspath(db.image.path))) + os.sep
-        files = sorted(db.files(), key=lambda m: (not m.path.startswith(hint), m.path))
+        # fichiers du projet d'abord (même racine que la vue Fichiers), bibliothèques ensuite
+        from .files import racine_projet
+        mods = db.files()
+        root = racine_projet(db.image.path, [m.path for m in mods])
+        hint = (root or os.path.dirname(os.path.abspath(db.image.path))).rstrip(os.sep) + os.sep
+        files = sorted(mods, key=lambda m: (not m.path.startswith(hint), m.path))
         for m in files:
             label = os.path.relpath(m.path, hint) if m.path.startswith(hint) else os.path.basename(m.path)
             fid = self.tree.insert("", "end", text=label, values=self._values(m, ""),

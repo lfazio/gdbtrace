@@ -106,7 +106,7 @@ class RtosView(View):
     def refresh(self) -> None:
         if not self.stopped or not self._ensure_layout():
             return
-        sp = self.session.register("sp")
+        sp = self.session.task_sp()
         snap = fr.snapshot(self.layout, self.session.read_memory, prev=self.snap, current_sp=sp)
         self._show(snap)
 

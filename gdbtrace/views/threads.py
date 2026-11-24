@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 from tkinter import ttk
 
+from ..core.gdb_backend import GdbError
 from ..gui.view_base import View
 
 
@@ -51,7 +52,19 @@ class ThreadsView(View):
         if s is None or s.state not in ("stopped", "running"):
             self._clear("pas de programme en cours" if s is not None and s.state == "exited" else "")
             return
-        self.threads = s.thread_list()
+        if s.state == "running" and not self.app.native:
+            # cible distante (QEMU, OpenOCD) : gdb refuse -thread-info cible en marche ; la
+            # liste de l'arrêt reste, marquée en marche
+            for item in self.tree.get_children():
+                self.tree.set(item, "state", "running")
+                self.tree.item(item, tags=("running",))
+            return
+        try:
+            self.threads = s.thread_list()
+        except GdbError:
+            if s.state == "running":            # reparti ou arrêté entre-temps
+                return
+            raise
         self.tree.delete(*self.tree.get_children())
         for t in self.threads:
             f = t.frame
@@ -67,7 +80,8 @@ class ThreadsView(View):
         by_id = {t.id: t for t in self.threads}
         msg = f"{len(self.threads)} thread(s)"
         if stopper in by_id:
-            msg += f" — arrêt dans {stopper} « {by_id[stopper].name} »"
+            name = by_id[stopper].name
+            msg += f" — arrêt dans le thread {stopper}" + (f" « {name} »" if name else "")
         self.info.configure(text=msg)
 
     def _clear(self, msg: str) -> None:

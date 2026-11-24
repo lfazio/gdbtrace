@@ -122,8 +122,8 @@ def test_etmv4_programming():
 def test_swo_formatter_for_etm():
     cfg = SwoConfig(cpu_hz=16_000_000, swo_hz=2_000_000, formatter=True)
     assert {w.name: w.value for w in cfg.register_writes()}["TPIU_FFCR"] == 0x102
-    assert "-formatter 1" in openocd_tpiu_commands(cfg, "stm32l4x.tpiu", 3443)[0]
-    assert "-formatter 0" in openocd_tpiu_commands(SwoConfig(cpu_hz=16_000_000), "x.tpiu", 3443)[0]
+    assert "-formatter 1" in openocd_tpiu_commands(cfg, "stm32l4x.tpiu", 3443)[1]
+    assert "-formatter 0" in openocd_tpiu_commands(SwoConfig(cpu_hz=16_000_000), "x.tpiu", 3443)[1]
 
 
 @needs_qemu
@@ -178,8 +178,9 @@ def test_start_etm_swo_on_openocd(qemu_paths, elf):
     s = FakeOpenOcd()
     try:
         log = tm.start_etm_swo(s, s.target, 216_000_000, 2_000_000, stall=True, port=port.port)
-        assert s.monitors[0] == "tpiu names" and s.monitors[2] == "stm32f7x.tpiu enable"
-        assert f"-output :{port.port} -formatter 1" in s.monitors[1]
+        assert s.monitors[0] == "tpiu names" and s.monitors[1] == "stm32f7x.tpiu disable"
+        assert f"-output :{port.port} -formatter 1" in s.monitors[2]
+        assert s.monitors[3] == "stm32f7x.tpiu enable"
         assert s.regs[TPIU_FFCR] == 0x102 and s.regs[ec.TRCPRGCTLR] == 1
         assert any(f"capture SWO TCP {port.port} démarrée" in line for line in log)
         assert log[-1].startswith("ETM par SWO (ETMv4)") and "stall" in log[-1]

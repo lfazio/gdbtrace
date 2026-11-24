@@ -577,7 +577,7 @@ def test_coverage_view(etm_app, tmp_path):
     pump(app, lambda: False, timeout=0.3)
     assert "instructions" in cv.info.cget("text") and "ETM simulé" in cv.info.cget("text")
     files = {cv.tree.item(i, "text"): i for i in cv.tree.get_children()}
-    assert list(files)[:2] == ["firmware/main.c", "firmware/startup.c"]     # projet d'abord
+    assert list(files)[:2] == ["main.c", "startup.c"]     # projet d'abord (racine de la vue Fichiers)
     funcs = {cv.tree.item(i, "text"): cv.tree.item(i, "values")
              for f in files.values() for i in cv.tree.get_children(f)}
     assert funcs["fib"][0] == "✔ ok" and funcs["Default_Handler"][0] == "✘ jamais"

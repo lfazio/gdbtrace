@@ -118,9 +118,12 @@ class SwoConfig:
 
 
 def openocd_tpiu_commands(cfg: SwoConfig, tpiu: str, port: int) -> list[str]:
-    """Commandes `monitor` pour qu'OpenOCD capture le SWO et le serve en TCP sur `port`."""
+    """Commandes `monitor` pour qu'OpenOCD capture le SWO et le serve en TCP sur `port`.
+    `disable` d'abord : OpenOCD refuse de reconfigurer un TPIU activé (« Configurer la
+    cible… » une seconde fois, ETM par SWO après le SWO seul) ; sans effet sinon."""
     proto = "manchester" if cfg.manchester else "uart"
     return [
+        f"{tpiu} disable",
         f"{tpiu} configure -protocol {proto} -traceclk {cfg.cpu_hz} -pin-freq {cfg.swo_hz} "
         f"-output :{port} -formatter {1 if cfg.formatter else 0}",
         f"{tpiu} enable",

@@ -867,6 +867,15 @@ class Session:
         # conversion explicite : gdb affiche $sp/$pc comme pointeurs (« 0x... <sym+n> »)
         return _int(self.evaluate(f"(unsigned long)${name}")) & ((1 << 8 * self.pointer_size) - 1)
 
+    def task_sp(self) -> int:
+        """SP de la tâche courante d'un RTOS sur Cortex-M : PSP. Les tâches tournent sur la pile
+        de processus ; arrêtée dans une interruption, `sp` est la pile principale (MSP), et la
+        pile utilisée de la tâche paraissait négative. `sp` si le serveur n'expose pas `psp`."""
+        try:
+            return self.register("psp")
+        except GdbError:
+            return self.register("sp")
+
     @property
     def pointer_size(self) -> int:
         """Taille d'un pointeur de la cible : 4 (Cortex-M), 8 (programme natif 64 bits)."""

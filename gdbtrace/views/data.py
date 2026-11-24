@@ -7,6 +7,7 @@ Options… ou clic droit de la vue Breakpoints.
 """
 from __future__ import annotations
 
+import os
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
@@ -590,7 +591,8 @@ class StackView(View):
         self.bt = self.session.backtrace()
         self.frames.delete(*self.frames.get_children())
         for i, f in enumerate(self.bt):
-            loc = f"{f.file}:{f.line}" if f.file else ""
+            # nom du fichier seul : avec un chemin absolu (build CMake), la ligne sortait du champ
+            loc = f"{os.path.basename(f.file)}:{f.line}" if f.file else ""
             self.frames.insert("", "end", iid=str(i), values=(i, f"{f.pc:08x}", f.func or "??", loc))
         self.locals.delete(*self.locals.get_children())
         cur = {}
