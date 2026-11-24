@@ -195,6 +195,31 @@ capture tourne et ce qu'elle reçoit.
 L'onglet **Exceptions** compte les entrées dans chaque exception ou IRQ et, si l'horodatage
 ITM est actif, le temps total et maximal passé dedans. Ces données viennent du SWO.
 
+**Trace de données (vue Variables tracées, Var.TRACE / Var.DRAW)** : la valeur d'une
+variable globale ou statique à chaque accès, cible en marche, sans l'arrêter ni modifier le
+code.
+
+- Un comparateur du DWT surveille l'adresse de la variable. Selon l'accès choisi (écriture,
+  lecture, les deux), il émet la valeur par l'ITM, et au choix le PC de l'instruction qui y
+  accède.
+- La vue liste les variables tracées, leur nombre d'échantillons et leur dernière valeur (au
+  format de la variable). Elle dessine un petit graphe par variable, chacun à sa propre
+  échelle, en temps réel. Le survol donne les valeurs à un instant.
+- Le temps vient de l'horodatage ITM (cycles du cœur, `--cpu-hz`), sinon de l'heure de
+  réception.
+
+| Lancement | Comment |
+|---|---|
+| Ligne de commande | `--var-trace counter` (écriture), `--var-trace offset:rw+pc` ; répétable ; avec une capture SWO ou de trace |
+| GUI | vue Variables tracées : saisir l'expression, choisir l'accès, Tracer (cible arrêtée) |
+| Script | `gdbtrace.var_trace("counter", "rw", pc=True)`, `gdbtrace.var_samples("counter")`, `gdbtrace.var_trace_stop()` |
+
+Limites : variables scalaires de 1, 2 ou 4 octets (un champ ou un élément d'une structure),
+4 comparateurs au plus sur un Cortex-M3/M4/M7. Ces comparateurs sont partagés avec le filtre
+ETMv3 et les watchpoints de gdb ; GdbTrace les prend par le haut et refuse quand il n'en reste
+plus. Un accès plus court que la variable est montré en hexadécimal brut. Validé sur des flux
+ITM synthétiques ; à valider sur carte.
+
 QEMU n'émule ni l'ITM ni le SWO : sous QEMU, la sortie ITM du firmware reste inerte et
 seul le profil « Live » fonctionne. Le décodage SWO est testé sur des flux synthétiques et un
 faux serveur ; il reste à valider sur sonde réelle.
@@ -497,6 +522,7 @@ avec OpenOCD, comme un Break).
 | `gdbtrace.task("consumer")` | contexte et pile d'appels d'une tâche |
 | `gdbtrace.profile(2.0, per_task=True)` | PERF : profil statistique pendant 2 s (relance puis arrête la cible si besoin) |
 | `gdbtrace.itm(0)` | texte reçu sur le port ITM 0 |
+| `gdbtrace.var_trace("ticks", "rw", pc=True)`, `gdbtrace.var_samples("ticks")` | trace de données du DWT : valeur à chaque accès, cible en marche |
 | `gdbtrace.swo_config(cpu_hz=180_000_000, swo_hz=2_000_000)` | programme ITM/DWT/TPIU (+ OpenOCD) |
 | `gdbtrace.trace_list(30)`, `gdbtrace.calls(40)` | Trace.List, flot d'appels (trace ETM) |
 | `gdbtrace.cov.summary()`, `gdbtrace.cov.list(20)`, `gdbtrace.cov.files()` | couverture : résumé, COVerage.ListFunc, ListModule |
@@ -531,6 +557,7 @@ gdbtrace/
   core/live.py          canal mémoire latéral (OpenOCD TCL, QEMU QMP) + LivePoller
   core/live_vars.py     disposition et décodage des variables sans gdb (Watch en marche)
   core/formats.py       formats d'affichage (décimal, hexa, octal, binaire, ASCII), comme gdb
+  trace/datatrace.py    trace de données du DWT (Var.TRACE) : comparateurs, échantillons typés
   core/svd.py           parseur CMSIS-SVD (derivedFrom, dim, clusters, champs, énumérations)
   core/rtos/freertos.py awareness FreeRTOS : disposition via DWARF, parcours des listes,
                         piles, objets du noyau, contexte et pile d'appels des tâches

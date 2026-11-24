@@ -128,6 +128,8 @@ class EtmConfig:
     filter: "EtmFilter | None" = None   # plages et start/stop (filter.py) ; None : tout le code
     ac_pairs: int = 2            # ETMv4 : paires de comparateurs d'adresse (TRCIDR4, lu par apply)
     dwt_comparators: int = 4     # ETMv3 : comparateurs du DWT (DWT_CTRL.NUMCOMP, lu par apply)
+    dwt_reserved: tuple = ()     # ETMv3 : comparateurs déjà pris (trace de données du DWT)
+    dwt_used: tuple = ()         # ETMv3 : comparateurs pris par ce filtre (après programmation)
 
     @property
     def prescaler(self) -> int:
@@ -213,6 +215,7 @@ class EtmConfig:
     def _etm3_filter(self) -> tuple[list[RegWrite], int, int, int]:
         """(écritures des comparateurs du DWT, ETMTEEVR, ETMTECR1, ETMTESSEICR)."""
         f = self.filter
+        self.dwt_used = ()
         if f is None or not f.active:
             return [], EVENT_ALWAYS, TECR1_EXCLUDE_ALL_OFF, 0
         if len(f.ranges) > 2:
@@ -222,10 +225,11 @@ class EtmConfig:
             raise ValueError("ETMv3 : un arrêt sans démarrage est impossible (la logique "
                              "start/stop part de l'état « arrêté ») : ajouter un démarrage")
         need = len(f.ranges) + len(f.start) + len(f.stop)
-        if need > min(self.dwt_comparators, 4):
-            raise ValueError(f"ETMv3 : {need} comparateurs du DWT nécessaires, "
-                             f"{min(self.dwt_comparators, 4)} disponibles")
-        free = list(range(min(self.dwt_comparators, 4) - 1, -1, -1))   # par le haut
+        free = [n for n in range(min(self.dwt_comparators, 4) - 1, -1, -1)   # par le haut
+                if n not in self.dwt_reserved]
+        if need > len(free):
+            raise ValueError(f"ETMv3 : {need} comparateurs du DWT nécessaires, {len(free)} "
+                             "disponibles" + (" (les autres tracent des variables)" if self.dwt_reserved else ""))
         writes: list[RegWrite] = []
 
         def comparator(addr: int, mask: int, what: str) -> int:
@@ -249,6 +253,7 @@ class EtmConfig:
             teevr = EVENT_OR | (EVENT_EICE + events[1]) << 7 | (EVENT_EICE + events[0])
         tecr1 = TECR1_EXCLUDE_ALL_OFF | (TECR1_START_STOP if starts else 0)
         tesseicr = sum(1 << n for n in starts) | sum(1 << (16 + n) for n in stops)
+        self.dwt_used = tuple(events + starts + stops)
         return writes, teevr, tecr1, tesseicr
 
     def _etm4_filter(self) -> tuple[list[RegWrite], int, int, int]:

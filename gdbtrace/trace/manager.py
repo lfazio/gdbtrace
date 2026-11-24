@@ -28,6 +28,8 @@ class TraceManager:
         self.source: SwoSource | None = None
         self.text = ItmTextSink(text_ports={0}, on_line=self._line)
         self.exceptions = ExceptionStats()
+        from .datatrace import DataTraceSink
+        self.datatrace = DataTraceSink()     # trace de données du DWT (Var.TRACE)
         self.line_listeners: list[LineListener] = []
         self._profile: Profile | None = None
         self._profile_sink = None
@@ -320,6 +322,7 @@ class TraceManager:
         l'ETM détectée (v3 ou v4)."""
         if self.etm is not None:                # ETM illisible (QEMU) : version déjà détectée
             cfg.version = self.etm.version
+        cfg.dwt_reserved = tuple(self.datatrace.vars)   # comparateurs de la trace de données
         if cfg.filter is None and self.etm_filter_specs and self.etm is not None:
             from .etm.filter import build_filter   # filtre demandé avant la programmation
             cfg.filter = build_filter(*self.etm_filter_specs, symbols=self.etm.symbols)
@@ -350,7 +353,8 @@ class TraceManager:
             log = self.configure_etm(self.etm_cfg, session)
             eff = self.etm_cfg.effective_filter()
         else:                                   # ETM simulé (ou ETM pas encore programmé)
-            cfg = EtmConfig(version=self.etm.version, filter=flt if flt.active else None)
+            cfg = EtmConfig(version=self.etm.version, filter=flt if flt.active else None,
+                            dwt_reserved=tuple(self.datatrace.vars))
             cfg._etm4_filter() if cfg.version == 4 else cfg._etm3_filter()   # limites du matériel
             eff = cfg.effective_filter()
         self.etm_filter = eff
@@ -360,6 +364,58 @@ class TraceManager:
         self.etm.cov.set_scope(flt.ranges or None)
         self._etm_changed()
         log.append(eff.describe() if eff is not None else "filtre ETM retiré : tout le code est tracé")
+        return log
+
+    # ------------------------------------------------------------------ trace de données (DWT)
+    def trace_variable(self, session, expr: str, access: str = "write", pc: bool = False,
+                       cpu_hz: int | None = None) -> list[str]:
+        """Var.TRACE (cible arrêtée) : un comparateur du DWT émet la valeur de `expr` à chaque
+        accès (`access` : write, read, rw ; `pc` : avec le PC de l'instruction). Les échantillons
+        arrivent par la capture SWO ou de trace (ITM). Retourne le journal."""
+        from .datatrace import DEMCR, DWT_CTRL, TracedVar, comparator_writes, variable_layout
+        if access not in ("write", "read", "rw"):
+            raise ValueError("accès : write, read ou rw")
+        if session is None or session.state != "stopped":
+            raise RuntimeError("arrêter la cible pour programmer le DWT")
+        if cpu_hz:
+            self.datatrace.cpu_hz = cpu_hz
+        self.untrace_variable(session, expr, quiet=True)          # reprogrammée si déjà tracée
+        addr, size, layout = variable_layout(session, expr)
+        session.write_u32(DEMCR, session.read_u32(DEMCR) | 1 << 24)
+        numcomp = min((session.read_u32(DWT_CTRL) >> 28) & 0xF, 4) or 4
+        taken = set(self.datatrace.vars)
+        if self.etm_cfg is not None and getattr(self.etm_cfg, "version", 3) != 4:
+            taken |= set(self.etm_cfg.dwt_used)
+        free = [n for n in range(numcomp - 1, -1, -1) if n not in taken]
+        if not free:
+            raise RuntimeError(f"plus de comparateur du DWT libre ({numcomp} : variables tracées et "
+                               "filtre de l'ETM) ; arrêter la trace d'une variable")
+        var = TracedVar(expr, addr, size, free[0], access, pc, layout)
+        log = []
+        for name, reg, value in comparator_writes(var):
+            session.write_u32(reg, value)
+            log.append(f"{name} = {value:#010x}")
+        self.datatrace.add(var)
+        log.append(f"trace de {expr} ({size} octets à {addr:#010x}, {access}"
+                   + (", avec le PC" if pc else "") + f") : comparateur {var.comparator}")
+        if self.source is None:
+            log.append("pas de capture SWO ou de trace en cours pour l'instant : les valeurs "
+                       "arriveront avec elle (--swo-config, Trace › ETM par SWO…, vue ITM)")
+        return log
+
+    def untrace_variable(self, session, expr: str | None = None, quiet: bool = False) -> list[str]:
+        """Arrête la trace de `expr` (toutes les variables si None) ; comparateur libéré."""
+        from .datatrace import DWT_COMP0
+        log = []
+        for comp, var in list(self.datatrace.vars.items()):
+            if expr is not None and var.expr != expr:
+                continue
+            if session is not None and session.state == "stopped":
+                session.write_u32(DWT_COMP0 + 16 * comp + 8, 0)
+            self.datatrace.remove(comp)
+            log.append(f"trace de {var.expr} arrêtée (comparateur {comp} libéré)")
+        if not log and not quiet and expr is not None:
+            raise KeyError(f"« {expr} » n'est pas tracée")
         return log
 
     def start_etm_swo(self, session, target=None, cpu_hz: int = 0, swo_hz: int = 2_000_000,
@@ -461,6 +517,7 @@ class TraceManager:
                                     etm_sink=self._etm_feed if self.etm is not None else None)
         self.session.add_sink(lambda pkts: [self.text.add(p) for p in pkts])
         self.session.add_sink(self.exceptions)
+        self.session.add_sink(self.datatrace)
         if self._profile is not None:
             self._attach_profile()
         self.source = source

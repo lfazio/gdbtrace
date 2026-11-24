@@ -379,6 +379,7 @@ gdbtrace.queues()
 |---|---|---|
 | `profile(secondes, per_task=False)` | profil statistique (PERF) ; relance puis arrête la cible si elle était arrêtée | canal live ou capture SWO |
 | `swo_config(cpu_hz, …)` puis `itm(port)` | programme ITM/DWT/TPIU ; texte reçu sur un port ITM | broche SWO, sonde |
+| `var_trace(expr, access="write", pc=False)`, `var_samples(expr, n=20)`, `var_trace_stop(expr=None)` | trace de données du DWT : valeur d'une globale à chaque accès, cible en marche | capture SWO ou de trace |
 | `etm_swo(cpu_hz, stall=…)` | ETM par la broche SWO (comme `--etm-config --etm-port swo`) | OpenOCD, cible arrêtée |
 | `etm_filter("fib", start=…, stop=…)` | ne tracer qu'une plage, ou entre deux lieux ; sans argument : tout le code | trace ETM (cible arrêtée si ETM réel) |
 | `trace_list(n)` | Trace.List : les dernières instructions exécutées | trace ETM ou MTB |
@@ -387,6 +388,20 @@ gdbtrace.queues()
 | `cov.summary()`, `cov.list(n)`, `cov.files()` | couverture de code | idem |
 | `cov.save(f)`, `cov.load(f)`, `cov.export(f)`, `cov.reset()` | cumul et rapports (`.html`, `.info`, `.json`) | idem |
 | `mtb(n)`, `mtb_stats()`, `mtb_probe()` | MTB d'un Cortex-M0+ | `--mtb` ou `--mtb-sim` |
+
+**Trace de données** (sur carte, avec une capture SWO ; QEMU n'émule ni DWT ni ITM) :
+
+```python
+import time
+gdbtrace.swo_config(cpu_hz=216_000_000)         # ITM, DWT, TPIU ; capture servie par OpenOCD
+gdbtrace.var_trace("ticks")                     # chaque écriture de ticks
+gdbtrace.var_trace("mode", "rw", pc=True)       # lectures et écritures, avec le PC
+gdbtrace.go()
+time.sleep(1)
+gdbtrace.halt()
+gdbtrace.var_samples("mode", n=None)            # temps, accès, valeur, PC → fonction
+gdbtrace.var_trace_stop()
+```
 
 Sans matériel, `--etm-sim` simule la trace sous QEMU. Elle est convertie à chaque arrêt, ce
 qui rend les mesures reproductibles.
@@ -654,6 +669,7 @@ gdbtrace.cov.export("couverture.html")
 |---|---|
 | `profile(secondes=1.0, per_task=False, show=15)` | profil statistique → `Profile` |
 | `swo_config(cpu_hz, …)`, `itm(port=0)` | SWO, texte ITM |
+| `var_trace(expr, access="write", pc=False)`, `var_samples(expr, n=20, fmt="natural")`, `var_trace_stop(expr=None)` | trace de données du DWT (Var.TRACE) |
 | `etm_swo(cpu_hz, swo_hz=2_000_000, stall=False, stm32=False, port=3443)` | ETM par SWO |
 | `etm_config(**options)` | ETM et TPIU parallèle |
 | `etm_filter(*plages, start=(), stop=())` | filtre de la trace ETM ; sans argument : tout le code |

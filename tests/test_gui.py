@@ -847,3 +847,35 @@ def test_etm_filter_in_gui(etm_app):
     funcs = {cv.tree.item(f, "text") for i in cv.tree.get_children() for f in cv.tree.get_children(i)}
     assert funcs == {"fib"} and len(files) == 1
     assert app.set_etm_filter() is not None and app.trace.etm_filter is None
+
+
+def test_vartrace_view(app, tmp_path):
+    """Var.TRACE dans le GUI : tracer `offset` et `counter`, une capture SWO rejouée remplit le
+    tableau (dernière valeur au format de la variable) et un graphe par variable ; survol."""
+    from test_datatrace import data, lts
+    from test_itm import SYNC
+    from gdbtrace.views.vartrace import VarTraceView
+    v = app.views.show(VarTraceView)
+    app.root.geometry("1200x800")
+    v.trace_expr("offset")
+    v.trace_expr("counter", access="rw")
+    assert sorted(app.trace.datatrace.vars) == [2, 3]
+    cap = tmp_path / "swo.bin"
+    cap.write_bytes(SYNC + data(3, 0xFFFD, 2) + data(2, 1, 4) + lts(5000) + data(3, 0xFFFB, 2)
+                    + lts(5000) + data(2, 2, 4) + data(3, 0xFFFE, 2))
+    app.trace.start_file(str(cap)).done.wait(5)
+    assert pump(app, lambda: app.trace.datatrace.vars[3].count == 3)
+    v.render(force=True)
+    rows = {v.tree.item(i, "text"): v.tree.item(i, "values") for i in v.tree.get_children()}
+    assert rows["offset"][1:] == ("3", "-2") and rows["counter"][0] == "les deux"
+    assert "2 variable(s), 5 échantillon(s)" in v.info.cget("text")
+    lines = [i for i in v.canvas.find_all() if v.canvas.type(i) == "line" and v.canvas.itemcget(i, "width") == "2.0"]
+    assert len(lines) == 2                                         # une courbe par variable
+    ev = type("E", (), {"x": v.canvas.winfo_width() // 2, "y": 60})()
+    v._motion(ev)
+    tip = [v.canvas.itemcget(i, "text") for i in v.canvas.find_withtag("hover") if v.canvas.type(i) == "text"]
+    assert tip and "offset = " in tip[0] and "counter = " in tip[0]
+    assert v.get_state() == {"vars": [["offset", "write", False], ["counter", "rw", False]]}
+    app.trace.untrace_variable(app.session)
+    v.render(force=True)
+    assert not v.tree.get_children() and "aucune variable tracée" in v.info.cget("text")

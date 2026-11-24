@@ -340,6 +340,42 @@ class ScriptAPI:
         cfg.apply(self.s)
         print(cfg.summary())
 
+    # trace de données du DWT (Var.TRACE)
+    def var_trace(self, expr: str, access: str = "write", pc: bool = False) -> None:
+        """Var.TRACE : la valeur de `expr` (globale ou statique, 1, 2 ou 4 octets) est émise par
+        le DWT à chaque accès (`access` : write, read, rw ; `pc` : avec le PC de l'instruction),
+        cible en marche, par la capture SWO ou de trace. Cible arrêtée pour programmer."""
+        if self.trace is None:
+            raise RuntimeError("pas de gestionnaire de trace")
+        for line in self.trace.trace_variable(self.s, expr, access, pc, cpu_hz=self.cpu_hz):
+            print(line)
+
+    def var_trace_stop(self, expr: str | None = None) -> None:
+        """Arrête la trace de `expr` (de toutes les variables sans argument)."""
+        if self.trace is None:
+            raise RuntimeError("pas de gestionnaire de trace")
+        for line in self.trace.untrace_variable(self.s, expr):
+            print(line)
+
+    def var_samples(self, expr: str, n: int | None = 20, fmt: str = "natural") -> list:
+        """Échantillons de la trace de données de `expr`, les `n` derniers (tous si None) :
+        temps, accès, valeur au format `fmt`, et le PC de l'instruction s'il est tracé."""
+        if self.trace is None:
+            raise RuntimeError("pas de gestionnaire de trace")
+        var = next((v for v in self.trace.datatrace.vars.values() if v.expr == expr), None)
+        if var is None:
+            raise KeyError(f"« {expr} » n'est pas tracée (gdbtrace.var_trace)")
+        rows = list(var.samples)
+        rows = rows[-n:] if n else rows
+        sym = self._symbols()
+        for smp in rows:
+            where = ""
+            if smp.pc is not None:
+                f = sym.function_at(smp.pc) if sym else None
+                where = f"  {smp.pc:#010x} {f.name if f else ''}"
+            print(f"  {smp.t * 1e6:>14,.1f} µs  {smp.kind:<6} {var.text(smp, fmt)}{where}".replace(",", " "))
+        return rows
+
     def etm_filter(self, *ranges: str, start=(), stop=()) -> None:
         """Filtre de la trace ETM : plages (`"fib"`, `"main.c"`, `"0x100-0x200"`), lieux de
         démarrage et d'arrêt (`start="fib"`, `stop=["main.c:59"]`) ; sans argument : tout le

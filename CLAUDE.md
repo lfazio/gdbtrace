@@ -98,6 +98,10 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
 - SWO : source TCP/fichier → `TraceSession` → déformateur TPIU (`tpiu.py`) → `ItmDecoder`
   (`itm.py`) → abonnés (texte ITM, profil, stats d'exceptions). Sur un port parallèle
   formaté, l'ID 1 va à l'ITM et l'ID 2 à l'ETM.
+- Trace de données (`trace/datatrace.py`) : comparateurs du DWT (FUNCTION 0xD/0xC/0x2, +PC
+  0xF/0xE/0x3) programmés par `TraceManager.trace_variable` (cible arrêtée, pris par le haut,
+  partagés avec le filtre ETMv3 : `EtmConfig.dwt_reserved` / `dwt_used`) ; `DataTraceSink`
+  (abonné ITM) range les paquets en échantillons typés par variable ; vue `vartrace`.
 - ETM (`trace/etm/`) : `etm3.py` (paquets ETMv3.5) → `flow.py` (reconstruction avec
   `image.py`, classification Thumb-2 par capstone ; chaque fonction est balayée d'un seul
   tenant pour connaître la condition des instructions d'un bloc IT — `bxeq lr` décodé seul

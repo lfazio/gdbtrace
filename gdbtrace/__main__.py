@@ -53,6 +53,12 @@ def setup_trace(args, trace, session, target, log=print) -> None:
     if args.etm_filter or args.etm_start or args.etm_stop:   # avant la programmation de l'ETM
         for line in trace.set_etm_filter(args.etm_filter, args.etm_start, args.etm_stop, session):
             log(line)
+    for spec in args.var_trace:          # trace de données du DWT, avant le début des captures
+        expr, _, mode = spec.rpartition(":") if ":" in spec else (spec, "", "")
+        access, _, pc = mode.partition("+")
+        for line in trace.trace_variable(session, expr, access or "write", pc == "pc",
+                                         cpu_hz=args.cpu_hz):
+            log(line)
     if args.etm_config and args.etm_port == "swo":      # ETM + ITM formatés sur le SWO
         for line in trace.start_etm_swo(session, target, args.cpu_hz, args.swo_hz,
                                          stall=args.etm_stall, stm32=args.stm32,
@@ -93,6 +99,7 @@ def setup_trace(args, trace, session, target, log=print) -> None:
     elif args.trace_file:
         trace.start_file(args.trace_file, formatter=True)
         log(f"capture de trace rejouée : {args.trace_file}")
+
 
 
 def setup_mtb(args, trace, session, log=print) -> None:
@@ -138,6 +145,10 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--cpu-hz", type=int, default=25_000_000, help="fréquence du cœur (Hz)")
     t.add_argument("--swo-hz", type=int, default=2_000_000, help="débit SWO (Hz)")
     t.add_argument("--swo-port", type=int, default=3443, help="port TCP du SWO servi par OpenOCD")
+    t.add_argument("--var-trace", action="append", default=[], metavar="EXPR[:ACCÈS]",
+                   help="trace de données du DWT : valeur d'une globale à chaque accès ; ACCÈS = "
+                        "write (défaut), read, rw, suivi de +pc pour le PC (ex. counter:rw+pc) ; "
+                        "répétable ; avec une capture SWO ou de trace")
     e = p.add_argument_group("trace d'instructions ETM")
     e.add_argument("--etm-sim", action="store_true",
                    help="QEMU : ETM simulé (journal d'exécution converti en trace ETMv3 à chaque arrêt)")
@@ -221,6 +232,10 @@ def main(argv: list[str] | None = None) -> int:
             or ((args.swo or args.swo_file) and args.swo_formatter)):
         p.error("--etm-filter / --etm-start / --etm-stop : avec une trace ETM (--etm-sim sous QEMU ; "
                 "--etm-config sur matériel, ou une capture --trace / --trace-file)")
+    if args.var_trace and not (args.swo or args.swo_file or args.swo_config or args.trace
+                               or args.trace_file or (args.etm_config and args.etm_port == "swo")):
+        p.error("--var-trace : avec une capture SWO ou de trace (--swo-config, --swo, --swo-file, "
+                "--etm-config --etm-port swo, --trace)")
     etm_swo = args.etm_config and args.etm_port == "swo"
     swo_etm = (args.swo or args.swo_file) and args.swo_formatter     # flux formaté : ETM ID 2
     if args.coverage and not (args.etm_sim or args.trace or args.trace_file or args.coverage_merge
