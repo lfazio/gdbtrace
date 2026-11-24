@@ -23,7 +23,8 @@ class ConsoleView(View):
         self.out.tag_configure("gdb", foreground="#707070")
         self.out.tag_configure("target", foreground="#007000")
         self.out.tag_configure("err", foreground="#d00000")
-        sb = ttk.Scrollbar(self, orient="vertical", command=self.out.yview)
+        self.out.tag_configure("action", foreground="#8a5a00")    # messages des breakpoints à action
+        sb =ttk.Scrollbar(self, orient="vertical", command=self.out.yview)
         self.out.configure(yscrollcommand=sb.set, state="disabled")
         line = ttk.Frame(self)
         line.pack(side="bottom", fill="x")

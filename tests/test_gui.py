@@ -950,6 +950,9 @@ def test_breakpoint_options_view(app):
     assert pump(app, lambda: len(stops) > n and s.state == "stopped")
     assert s.evaluate("counter") == "4" and len(stops) == n + 1     # passage par le message : invisible
     assert pump(app, lambda: "capteur 4\n" in con.out.get("1.0", "end"))
+    ranges = con.out.tag_ranges("action")                       # messages en couleur à part
+    assert ranges and con.out.get(ranges[-2], ranges[-1]) == "capteur 4\n"
+    assert con.out.tag_cget("action", "foreground")
 
 
 def test_go_till_and_step_change(app):
