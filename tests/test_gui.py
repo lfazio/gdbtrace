@@ -822,3 +822,28 @@ def test_example_session_script_in_gui(app):
     assert w.format_of(w.roots["offset"]) == "binary" and w.format_of(w.roots["sensors"]) == "hexadecimal"
     assert pump(app, lambda: w.tree.set(w.roots["offset"], "value").startswith("0b"))
     assert w.tree.set(w.roots["last_char"], "value").startswith("'")
+
+
+def test_etm_filter_in_gui(etm_app):
+    """Trace › Filtre de trace ETM… sur l'ETM simulé : la vue Trace ne montre que la plage,
+    avec les trous, et son libellé nomme le filtre ; la couverture se limite à la plage."""
+    from gdbtrace.trace.etm.qemu_log import Step
+    from gdbtrace.views.coverage import CoverageView
+    from gdbtrace.views.trace import TraceView
+    app = etm_app
+    tv, cv = app.views.show(TraceView), app.views.show(CoverageView)
+    assert app.set_etm_filter(["fib"]) is not None
+    lo, hi = app.trace.etm_filter.ranges[0]
+    run_to(app, "animate")
+    assert pump(app, lambda: not app.trace.etm_busy and app.trace.etm.stats["instructions"] > 50), \
+        etm_diagnostics(app)
+    pump(app, lambda: False, timeout=0.3)
+    assert "filtre : plages fib" in tv.info.cget("text") and "filtre" in cv.info.cget("text")
+    steps = [e for e in app.trace.etm.last(10**6) if isinstance(e, Step)]
+    assert all(lo <= e.addr < hi for e in steps)
+    labels = [tv.listing.set(i, "func") for i in tv.listing.get_children()]
+    assert "── trace interrompue (filtre) ──" in labels
+    files = {cv.tree.item(i, "text") for i in cv.tree.get_children()}
+    funcs = {cv.tree.item(f, "text") for i in cv.tree.get_children() for f in cv.tree.get_children(i)}
+    assert funcs == {"fib"} and len(files) == 1
+    assert app.set_etm_filter() is not None and app.trace.etm_filter is None

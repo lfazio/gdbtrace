@@ -109,6 +109,12 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
   code entre points de passage) ; `encoder4.py` pour les tests et l'ETM simulé.
   `EtmTrace(version=…)` choisit v3 ou v4 ; `TraceManager.detect_etm()` lit TRCIDR1 (sous
   QEMU : CPUID, M7 → v4) après la connexion, et `configure_etm()` suit `EtmConfig.version`.
+- Filtre (`etm/filter.py`, `EtmConfig.filter`, `TraceManager.set_etm_filter`) : plages et
+  start/stop ; ETMv4 par ses comparateurs d'adresse, ETMv3 par ceux du DWT (blocs alignés,
+  `effective_filter()`). Une reprise de la trace est un événement `TraceGap` (I-sync raison
+  1/2, Trace On) que tout consommateur d'événements doit traiter ; celle qui suit une simple
+  reprise après arrêt est retirée par `EtmTrace.resumed()`. L'ETM simulé applique le filtre
+  effectif au chemin QEMU (`EtmFilter.apply`) ; la couverture se limite aux plages (`scope`).
 - ETM simulé (QEMU n'a pas d'ETM) : QEMU lancé avec `-accel tcg,one-insn-per-tb=on` ; le
   resume hook active le journal (`-d exec,nochain,int`), l'arrêt le convertit en tâche de
   fond (`qemu_log.py` → `encoder.py` → même décodeur). `TraceManager.wait_etm()` attend la

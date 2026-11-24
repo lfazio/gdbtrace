@@ -12,13 +12,13 @@ import os
 import tkinter as tk
 from tkinter import ttk
 
-from ..trace.etm.qemu_log import ExcEntry, ExcReturn, Step
+from ..trace.etm.qemu_log import ExcEntry, ExcReturn, Step, TraceGap
 from ..trace.itm import exception_name
 from ..gui.view_base import View
 from .profile import _source_line
 
 FLOW_ICONS = {"call": "→", "return": "←", "exception": "⚡", "exc-return": "↩", "start": "•",
-              "branch": "↷"}
+              "branch": "↷", "gap": "┄"}
 
 
 class TraceView(View):
@@ -154,6 +154,11 @@ class TraceView(View):
                 tv.insert("", "end", text=idx, tags=("exc",), values=("", "── retour d'exception ──", "", ""))
                 prev_func = None
                 continue
+            if isinstance(e, TraceGap):
+                tv.insert("", "end", text=idx, tags=("exc",),
+                          values=("", "── trace interrompue (filtre) ──", "", ""))
+                prev_func = None
+                continue
             ins = self.etm.image.instr(e.addr)
             f = sym.function_at(e.addr) if sym else None
             name = f.name if f else ""
@@ -173,7 +178,7 @@ class TraceView(View):
         tv.delete(*tv.get_children())
         for r in rows:
             icon = FLOW_ICONS.get(r.kind, "")
-            label = "retour d'exception" if r.kind == "exc-return" else r.func
+            label = {"exc-return": "retour d'exception", "gap": "trace interrompue (filtre)"}.get(r.kind, r.func)
             iid = tv.insert("", "end", text=str(r.index), values=(
                 "    " * r.depth + f"{icon} {label}", f"{r.addr:08x}" if r.addr else ""),
                 tags=("exception",) if r.kind.startswith("exc") else ())

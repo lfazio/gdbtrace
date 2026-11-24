@@ -33,7 +33,7 @@ from .etm4 import (Address, ASync, Atoms, Cancel, Commit, Context, Discard, Etm4
                    Etm4Packet, ExceptionPacket, ExceptionReturn, Mispredict, Overflow, TraceInfo,
                    TraceOn)
 from .image import DIRECT, INDIRECT, CodeImage
-from .qemu_log import Event, ExcEntry, ExcReturn, Step
+from .qemu_log import Event, ExcEntry, ExcReturn, Step, TraceGap
 
 #: instructions parcourues au plus sans point de passage (au-delà : désynchronisation)
 MAX_RUN = 1 << 16
@@ -170,6 +170,12 @@ class Etm4Flow:
             elif kind == "ctx":
                 if e[1]:
                     self.need_ctx = False
+            elif kind == "on":
+                # trace réactivée (filtre ViewInst) après un premier tronçon : un trou
+                if self.stats.instructions:
+                    out.append(TraceGap())
+                self.addr = None
+                self.exc_depth, self.last_was_return = 0, False
             elif kind == "exc":
                 self._exception(e[1], out)
                 n -= 1

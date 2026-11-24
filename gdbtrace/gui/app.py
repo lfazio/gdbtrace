@@ -143,6 +143,7 @@ class App:
 
         t = tk.Menu(mb, tearoff=False)
         t.add_command(label="ETM par SWO…", command=self._ask_etm_swo)
+        t.add_command(label="Filtre de trace ETM…", command=self._ask_etm_filter)
         t.add_command(label="Arrêter la capture", command=lambda: self.trace.stop())
         mb.add_cascade(label="Trace", menu=t)
 
@@ -561,6 +562,24 @@ class App:
         self.views.refresh_all()
         return log
 
+    def set_etm_filter(self, ranges=(), start=(), stop=()) -> list[str] | None:
+        """Trace › Filtre de trace ETM… : plages et start/stop (vides : tout le code)."""
+        if self.trace.etm_cfg is not None and not self._need("stopped"):
+            self.status.set("Arrêter la cible pour reprogrammer l'ETM (Break)")
+            return None
+        log = self.safe(lambda: self.trace.set_etm_filter(list(ranges), list(start), list(stop),
+                                                          self.session))
+        if log:
+            self.write_console("\n".join(log) + "\n", "gdb")
+            self.status.set(log[-1][:200])
+        return log
+
+    def _ask_etm_filter(self) -> None:
+        cur = self.trace.etm_filter_specs or ([], [], [])
+        d = EtmFilterDialog(self.root, *cur)
+        if d.values is not None:
+            self.set_etm_filter(*d.values)
+
     def _ask_etm_swo(self) -> None:
         if not self._need("stopped"):
             self.status.set("Arrêter la cible pour configurer la trace (Break)")
@@ -697,6 +716,37 @@ class App:
 
 def ask_yes_no(title: str, msg: str) -> bool:
     return messagebox.askyesno(title, msg)
+
+
+class EtmFilterDialog(simpledialog.Dialog):
+    """Trace › Filtre de trace ETM… : listes séparées par des virgules. `values` :
+    (plages, démarrages, arrêts), ou None si annulé."""
+
+    def __init__(self, parent, ranges, start, stop):
+        self.values = None
+        self._init = (ranges, start, stop)
+        super().__init__(parent, "Filtre de trace ETM")
+
+    def body(self, master):
+        rows = [("Plages tracées :", "fonctions, fichiers .c, 0x100-0x200"),
+                ("Démarrer à :", "fonction, fichier.c:ligne, adresse"),
+                ("Arrêter après :", "fonction, fichier.c:ligne, adresse")]
+        self.vars = []
+        first = None
+        for r, ((label, hint), init) in enumerate(zip(rows, self._init)):
+            ttk.Label(master, text=label).grid(row=2 * r, column=0, sticky="w")
+            var = tk.StringVar(value=", ".join(init))
+            e = ttk.Entry(master, textvariable=var, width=40)
+            e.grid(row=2 * r, column=1, padx=4, pady=(4, 0))
+            ttk.Label(master, text=hint, foreground="#555555").grid(row=2 * r + 1, column=1, sticky="w", padx=4)
+            self.vars.append(var)
+            first = first or e
+        ttk.Label(master, text="Tout vide : tracer tout le code.", foreground="#555555").grid(
+            row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        return first
+
+    def apply(self) -> None:
+        self.values = tuple([x.strip() for x in v.get().split(",") if x.strip()] for v in self.vars)
 
 
 class EtmSwoDialog(simpledialog.Dialog):

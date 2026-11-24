@@ -52,7 +52,18 @@ class ExcReturn:
     cycles: int = field(default=0, compare=False)
 
 
-Event = Step | ExcEntry | ExcReturn
+@dataclass(frozen=True)
+class TraceGap:
+    """Trace interrompue puis reprise ailleurs (filtre de l'ETM : plage ou start/stop) : ce
+    qui s'est exécuté entre les deux n'est pas tracé. L'ETM le signale par un I-sync « trace
+    activée » (ETMv3) ou un paquet Trace On (ETMv4). `next_addr` (ETM simulé) : instruction
+    exécutée juste après la dernière tracée, qui donne l'issue d'un branchement en fin de
+    tronçon."""
+    cycles: int = field(default=0, compare=False)
+    next_addr: int | None = field(default=None, compare=False)
+
+
+Event = Step | ExcEntry | ExcReturn | TraceGap
 
 
 def parse(lines: Iterable[str]) -> Iterator[Event]:

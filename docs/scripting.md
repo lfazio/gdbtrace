@@ -380,6 +380,7 @@ gdbtrace.queues()
 | `profile(secondes, per_task=False)` | profil statistique (PERF) ; relance puis arrête la cible si elle était arrêtée | canal live ou capture SWO |
 | `swo_config(cpu_hz, …)` puis `itm(port)` | programme ITM/DWT/TPIU ; texte reçu sur un port ITM | broche SWO, sonde |
 | `etm_swo(cpu_hz, stall=…)` | ETM par la broche SWO (comme `--etm-config --etm-port swo`) | OpenOCD, cible arrêtée |
+| `etm_filter("fib", start=…, stop=…)` | ne tracer qu'une plage, ou entre deux lieux ; sans argument : tout le code | trace ETM (cible arrêtée si ETM réel) |
 | `trace_list(n)` | Trace.List : les dernières instructions exécutées | trace ETM ou MTB |
 | `calls(n)` | flot des appels, retours et exceptions | idem |
 | `timing(top, unit="us")`, `timeline(n)` | durées par fonction, chronogramme en texte | idem |
@@ -403,6 +404,20 @@ gdbtrace.timing(5)                              # durées estimées par le modè
 <!-- test -->
 ```python
 gdbtrace.profile(0.5, show=5)                   # sous QEMU : PC lu en marche par QMP
+```
+
+Filtre : ne tracer que `fib`. Les reprises de la trace sont marquées « trace interrompue »,
+la couverture ne porte que sur la plage.
+
+<!-- test: --etm-sim -->
+```python
+gdbtrace.etm_filter("fib")                      # ETM simulé : bloc aligné du DWT (ETMv3)
+gdbtrace.break_("animate", temporary=True)
+gdbtrace.go()
+gdbtrace.wait(10)
+gdbtrace.trace_list(12)
+gdbtrace.cov.list()                             # fib seulement
+gdbtrace.etm_filter()                           # retour à tout le code
 ```
 
 ## 11. Accès bas niveau
@@ -641,6 +656,7 @@ gdbtrace.cov.export("couverture.html")
 | `swo_config(cpu_hz, …)`, `itm(port=0)` | SWO, texte ITM |
 | `etm_swo(cpu_hz, swo_hz=2_000_000, stall=False, stm32=False, port=3443)` | ETM par SWO |
 | `etm_config(**options)` | ETM et TPIU parallèle |
+| `etm_filter(*plages, start=(), stop=())` | filtre de la trace ETM ; sans argument : tout le code |
 | `trace_list(n=30)`, `calls(n=40)` | Trace.List, flot d'appels |
 | `timing(top=20, unit="us", n=None, kind=None)`, `timeline(n=30, unit="us")` | durées |
 | `cov.summary()`, `cov.list(top, file=None)`, `cov.files()` | couverture |

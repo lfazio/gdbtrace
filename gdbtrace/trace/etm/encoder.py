@@ -16,7 +16,7 @@ from typing import Iterable
 
 from .cycles import outcome, successors
 from .image import INDIRECT, CodeImage
-from .qemu_log import Event, ExcEntry, ExcReturn, Step
+from .qemu_log import Event, ExcEntry, ExcReturn, Step, TraceGap
 
 ASYNC = b"\x00\x00\x00\x00\x00\x80"
 
@@ -159,6 +159,11 @@ class Etm3Encoder:
                         self._wait(ev.cycles)            # latence de sortie
                     self._emit(b"\x76")
                     self.need_addr = True
+            elif isinstance(ev, TraceGap):
+                # filtre : TraceEnable inactif ; la reprise se fait par I-sync « trace activée »
+                self._flush_atoms()
+                self.synced = False
+                self.need_addr = False
         self._flush_atoms()
         return bytes(self.out)
 

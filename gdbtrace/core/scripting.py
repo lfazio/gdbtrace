@@ -255,7 +255,7 @@ class ScriptAPI:
 
     def trace_list(self, n: int = 30):
         """Trace.List : les `n` dernières instructions exécutées (et exceptions)."""
-        from ..trace.etm.qemu_log import ExcEntry, ExcReturn
+        from ..trace.etm.qemu_log import ExcEntry, ExcReturn, TraceGap
         from ..trace.itm import exception_name
         etm = self._etm()
         events = etm.last(n)
@@ -266,6 +266,8 @@ class ScriptAPI:
                 print(f"{idx:>6}  ── exception {exception_name(e.number)} ({e.number}) → {e.handler:08x}")
             elif isinstance(e, ExcReturn):
                 print(f"{idx:>6}  ── retour d'exception")
+            elif isinstance(e, TraceGap):
+                print(f"{idx:>6}  ── trace interrompue (filtre)")
             else:
                 ins = etm.image.instr(e.addr)
                 f = sym.function_at(e.addr) if sym else None
@@ -281,9 +283,11 @@ class ScriptAPI:
     def calls(self, n: int = 40):
         """Flot des appels, retours et exceptions (dernières transitions)."""
         rows = self._etm().call_flow()[-n:]
-        icons = {"call": "→", "return": "←", "exception": "⚡", "exc-return": "↩", "start": "•", "branch": "↷"}
+        icons = {"call": "→", "return": "←", "exception": "⚡", "exc-return": "↩", "start": "•", "branch": "↷",
+                 "gap": "┄"}
+        labels = {"exc-return": "retour d'exception", "gap": "trace interrompue (filtre)"}
         for r in rows:
-            label = "retour d'exception" if r.kind == "exc-return" else r.func
+            label = labels.get(r.kind, r.func)
             print(f"{r.index:>8}  {'  ' * r.depth}{icons.get(r.kind, '')} {label}")
         return rows
 
@@ -335,6 +339,18 @@ class ScriptAPI:
         cfg = EtmConfig(**kw)
         cfg.apply(self.s)
         print(cfg.summary())
+
+    def etm_filter(self, *ranges: str, start=(), stop=()) -> None:
+        """Filtre de la trace ETM : plages (`"fib"`, `"main.c"`, `"0x100-0x200"`), lieux de
+        démarrage et d'arrêt (`start="fib"`, `stop=["main.c:59"]`) ; sans argument : tout le
+        code. ETM réel reprogrammé (cible arrêtée), ETM simulé filtré ; la couverture se limite
+        aux plages."""
+        if self.trace is None:
+            raise RuntimeError("pas de gestionnaire de trace")
+        start = [start] if isinstance(start, str) else list(start)
+        stop = [stop] if isinstance(stop, str) else list(stop)
+        for line in self.trace.set_etm_filter(list(ranges), start, stop, self.s):
+            print(line)
 
     def etm_swo(self, cpu_hz: int | None = None, swo_hz: int = 2_000_000, stall: bool = False,
                 stm32: bool = False, port: int = 3443) -> None:

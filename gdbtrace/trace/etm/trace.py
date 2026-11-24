@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from .etm3 import Etm3Decoder
 from .flow import FlowDecoder
 from .image import CodeImage
-from .qemu_log import Event, ExcEntry, ExcReturn, Step
+from .qemu_log import Event, ExcEntry, ExcReturn, Step, TraceGap
 
 
 @dataclass
@@ -38,7 +38,7 @@ class FuncCoverage:
 class FlowRow:
     index: int          # position (négative : depuis la fin de l'historique)
     depth: int
-    kind: str           # call, return, exception, exc-return, start
+    kind: str           # call, return, exception, exc-return, start, gap (trace interrompue)
     func: str
     addr: int
 
@@ -62,6 +62,10 @@ class EtmTrace:
         self.timing_label: str | None = None
         self.fed_instructions = 0    # instructions venues d'une autre source (MTB)
         self.fed_errors = 0
+        self.gaps = 0                # interruptions de la trace (filtre, débordement)
+        #: cible relancée depuis le dernier arrêt : la resynchronisation qui ouvre la nouvelle
+        #: exécution (I-sync, Trace On) n'est pas un trou, rien n'ayant tourné entre les deux
+        self._resumed = False
         self._lock = threading.Lock()
 
     def _decoders(self):
@@ -70,6 +74,25 @@ class EtmTrace:
             from .flow4 import Etm4Flow
             return Etm4Decoder(), Etm4Flow(self.image)
         return Etm3Decoder(cycle_accurate=self.cycle_accurate), FlowDecoder(self.image, self.cycle_accurate)
+
+    def resumed(self) -> None:
+        """La cible repart après un arrêt (appelé avant chaque reprise)."""
+        self._resumed = True
+
+    def _clean(self, events: list[Event]) -> list[Event]:
+        """Retire le « trou » qui ne fait que marquer la reprise après un arrêt."""
+        if not self._resumed and not any(isinstance(e, TraceGap) for e in events):
+            return events
+        out = []
+        for e in events:
+            if isinstance(e, TraceGap):
+                if self._resumed:
+                    continue
+                self.gaps += 1
+            elif isinstance(e, Step):
+                self._resumed = False
+            out.append(e)
+        return out
 
     def feed_events(self, events: list[Event], errors: int = 0) -> int:
         """Ajoute des événements déjà décodés (trace MTB) ; retourne le nombre d'instructions."""
@@ -86,7 +109,7 @@ class EtmTrace:
         """Ajoute des octets de trace ETM ; retourne le nombre d'instructions décodées."""
         with self._lock:
             self.bytes += len(data)
-            events = self.flow.feed(self.packets.feed(data))
+            events = self._clean(self.flow.feed(self.packets.feed(data)))
             self.history.extend(events)
             self.cov.add(events)
             self.generation += 1
@@ -99,7 +122,7 @@ class EtmTrace:
         if self.version != 4:
             return 0
         with self._lock:
-            events = self.flow.flush()
+            events = self._clean(self.flow.flush())
             if not events:
                 return 0
             self.history.extend(events)
@@ -112,7 +135,7 @@ class EtmTrace:
             self.packets, self.flow = self._decoders()
             self.history.clear()
             self.bytes = 0
-            self.fed_instructions = self.fed_errors = 0
+            self.fed_instructions = self.fed_errors = self.gaps = 0
             self.generation += 1
 
     def last(self, n: int) -> list[Event]:
@@ -128,7 +151,7 @@ class EtmTrace:
                 "non exécutées": fs.not_executed,
                 "erreurs": self.packets.errors + getattr(fs, "errors", 0) + self.fed_errors,
                 "atomes perdus": fs.lost_atoms, "code inconnu": fs.unknown_code, "cycles": fs.cycles,
-                "débordements": getattr(fs, "overflows", 0)}
+                "débordements": getattr(fs, "overflows", 0), "trous": self.gaps}
 
     @property
     def timing(self) -> str:
@@ -167,6 +190,10 @@ class EtmTrace:
         pending_call = pending_ret = False
         base = -len(events)
         for i, e in enumerate(events):
+            if isinstance(e, TraceGap):              # trace interrompue : la pile est perdue
+                rows.append(FlowRow(base + i, 0, "gap", "", 0))
+                depth, cur_func, pending_call, pending_ret = 0, None, False, False
+                continue
             if isinstance(e, ExcEntry):
                 depth += 1
                 rows.append(FlowRow(base + i, depth, "exception", self._name(e.handler), e.handler))

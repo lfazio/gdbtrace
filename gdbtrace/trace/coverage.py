@@ -111,6 +111,17 @@ class CoverageDB:
         self._universe: list[tuple[list, list[InstrInfo]]] | None = None
         self._by_addr: dict[int, InstrInfo] | None = None
         self._by_line: dict[tuple[str | None, int | None], list[InstrInfo]] = {}
+        #: plages tracées (filtre de l'ETM) : la couverture ne porte que sur elles ; None : tout
+        self.scope: list[tuple[int, int]] | None = None
+
+    def set_scope(self, ranges: list[tuple[int, int]] | None) -> None:
+        """Limite la couverture aux plages tracées (le reste n'est pas mesuré, pas « jamais »)."""
+        with self._lock:
+            self.scope = list(ranges) if ranges else None
+            self.generation += 1
+
+    def in_scope(self, addr: int) -> bool:
+        return self.scope is None or any(lo <= addr < hi for lo, hi in self.scope)
 
     # ------------------------------------------------------------------ alimentation
     def add(self, events) -> None:
@@ -225,6 +236,10 @@ class CoverageDB:
             e, n = dict(self.e), dict(self.n)
         out = []
         for funcs, instrs in self.universe():
+            if self.scope is not None:
+                instrs = [i for i in instrs if self.in_scope(i.addr)]
+                if not instrs:
+                    continue
             name = " = ".join(sorted({x.name for x in funcs}, key=lambda s: (s.startswith("_"), s)))
             fc = FuncCov(name=name, file=instrs[0].file, line=instrs[0].line, start=instrs[0].addr,
                          entries=e.get(instrs[0].addr, 0))
@@ -253,7 +268,7 @@ class CoverageDB:
         path = os.path.normpath(path)
         for _funcs, instrs in self.universe():
             for ins in instrs:
-                if ins.file == path and ins.line is not None:
+                if ins.file == path and ins.line is not None and self.in_scope(ins.addr):
                     self._counts(ins, e, n, out.setdefault(ins.line, Counts()))
         return out
 
@@ -265,7 +280,7 @@ class CoverageDB:
     def measured(self, addr: int) -> bool:
         """`addr` fait partie du code mesuré (ni literal pool, ni remplissage) ?"""
         self.universe()
-        return addr in self._by_addr
+        return addr in self._by_addr and self.in_scope(addr)
 
     def total(self) -> tuple[Counts, int, int]:
         """(totaux du programme, fonctions entrées, fonctions)."""

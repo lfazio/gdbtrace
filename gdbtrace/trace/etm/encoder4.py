@@ -27,7 +27,7 @@ from typing import Iterable
 from .cycles import outcome, successors
 from .etm4 import ASYNC, exception_type
 from .image import DIRECT, INDIRECT, CodeImage
-from .qemu_log import Event, ExcEntry, ExcReturn, Step
+from .qemu_log import Event, ExcEntry, ExcReturn, Step, TraceGap
 
 TRACE_INFO = b"\x01\x00"          # aucune section : pas de comptage de cycles, spéculation 0
 TRACE_ON = b"\x04"
@@ -179,6 +179,12 @@ class Etm4Encoder:
                 last = ctx_stack.pop() if ctx_stack else None
                 self.mode = CTX_HANDLER if rets else CTX_THREAD     # mode repris
                 self.ctx_pending = True
+            elif isinstance(ev, TraceGap):
+                # filtre : ViewInst inactif ; la reprise se fait par Trace On + adresse
+                self._flush_atoms()
+                self.synced = False
+                self.need_addr = False
+                rets, ctx_stack, last = [], [], None
             self.consumed = idx + 1
         self._flush_atoms()
         return bytes(self.out)

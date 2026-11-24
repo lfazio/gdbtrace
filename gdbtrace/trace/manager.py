@@ -44,6 +44,11 @@ class TraceManager:
         self.etm_swo = False
         self.setup_log: list[str] = []
         self.setup_error: str | None = None
+        #: filtre de la trace ETM : effectif (tel que le matériel l'applique), spécifications
+        #: d'origine (re-résolues sur un autre ELF), configuration matérielle programmée
+        self.etm_filter = None
+        self.etm_filter_specs: tuple[list[str], list[str], list[str]] | None = None
+        self.etm_cfg = None
 
     # ------------------------------------------------------------------ ETM
     def setup_etm(self, elf: str, symbols, cycle_accurate: bool = False,
@@ -82,6 +87,12 @@ class TraceManager:
         msg = self.setup_etm(elf, symbols, cycle_accurate, version)
         if sim is not None and self.etm is not None:
             self.enable_qemu_sim(sim.qmp)
+        if self.etm_filter_specs and self.etm is not None:   # mêmes noms, nouvelles adresses
+            try:
+                self.set_etm_filter(*self.etm_filter_specs, session=getattr(self, "_attached", None))
+            except Exception as exc:  # noqa: BLE001 - fonction disparue, cible en marche...
+                self.etm_filter = self.etm_filter_specs = None
+                self.setup_error = f"filtre ETM abandonné : {exc}"
         if mtb_sim is not None and self.etm is not None:
             self.enable_mtb_sim(mtb_sim.qmp, mtb_sim.size, getattr(self, "_attached", None),
                                 autohalt=mtb_sim.autohalt)
@@ -130,6 +141,7 @@ class TraceManager:
                 self.etm = EtmTrace(self.etm.image, self.etm.symbols, cycle_accurate=True)
             self.etm.simulated = True            # cycles du modèle : durées estimées
             self.etm_sim = QemuEtmSim(qmp, self.etm.image, self.etm)
+            self.etm_sim.filter = self.etm_filter
 
     # ------------------------------------------------------------------ MTB (Cortex-M0+)
     def enable_mtb_sim(self, qmp, size: int = 1024, session=None, autohalt: bool = False) -> None:
@@ -210,7 +222,11 @@ class TraceManager:
             session.deliver_stop(force=True)
 
     def source_label(self) -> str:
-        """D'où vient la trace d'instructions (libellé des vues)."""
+        """D'où vient la trace d'instructions (libellé des vues), et son filtre."""
+        label = self._source_label()
+        return f"{label} — {self.etm_filter.describe()}" if self.etm_filter is not None else label
+
+    def _source_label(self) -> str:
         if self.mtb_sim is not None:
             if self.mtb_sim.autohalt:
                 return f"MTB simulée (QEMU, AUTOHALT, {self.mtb_sim.autohalts} arrêts)"
@@ -259,6 +275,8 @@ class TraceManager:
         exécution serait perdue (ou la MTB remise à zéro pendant qu'elle trace)."""
         if self.etm_busy:
             self.wait_etm()
+        if self.etm is not None:
+            self.etm.resumed()                  # la resynchronisation qui suit n'est pas un trou
         for sim in self._sims():
             if sim.path is None:
                 try:
@@ -302,10 +320,46 @@ class TraceManager:
         l'ETM détectée (v3 ou v4)."""
         if self.etm is not None:                # ETM illisible (QEMU) : version déjà détectée
             cfg.version = self.etm.version
+        if cfg.filter is None and self.etm_filter_specs and self.etm is not None:
+            from .etm.filter import build_filter   # filtre demandé avant la programmation
+            cfg.filter = build_filter(*self.etm_filter_specs, symbols=self.etm.symbols)
         log = [f"{name} = {val:#010x}" for name, val in cfg.apply(session)]
+        self.etm_cfg = cfg
+        self.etm_filter = cfg.effective_filter()
         log.append(cfg.summary())
         self.set_etm_version(cfg.version)
         self.attach_session(session)            # ETMv4 : validation à chaque arrêt
+        return log
+
+    def set_etm_filter(self, ranges=(), start=(), stop=(), session=None) -> list[str]:
+        """Filtre de la trace ETM : plages (`fib`, `main.c`, `0x100-0x200`), adresses de
+        démarrage et d'arrêt (`fib`, `main.c:59`, `0x1f4`) ; tout vide : tout le code.
+        ETM réel déjà programmé : reprogrammé (cible arrêtée) ; ETM simulé : appliqué au chemin
+        de QEMU, avec les limites du matériel (blocs alignés du DWT en ETMv3). La couverture se
+        limite aux plages demandées. Retourne le journal."""
+        from .etm.config import EtmConfig
+        from .etm.filter import build_filter
+        if self.etm is None:
+            raise RuntimeError("trace ETM indisponible (capstone requis, ou pas d'ELF)")
+        flt = build_filter(ranges, start, stop, self.etm.symbols)
+        log: list[str] = []
+        if self.etm_cfg is not None:            # ETM matériel : reprogrammé avec ce filtre
+            if session is None or session.state != "stopped":
+                raise RuntimeError("arrêter la cible pour reprogrammer l'ETM")
+            self.etm_cfg.filter = flt if flt.active else None
+            log = self.configure_etm(self.etm_cfg, session)
+            eff = self.etm_cfg.effective_filter()
+        else:                                   # ETM simulé (ou ETM pas encore programmé)
+            cfg = EtmConfig(version=self.etm.version, filter=flt if flt.active else None)
+            cfg._etm4_filter() if cfg.version == 4 else cfg._etm3_filter()   # limites du matériel
+            eff = cfg.effective_filter()
+        self.etm_filter = eff
+        self.etm_filter_specs = (list(ranges), list(start), list(stop)) if flt.active else None
+        if self.etm_sim is not None:
+            self.etm_sim.filter = eff
+        self.etm.cov.set_scope(flt.ranges or None)
+        self._etm_changed()
+        log.append(eff.describe() if eff is not None else "filtre ETM retiré : tout le code est tracé")
         return log
 
     def start_etm_swo(self, session, target=None, cpu_hz: int = 0, swo_hz: int = 2_000_000,

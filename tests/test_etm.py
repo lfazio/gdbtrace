@@ -130,6 +130,8 @@ def as_tuples(events):
             out.append(("step", e.addr))
         elif isinstance(e, ql.ExcEntry):
             out.append(("exc", e.number))
+        elif isinstance(e, ql.TraceGap):
+            out.append(("gap",))
         else:
             out.append(("ret",))
     return out

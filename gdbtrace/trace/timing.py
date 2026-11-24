@@ -28,7 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .etm.image import DIRECT, INDIRECT
-from .etm.qemu_log import Event, ExcEntry, ExcReturn, Step
+from .etm.qemu_log import Event, ExcEntry, ExcReturn, Step, TraceGap
 from .itm import exception_name
 
 FUNCTION, EXCEPTION = "function", "exception"
@@ -142,6 +142,8 @@ class TimingAnalyzer:
                 self._exc_entry(e)
             elif isinstance(e, ExcReturn):
                 self._exc_return(e)
+            elif isinstance(e, TraceGap):
+                self._gap()
         while self.stack:                       # fin de trace : cadres encore ouverts
             self._close(len(self.stack) - 1, complete_end=False)
         for susp in self.suspended:             # tâches jamais reprises
@@ -357,6 +359,17 @@ class TimingAnalyzer:
         self.prev = None
         self.stack[-1].self_c += e.cycles       # latence d'entrée
         self.t += e.cycles
+
+    def _gap(self) -> None:
+        """Trace interrompue (filtre de l'ETM) : la pile d'appels ne vaut plus ; les cadres
+        ouverts sont fermés comme partiels, et la reprise repart d'une pile vide."""
+        while self.stack:
+            self._close(len(self.stack) - 1, complete_end=False)
+        for susp in self.suspended:
+            self._finish(susp)
+        self.suspended = []
+        self.prev = None
+        self.after_exc = False
 
     def _exc_return(self, e: ExcReturn) -> None:
         k = self._last_exception()

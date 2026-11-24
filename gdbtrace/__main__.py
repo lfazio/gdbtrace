@@ -50,6 +50,9 @@ def int_auto(text: str) -> int:
 def setup_trace(args, trace, session, target, log=print) -> None:
     """Options de trace, après la connexion (cible arrêtée) : programmation de la cible puis
     démarrage des captures. Commun au mode --batch (`log` = print) et au GUI (console)."""
+    if args.etm_filter or args.etm_start or args.etm_stop:   # avant la programmation de l'ETM
+        for line in trace.set_etm_filter(args.etm_filter, args.etm_start, args.etm_stop, session):
+            log(line)
     if args.etm_config and args.etm_port == "swo":      # ETM + ITM formatés sur le SWO
         for line in trace.start_etm_swo(session, target, args.cpu_hz, args.swo_hz,
                                          stall=args.etm_stall, stm32=args.stm32,
@@ -154,6 +157,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="ralentir le cœur plutôt que perdre de la trace quand la FIFO de l'ETM se "
                         "remplit (indispensable par SWO sur un cœur rapide)")
     e.add_argument("--stm32", action="store_true", help="activer les broches de trace (DBGMCU_CR des STM32)")
+    e.add_argument("--etm-filter", action="append", default=[], metavar="PLAGE",
+                   help="ne tracer que cette plage : fonction (fib), fichier (main.c) ou adresses "
+                        "(0x100-0x200, 0x100+64) ; répétable")
+    e.add_argument("--etm-start", action="append", default=[], metavar="LIEU",
+                   help="démarrer la trace en exécutant ce lieu (fonction, fichier.c:ligne, adresse)")
+    e.add_argument("--etm-stop", action="append", default=[], metavar="LIEU",
+                   help="arrêter la trace après ce lieu")
     m = p.add_argument_group("trace MTB (Cortex-M0+)")
     m.add_argument("--mtb", nargs="?", const="auto", metavar="ADRESSE",
                    help="activer la MTB de la cible (registres trouvés par les tables ROM CoreSight, "
@@ -206,6 +216,11 @@ def main(argv: list[str] | None = None) -> int:
                                      ("--etm-width", args.etm_width != 4)) if on]
         if stray:
             p.error(f"{', '.join(stray)} : avec --etm-config (programmer l'ETM)")
+    if (args.etm_filter or args.etm_start or args.etm_stop) and not (
+            args.etm_sim or args.etm_config or args.trace or args.trace_file
+            or ((args.swo or args.swo_file) and args.swo_formatter)):
+        p.error("--etm-filter / --etm-start / --etm-stop : avec une trace ETM (--etm-sim sous QEMU ; "
+                "--etm-config sur matériel, ou une capture --trace / --trace-file)")
     etm_swo = args.etm_config and args.etm_port == "swo"
     swo_etm = (args.swo or args.swo_file) and args.swo_formatter     # flux formaté : ETM ID 2
     if args.coverage and not (args.etm_sim or args.trace or args.trace_file or args.coverage_merge

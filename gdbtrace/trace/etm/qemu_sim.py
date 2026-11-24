@@ -30,6 +30,8 @@ class QemuEtmSim:
         self.runs = 0
         self.last_events = 0
         self.truncated = False
+        #: filtre de l'ETM (EtmFilter effectif) appliqué au chemin de QEMU, comme le matériel
+        self.filter = None
 
     def start_run(self) -> None:
         self.runs += 1
@@ -78,6 +80,8 @@ class QemuEtmSim:
 
     def _convert(self, events: list, end_pc: int | None) -> int:
         events = annotate(events, self.image)        # cycles du modèle (QEMU n'en a pas)
+        if self.filter is not None:                  # ce que l'ETM filtré aurait tracé
+            events = self.filter.apply(events)
         if getattr(self.etm, "version", 3) == 4:
             from .encoder4 import Etm4Encoder
             data = Etm4Encoder(self.image).encode(events)

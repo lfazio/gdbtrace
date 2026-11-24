@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from .cycles import EXC_ENTRY, EXC_EXIT, TAIL_CHAIN, cycles_of
 from .etm3 import Atoms, Branch, Etm3Decoder, EtmPacket, ExceptionExit, ISync, Wait
 from .image import DIRECT, INDIRECT, CodeImage
-from .qemu_log import Event, ExcEntry, ExcReturn, Step
+from .qemu_log import Event, ExcEntry, ExcReturn, Step, TraceGap
 
 
 @dataclass
@@ -38,6 +38,7 @@ class FlowDecoder:
         self.stats = FlowStats()
         self.exc_depth = 0           # exceptions en cours (imbrication)
         self.last_was_return = False # dernier événement : instruction de retour exécutée
+        self.synced = False          # un premier I-sync a été reçu
 
     @property
     def timing(self) -> str:
@@ -53,6 +54,11 @@ class FlowDecoder:
         out: list[Event] = []
         for p in packets:
             if isinstance(p, ISync):
+                # trace réactivée (filtre) ou reprise après débordement : un trou dans le chemin
+                if self.synced and p.reason in (1, 2):
+                    out.append(TraceGap())
+                    self.exc_depth, self.last_was_return = 0, False
+                self.synced = True
                 self.addr = p.addr
                 self.pending += p.cycles
             elif isinstance(p, Wait):

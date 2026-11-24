@@ -18,6 +18,7 @@ Interface en **tkinter**.
 | 8. Couverture de code | Couverture du code objet par la trace ETM, sans instrumentation : instructions, branches prises / non prises, lignes, fonctions ; cumul et fusion de campagnes ; rapports HTML et LCOV | ✅ |
 | 9. MTB et ETM par SWO | Trace MTB des Cortex-M0+ (décodage validé sur chemins QEMU, démo M0+, MTB simulée) ; ETM d'un M3/M4 par la broche SWO, sans sonde de trace | ✅ (à valider sur carte) |
 | 10. ETMv4 (Cortex-M7) | Trace d'instructions de l'ETM-M7 (ETMv4.0) : décodage validé contre QEMU, OpenCSD et une vraie capture par SWO sur Nucleo-F746ZG ; version de l'ETM détectée ; ETM simulé v4 sous QEMU (`mps2-an500`) | 🚧 (cycle-accurate et horodatage à venir) |
+| 11. Trace ciblée et débogage avancé | Filtres de l'ETM (plages, start/stop) ; trace de données du DWT ; temps par tâche RTOS par ITM ; breakpoints à action et à compteur, Go.Till, Step.Change | 🚧 |
 
 ## Installation
 
@@ -223,6 +224,28 @@ parallèle 1/2/4 bits avec formateur, et avec `--stm32` les broches de trace (DB
 L'architecture de l'ETM est lue sur la cible (TRCIDR1 ; sous QEMU, le cœur d'après CPUID) :
 ETMv3 pour un Cortex-M3/M4, ETMv4 pour un Cortex-M7, et le décodeur suit. `--etm-stall`
 ralentit le cœur plutôt que de perdre de la trace quand la FIFO de l'ETM se remplit.
+
+**Filtre de trace** (`--etm-filter`, `--etm-start`, `--etm-stop`, Trace › Filtre de trace
+ETM…, `gdbtrace.etm_filter()`) : ne tracer qu'une partie du code, ce qui laisse tout le
+débit du port (ou du SWO) à ce qui compte.
+
+- **Plages** : une fonction (`fib`), un fichier (`main.c` : ses fonctions, plages contiguës
+  fusionnées) ou des adresses (`0x100-0x200`, `0x100+64`).
+- **Start / stop** : la trace démarre en exécutant un lieu (fonction, `main.c:59`, adresse)
+  et s'arrête après un autre. Avec des plages, les deux conditions se combinent.
+
+Chaque reprise est un trou marqué dans Trace.List (« trace interrompue ») et dans le flot
+d'appels ; l'analyse temporelle ferme alors les appels ouverts comme partiels. La couverture
+ne porte que sur les plages tracées (le reste n'est pas compté « jamais »).
+
+| ETM | Moyens | Limites |
+|---|---|---|
+| ETMv4 (M7) | comparateurs d'adresse de l'ETM (une paire par plage, un par déclencheur) | nombre de paires lu dans TRCIDR4 (2 sur un ETM-M7) |
+| ETMv3.5 (M3/M4) | l'ETM n'a pas de comparateur : il prend ceux du DWT (déclenchement ETM sur égalité de PC), par le haut | 2 plages au plus (A OU B) ; une plage est un bloc aligné de 2^n octets qui englobe la plage demandée ; un arrêt demande un démarrage ; les comparateurs pris manquent aux watchpoints de gdb |
+
+L'ETM simulé applique le même filtre effectif au chemin de QEMU. Validation : chemin QEMU
+filtré → encodeur → décodeur, identique en ETMv3 et ETMv4 (bare et FreeRTOS) ; registres
+vérifiés sur des cibles factices. À valider sur carte : le comportement réel des comparateurs.
 
 **Comment le décodeur a été validé sans matériel.**
 1. QEMU fournit le chemin réel instruction par instruction, exceptions comprises.

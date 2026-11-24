@@ -14,7 +14,7 @@ import re
 from dataclasses import replace
 
 from .image import DIRECT, INDIRECT, Instr
-from .qemu_log import Event, ExcEntry, ExcReturn, Step
+from .qemu_log import Event, ExcEntry, ExcReturn, Step, TraceGap
 
 P = 2                  # remplissage du pipeline après un branchement pris
 EXC_ENTRY = 12         # latence d'entrée d'exception (empilement)
@@ -81,6 +81,10 @@ def successors(evs: list[Event]) -> dict[int, int]:
             last = None
         elif isinstance(ev, ExcReturn):
             last = stack.pop() if stack else None
+        elif isinstance(ev, TraceGap):              # trace interrompue : contexte perdu
+            if last is not None and ev.next_addr is not None:
+                succ[last] = ev.next_addr
+            last, stack = None, []
     return succ
 
 
@@ -113,6 +117,8 @@ def annotate(events: list[Event], image) -> list[Event]:
             out.append(replace(ev, cycles=cycles_of(ins, executed, taken)))
         elif isinstance(ev, ExcEntry):
             out.append(replace(ev, cycles=TAIL_CHAIN if ev.tailchain else EXC_ENTRY))
-        else:
+        elif isinstance(ev, ExcReturn):
             out.append(replace(ev, cycles=EXC_EXIT))
+        else:
+            out.append(ev)                          # TraceGap : durée inconnue
     return out
