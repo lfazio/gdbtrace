@@ -10,7 +10,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from .live import LiveMemory, OpenOcdTcl, QemuQmp
+from .live import LiveMemory, OpenOcdTcl, ProcMem, QemuQmp
 
 
 def _wait_port(host: str, port: int, timeout: float) -> None:
@@ -38,6 +38,8 @@ class TargetServer:
     proc: subprocess.Popen | None = field(default=None, repr=False)
     #: Faut-il faire `load` après connexion (OpenOCD oui, QEMU charge l'ELF lui-même).
     needs_load: bool = True
+    #: programme natif exécuté par gdb lui-même (NativeTarget) plutôt qu'une cible distante
+    native = False
     #: dernières lignes écrites par le serveur sur stderr
     log: collections.deque = field(default_factory=lambda: collections.deque(maxlen=200),
                                    repr=False)
@@ -187,6 +189,37 @@ class OpenOcdTarget(TargetServer):
 
     def live_memory(self) -> LiveMemory | None:
         return OpenOcdTcl(self.host, self.tcl_port)
+
+
+@dataclass
+class NativeTarget(TargetServer):
+    """Programme natif (hôte : x86-64, AArch64…) exécuté sous gdb lui-même : ni serveur gdb
+    ni chargement. La session le démarre arrêté au début de `main` (`-exec-run --start`) ;
+    `args` : arguments du programme, `cwd` : son répertoire de travail. La mémoire se lit en
+    marche dans `/proc/<pid>/mem`."""
+    args: list[str] = field(default_factory=list)
+    cwd: str | None = None
+    needs_load: bool = False
+    #: PID du programme débogué, tenu à jour par la session (None : pas démarré)
+    pid: int | None = None
+    native = True
+
+    @property
+    def remote(self) -> str:
+        return "programme natif"
+
+    def start(self, timeout: float = 10.0) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+    def reset(self, session) -> None:
+        """Pas de reset matériel : le programme est relancé, arrêté au début de `main`."""
+        session.restart()
+
+    def live_memory(self) -> LiveMemory | None:
+        return ProcMem(lambda: self.pid)
 
 
 @dataclass

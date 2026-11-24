@@ -32,11 +32,12 @@ def view_classes() -> dict[str, type[View]]:
     from ..views.coverage import CoverageView
     from ..views.files import FilesView
     from ..views.timing import TimingView
+    from ..views.threads import ThreadsView
     from ..views.trace import TraceView
     from ..views.vartrace import VarTraceView
     from ..views.tasktime import TaskTimeView
     classes = [FilesView, SourceView, DisasmView, TraceView, TimingView, CoverageView, RegistersView, WatchView, PeripheralsView,
-               RtosView, StackView, BreakpointsView, MemoryView, ConsoleView, ItmView, ProfileView, VarTraceView,
+               RtosView, ThreadsView, StackView, BreakpointsView, MemoryView, ConsoleView, ItmView, ProfileView, VarTraceView,
                TaskTimeView]
     return {c.kind: c for c in classes}
 
@@ -52,6 +53,7 @@ DEFAULT_LAYOUT = [
     {"kind": "watch", "where": "data"},
     {"kind": "peripherals", "where": "data"},
     {"kind": "rtos", "where": "data"},
+    {"kind": "threads", "where": "data"},
     {"kind": "stack", "where": "data"},
     {"kind": "breakpoints", "where": "data"},
     {"kind": "console", "where": "bottom"},
@@ -326,7 +328,7 @@ class App:
             self.api.symbols = self.symbols
         self._rtos_layout = None
         clear_source_cache()
-        if self.symbols is not None:            # décodage ETM (et ETM simulé) sur le nouveau code
+        if self.symbols is not None and not self.native:   # décodage ETM : Cortex-M seulement
             self.trace.retarget(elf, self.symbols, cycle_accurate=self.etm_cycle_accurate)
         for v in list(self.views.views):
             if hasattr(v, "on_program_changed"):
@@ -378,7 +380,8 @@ class App:
                 msg = self.trace.setup_etm(self.session.elf, self.symbols)
                 if msg:
                     self.report_error(msg)
-        if self.trace.etm is not None and self.session is not None and self.session.state == "stopped":
+        if self.trace.etm is not None and self.session is not None and self.session.state == "stopped" \
+                and not self.native:
             self.safe(self.trace.detect_etm, self.session)      # ETMv3 (M3/M4) ou ETMv4 (M7)
         if isinstance(target, QemuTarget) and (target.etm_sim or target.mtb_sim is not None) \
                 and self.live is not None:
@@ -461,6 +464,21 @@ class App:
             self.breakpoints_changed()
         elif kind == "output" and data.get("stream") == "action":   # breakpoints à action
             self.write_console(data.get("text", ""), "err" if data.get("error") else "action")
+        elif kind == "exited":
+            self.current_frame = None
+            code = self.session.exit_code if self.session else None
+            sig = data.get("signal-name")
+            self.status.set("Programme terminé" + (f" par {sig}" if sig else f" (code {code})")
+                            + " — Go le relance, Reset l'arrête au début de main")
+            for v in list(self.views.views):
+                if hasattr(v, "on_exited"):
+                    self.safe(v.on_exited, data)
+        elif kind == "threads":
+            if data.get("event") == "thread-selected":
+                self.refresh_all()              # registres, pile, source : le nouveau thread
+            for v in list(self.views.views):
+                if hasattr(v, "on_threads"):
+                    self.safe(v.on_threads, data)
         elif kind == "output":
             text = data.get("text", "")
             tag = {"target": "target", "log": "err"}.get(data.get("stream", ""), "gdb")
@@ -501,7 +519,7 @@ class App:
     def update_status(self) -> None:
         state = self.session.state if self.session else "disconnected"
         colors = {"stopped": ("ARRÊTÉ", "#b03030"), "running": ("RUNNING", "#208020"),
-                  "disconnected": ("DÉCONNECTÉ", "#777777")}
+                  "exited": ("TERMINÉ", "#555588"), "disconnected": ("DÉCONNECTÉ", "#777777")}
         text, bg = colors.get(state, (state, "#777"))
         self.state_label.configure(text=text, bg=bg)
         # LIVE vert : canal mémoire latéral disponible (vues rafraîchies en marche)
@@ -523,9 +541,22 @@ class App:
     def _need(self, state: str) -> bool:
         return self.session is not None and self.session.state == state
 
+    @property
+    def native(self) -> bool:
+        """La session débogue un programme natif (pas un Cortex-M)."""
+        s = self.session
+        return s is not None and s.target is not None and s.target.native
+
     def go(self) -> None:
-        if self._need("stopped"):
+        if self._need("stopped") or self._need("exited"):   # terminé : relancé
             self.run_action(self.session.go)
+
+    def select_thread(self, thread_id: str) -> None:
+        """Le thread devient le thread courant (vues Threads, console)."""
+        if not self._need("stopped"):
+            self.status.set("Arrêter le programme pour changer de thread")
+            return
+        self.run_action(lambda: self.session.select_thread(thread_id))
 
     def halt(self) -> None:
         if self._need("running"):

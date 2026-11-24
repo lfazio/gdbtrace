@@ -68,8 +68,14 @@ Aucun linter n'est configuré.
   - `step_till` / `step_change` (`_step_loop`) font une seule reprise : arrêts intermédiaires
     silencieux (`_looping`, `state` reste « running »), un `running` et un `stopped`.
 - `TargetServer` (`core/target.py`) : `QemuTarget` (défaut, charge l'ELF lui-même,
-  `needs_load=False`), `OpenOcdTarget`, `RemoteTarget` (+ `--tcl` optionnel).
-  `live_memory()` fournit le canal mémoire latéral, ou `None`.
+  `needs_load=False`), `OpenOcdTarget`, `RemoteTarget` (+ `--tcl` optionnel), et
+  `NativeTarget` (`target.native`) : programme de l'hôte exécuté par gdb lui-même
+  (`-exec-run --start`, arrêt à `main`), dans son propre pseudo-terminal (sinon il partage
+  les tubes MI de gdb), état `exited` à sa fin, `restart()`. `live_memory()` fournit le canal
+  mémoire latéral (natif : `/proc/<pid>/mem`), ou `None`.
+- Programme natif PIE : les adresses de `SymbolTable` (ELF) ne sont pas celles de l'exécution
+  (relocation) ; demander l'adresse à gdb (`address_of_expr`). La trace ETM et le Cortex-M
+  (SVD, RTOS, reset par vecteurs) ne s'appliquent pas (`App.native`).
 
 ### Threads et tkinter
 

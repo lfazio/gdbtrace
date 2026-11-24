@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import threading
 from collections import deque
 from dataclasses import dataclass, field
@@ -45,6 +46,19 @@ class ProgramResult:
         else:
             v = "non vérifié" + (f" ({self.verify_error.splitlines()[-1]})" if self.verify_error else "")
         return f"{os.path.basename(self.elf)} programmé : {self.size} octets en {self.seconds:.1f} s, {v}"
+
+
+@dataclass
+class ThreadInfo:
+    """Un thread vu par gdb : pthread d'un programme natif, tâche RTOS exposée par OpenOCD."""
+    id: str                          # numéro gdb
+    name: str                        # nom (pthread_setname_np, /proc/<pid>/task/<lwp>/comm)
+    target_id: str                   # « Thread 0x7ffff7da06c0 (LWP 3542062) »
+    lwp: int | None
+    state: str                       # stopped | running
+    core: int | None
+    frame: Frame | None
+    current: bool = False
 
 
 @dataclass
@@ -144,8 +158,10 @@ class Session:
         self.gdb = GdbMI(gdb_path)
         self.target: TargetServer | None = None
         self.elf: str | None = None
-        self.state = "disconnected"  # disconnected | stopped | running
+        self.state = "disconnected"  # disconnected | stopped | running | exited
         self.stop_reason: dict = {}
+        #: programme natif terminé : code de sortie (None : tué par un signal, ou pas fini)
+        self.exit_code: int | None = None
         self._stopped = threading.Event()
         self._listeners: list[EventFn] = []
         self._resume_hooks: list[Callable[[], None]] = []
@@ -176,10 +192,12 @@ class Session:
         # sortie console de gdb retenue pendant la marche quand des actions sont posées : la
         # bannière « Breakpoint N, … » d'un arrêt d'action est jetée, le reste livré à l'arrêt
         self._held: list[str] = []
+        self._pty: tuple[int, int, str] | None = None   # programme natif : (maître, esclave, nom)
 
     # ------------------------------------------------------------------ événements
     def on_event(self, fn: EventFn) -> None:
-        """fn(kind, data) avec kind ∈ stopped, running, output, breakpoints, disconnected."""
+        """fn(kind, data) avec kind ∈ stopped, running, output, breakpoints, disconnected,
+        exited (programme natif terminé), threads (thread créé, terminé ou sélectionné)."""
         self._listeners.append(fn)
 
     def add_resume_hook(self, fn: Callable[[], None]) -> None:
@@ -264,7 +282,18 @@ class Session:
 
     def _on_mi(self, rec: dict) -> None:
         t, msg, payload = rec.get("type"), rec.get("message"), rec.get("payload")
-        if t == "notify" and msg == "stopped":
+        if t == "notify" and msg == "stopped" and (payload or {}).get("reason", "").startswith("exited"):
+            # programme natif terminé (exited-normally, exited, exited-signalled)
+            payload = payload or {}
+            code = payload.get("exit-code")
+            self.exit_code = int(code, 8) if code else (0 if payload["reason"] == "exited-normally" else None)
+            if self.target is not None and getattr(self.target, "native", False):
+                self.target.pid = None
+            self.state = "exited"
+            self.stop_reason = payload
+            self._emit("exited", payload)
+            self._stopped.set()
+        elif t == "notify" and msg == "stopped":
             payload = payload or {}
             with self._lock:
                 if self._looping:               # pas intermédiaire d'une boucle : silencieux
@@ -314,6 +343,8 @@ class Session:
             self._emit("running", payload or {})
         elif t == "notify" and msg and msg.startswith("breakpoint-"):
             self._emit("breakpoints", payload or {})
+        elif t == "notify" and msg in ("thread-created", "thread-exited", "thread-selected"):
+            self._emit("threads", {"event": msg, **(payload or {})})
         elif t == "notify" and msg == "gdb-exited":
             self.state = "disconnected"
             self._stopped.set()
@@ -335,11 +366,14 @@ class Session:
         self.gdb.add_listener(self._on_mi)
         self.gdb.start()
         self.gdb.command(f'-file-exec-and-symbols "{elf}"')
-        self.gdb.command(f"-target-select extended-remote {target.remote}", timeout=20)
-        self.state = "stopped"
-        self._stopped.set()
-        if load if load is not None else target.needs_load:
-            self.load()
+        if target.native:
+            self._run(start=True)                # programme natif : arrêté au début de main
+        else:
+            self.gdb.command(f"-target-select extended-remote {target.remote}", timeout=20)
+            self.state = "stopped"
+            self._stopped.set()
+            if load if load is not None else target.needs_load:
+                self.load()
         self._reg_names = self.gdb.command("-data-list-register-names").get("register-names", [])
         self._emit("stopped", {"reason": "connected"})
 
@@ -356,6 +390,13 @@ class Session:
         finally:
             if self.target:
                 self.target.stop()
+            if self._pty is not None:
+                for fd in self._pty[:2]:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+                self._pty = None
             self.state = "disconnected"
             self._emit("disconnected", {})
 
@@ -406,9 +447,74 @@ class Session:
         """Commande CLI gdb arbitraire (porte de sortie)."""
         return self.gdb.console(cmd)
 
+    # ------------------------------------------------------------------ programme natif
+    def _run(self, start: bool = True, timeout: float = 30.0) -> None:
+        """Lance (ou relance) le programme natif ; `start` : arrêt au début de `main`."""
+        t = self.target
+        self._inferior_tty()
+        self.gdb.command("-exec-arguments " + shlex.join(t.args))
+        if t.cwd:
+            self.cli(f"set cwd {t.cwd}")
+        self.exit_code = None
+        self._continuing = not start            # relance par Go ; arrêt à main : non
+        self._stopped.clear()
+        self._before_resume()
+        self.gdb.command("-exec-run --start" if start else "-exec-run", timeout=timeout)
+        if start:
+            self.wait_stopped(timeout)
+        t.pid = self.inferior_pid()
+
+    def _inferior_tty(self) -> None:
+        """Terminal propre au programme natif. Sinon il hériterait de celui de gdb, c'est-à-dire
+        des tubes MI : sa sortie se mêlerait aux enregistrements MI (une ligne sans fin les
+        rendrait illisibles) et, s'il lisait son entrée, il volerait les commandes de gdb.
+        Sa sortie part vers les abonnés (flux « target » : la console) ; `send_input()` lui
+        écrit."""
+        if self._pty is None:
+            import tty
+            master, slave = os.openpty()
+            tty.setraw(slave)                    # ni écho ni « \r\n »
+            self._pty = (master, slave, os.ttyname(slave))
+            threading.Thread(target=self._read_tty, args=(master,), name="inferior-tty",
+                             daemon=True).start()
+        self.gdb.command(f'-inferior-tty-set "{self._pty[2]}"')
+
+    def _read_tty(self, fd: int) -> None:
+        while True:
+            try:
+                data = os.read(fd, 4096)
+            except OSError:
+                return
+            if not data:
+                return
+            self._emit("output", {"stream": "target", "text": data.decode(errors="replace")})
+
+    def send_input(self, text: str) -> None:
+        """Programme natif : `text` arrive sur son entrée standard."""
+        if self._pty is None:
+            raise RuntimeError("pas de programme natif lancé")
+        os.write(self._pty[0], text.encode())
+
+    def restart(self) -> None:
+        """Programme natif : relancé depuis le début, arrêté au début de `main`
+        (le processus en cours, s'il y en a un, est tué)."""
+        if self.state == "running":
+            self.halt()
+        self._run(start=True)
+
+    def inferior_pid(self) -> int | None:
+        """PID du programme natif débogué, None s'il ne tourne pas."""
+        for g in self.gdb.command("-list-thread-groups").get("groups", []):
+            if g.get("pid"):
+                return int(g["pid"])
+        return None
+
     # ------------------------------------------------------------------ run-control
     def go(self) -> None:
         self._continuing = True
+        if self.state == "exited":              # programme natif terminé : relancé
+            self._run(start=False)
+            return
         self._stopped.clear()
         self._before_resume()
         self.gdb.command("-exec-continue")
@@ -759,7 +865,17 @@ class Session:
 
     def register(self, name: str) -> int:
         # conversion explicite : gdb affiche $sp/$pc comme pointeurs (« 0x... <sym+n> »)
-        return _int(self.evaluate(f"(unsigned long)${name}")) & 0xFFFFFFFF
+        return _int(self.evaluate(f"(unsigned long)${name}")) & ((1 << 8 * self.pointer_size) - 1)
+
+    @property
+    def pointer_size(self) -> int:
+        """Taille d'un pointeur de la cible : 4 (Cortex-M), 8 (programme natif 64 bits)."""
+        if not hasattr(self, "_ptr_size"):
+            try:
+                self._ptr_size = int(self.evaluate("sizeof(void *)"))
+            except (GdbError, ValueError):
+                return 4
+        return self._ptr_size
 
     def write_register(self, name: str, value: int) -> None:
         self.gdb.command(f"-data-evaluate-expression \"${name}={value}\"")
@@ -866,6 +982,38 @@ class Session:
     def threads(self) -> list[dict]:
         """Threads vus par gdb. Avec OpenOCD `-rtos`, chaque tâche RTOS est un thread."""
         return self.gdb.command("-thread-info").get("threads", [])
+
+    def thread_list(self) -> list[ThreadInfo]:
+        """Threads du programme (pthreads d'un programme natif), le courant marqué. Utilisable
+        cible en marche (sans frames)."""
+        res = self.gdb.command("-thread-info")
+        current = res.get("current-thread-id")
+        out = []
+        for t in res.get("threads", []):
+            m = re.search(r"LWP (\d+)", t.get("target-id", ""))
+            f = t.get("frame")
+            frame = None
+            if f and f.get("addr"):
+                frame = Frame(pc=_int(f["addr"]), func=f.get("func"), file=f.get("file"),
+                              fullname=f.get("fullname"),
+                              line=int(f["line"]) if f.get("line") else None)
+            out.append(ThreadInfo(
+                id=t.get("id", "?"), name=t.get("name", ""), target_id=t.get("target-id", ""),
+                lwp=int(m.group(1)) if m else None, state=t.get("state", ""),
+                core=int(t["core"]) if str(t.get("core", "")).isdigit() else None,
+                frame=frame, current=t.get("id") == current))
+        return out
+
+    def select_thread(self, thread_id: str) -> Frame | None:
+        """Le thread devient le thread courant : registres, pile, variables locales et pas à
+        pas portent désormais sur lui."""
+        res = self.gdb.command(f"-thread-select {thread_id}")
+        self._emit("threads", {"event": "thread-selected", "id": str(thread_id)})
+        f = res.get("frame")
+        if not f or not f.get("addr"):
+            return None
+        return Frame(pc=_int(f["addr"]), func=f.get("func"), file=f.get("file"),
+                     fullname=f.get("fullname"), line=int(f["line"]) if f.get("line") else None)
 
     def thread_for(self, task_name: str) -> str | None:
         """Identifiant du thread gdb correspondant à une tâche, ou None (pas de support RTOS

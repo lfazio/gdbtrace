@@ -18,6 +18,7 @@ from __future__ import annotations
 import code
 import contextlib
 import io
+import os
 import runpy
 import threading
 from typing import Callable
@@ -526,6 +527,32 @@ class ScriptAPI:
             print(f"{mark}{t.name:<11} {t.state:<10} {t.priority:>4}  {stack:>11}  {pct:>5}  "
                   f"{cpu:>6}  {t.waiting_on or ''}")
         return snap.tasks
+
+    def threads(self) -> list:
+        """Threads du programme (pthreads d'un programme natif) : affichés et retournés.
+        Le thread courant est marqué « * »."""
+        ths = self.s.thread_list()
+        print(f" {'n°':>3}  {'nom':<16} {'LWP':>8}  {'état':<8} {'cœur':>4}  où")
+        for t in ths:
+            f = t.frame
+            where = ""
+            if f is not None:
+                where = f"{f.func or '??'}" + (f"  {os.path.basename(f.file)}:{f.line}" if f.file else "")
+            core = "" if t.core is None else str(t.core)
+            print(f"{'*' if t.current else ' '}{t.id:>3}  {t.name:<16} {t.lwp or '':>8}  "
+                  f"{t.state:<8} {core:>4}  {where}")
+        return ths
+
+    def thread(self, which) -> list:
+        """Le thread `which` (numéro gdb ou nom) devient le thread courant ; retourne sa pile."""
+        ths = self.s.thread_list()
+        t = next((t for t in ths if t.id == str(which) or t.name == str(which)), None)
+        if t is None:
+            raise ValueError(f"thread inconnu : {which} (threads : "
+                             + ", ".join(f"{t.id} {t.name}" for t in ths) + ")")
+        self.s.select_thread(t.id)
+        self.bt()
+        return self.s.backtrace()
 
     def queues(self) -> list[freertos.KernelObject]:
         """TASK.Objects : queues, sémaphores et mutex du registre."""

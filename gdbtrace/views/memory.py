@@ -10,6 +10,9 @@ WIDTH = 16
 HEX_COL = 10  # position de la première colonne hexa dans une ligne
 
 
+DEFAULT_ADDR = "0x20000000"     # SRAM d'un Cortex-M
+
+
 class MemoryView(View):
     title = "Mémoire"
     kind = "memory"
@@ -19,7 +22,7 @@ class MemoryView(View):
         bar = ttk.Frame(self)
         bar.pack(fill="x")
         ttk.Label(bar, text="Adresse :").pack(side="left")
-        self.addr_var = tk.StringVar(value="0x20000000")
+        self.addr_var = tk.StringVar(value=DEFAULT_ADDR)
         e = ttk.Entry(bar, textvariable=self.addr_var, width=24)
         e.pack(side="left", padx=2)
         e.bind("<Return>", lambda _e: self.refresh())
@@ -57,7 +60,9 @@ class MemoryView(View):
             return int(s, 0)
         except ValueError:
             pass
-        if self.app.symbols and s in self.app.symbols.objects:
+        # adresses de l'ELF : justes pour un firmware ; un programme natif (PIE) est relogé,
+        # seul gdb connaît alors l'adresse réelle
+        if self.app.symbols and s in self.app.symbols.objects and not self.app.native:
             return self.app.symbols.objects[s][0]
         if self.stopped:
             return self.session.address_of_expr(s)
@@ -76,6 +81,17 @@ class MemoryView(View):
         if self.stopped:
             self._render(base, self.session.read_memory(base, n))
         self._update_subscription()
+
+    def on_program_changed(self) -> None:
+        """Programme natif : 0x20000000 (SRAM d'un Cortex-M) n'y est pas lisible ; la vue part
+        de la première variable globale du programme, désignée par son nom."""
+        sym = self.app.symbols
+        if not (self.app.native and sym and self.addr_var.get().strip() == DEFAULT_ADDR):
+            return
+        names = [n for n, (_a, size) in sym.objects.items() if size and n.isidentifier()
+                 and not n.startswith("_")]
+        if names:
+            self.addr_var.set(min(names, key=lambda n: sym.objects[n][0]))
 
     # ------------------------------------------------------------------ live (canal latéral)
     def _update_subscription(self) -> None:

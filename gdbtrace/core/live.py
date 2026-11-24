@@ -12,6 +12,7 @@ GdbTrace passe donc par un canal latéral :
 from __future__ import annotations
 
 import json
+import os
 import socket
 import threading
 from dataclasses import dataclass, field
@@ -257,6 +258,32 @@ class QemuQmp(LiveMemory):
     def close(self) -> None:
         with self._lock:
             self._close_locked()
+
+
+# ====================================================================== programme natif
+class ProcMem(LiveMemory):
+    """Mémoire d'un programme natif en marche, lue dans `/proc/<pid>/mem` : le processus qui
+    lit est un ancêtre du programme débogué (lancé par gdb, lui-même lancé par GdbTrace),
+    ce que la politique ptrace autorise. `pid()` donne le PID courant (il change quand le
+    programme est relancé)."""
+    name = "/proc/pid/mem"
+
+    def __init__(self, pid: Callable[[], int | None]):
+        super().__init__()
+        self.pid = pid
+
+    def read(self, addr: int, length: int) -> bytes:
+        pid = self.pid()
+        if not pid:
+            raise LiveMemoryError("programme non démarré")
+        try:
+            with open(f"/proc/{pid}/mem", "rb", buffering=0) as fh:
+                data = os.pread(fh.fileno(), length, addr)
+        except OSError as exc:
+            raise LiveMemoryError(f"/proc/{pid}/mem {addr:#x}+{length} : {exc.strerror}") from exc
+        if len(data) != length:
+            raise LiveMemoryError(f"/proc/{pid}/mem {addr:#x}+{length} : lecture partielle")
+        return data
 
 
 # ====================================================================== regroupement

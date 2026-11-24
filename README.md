@@ -19,6 +19,7 @@ Interface en **tkinter**.
 | 9. MTB et ETM par SWO | Trace MTB des Cortex-M0+ (décodage validé sur chemins QEMU, démo M0+, MTB simulée) ; ETM d'un M3/M4 par la broche SWO, sans sonde de trace | ✅ (à valider sur carte) |
 | 10. ETMv4 (Cortex-M7) | Trace d'instructions de l'ETM-M7 (ETMv4.0) : décodage validé contre QEMU, OpenCSD et une vraie capture par SWO sur Nucleo-F746ZG ; version de l'ETM détectée ; ETM simulé v4 sous QEMU (`mps2-an500`) | 🚧 (cycle-accurate et horodatage à venir) |
 | 11. Trace ciblée et débogage avancé | Filtres de l'ETM (plages, start/stop) ; trace de données du DWT ; temps par tâche RTOS par ITM ; breakpoints à action et à compteur, Go.Till, Step.Change | ✅ |
+| 12. Programmes natifs | Un ELF de l'hôte (x86-64, AArch64…) débogué sous gdb : arrêt au début de `main`, vue Threads (pthreads nommés, thread courant, changement de thread), mémoire lue en marche dans `/proc/<pid>/mem`, fin et relance du programme | ✅ |
 
 ## Installation
 
@@ -46,6 +47,7 @@ make -C examples/freertos && .venv/bin/python -m gdbtrace examples/freertos/free
 .venv/bin/python -m gdbtrace fw.elf --openocd … --etm-config --etm-port swo --cpu-hz 4000000  # ETM par SWO
 make -C examples/m0plus && .venv/bin/python -m gdbtrace examples/m0plus/demo.elf --machine microbit --mtb-sim  # M0+ + MTB
 .venv/bin/python -m gdbtrace fw.elf --openocd … --mtb --mtb-probe  # MTB d'un vrai Cortex-M0+
+make -C examples/native && .venv/bin/python -m gdbtrace examples/native/pthreads --args 100000  # programme natif
 ```
 
 ### Programmer la cible
@@ -159,6 +161,28 @@ case « Live » ; les lectures de toutes les vues sont regroupées par un seul t
 Limite connue de QEMU : son gdbstub **ignore les écritures du débogueur dans les périphériques**
 (seules la RAM et la ROM sont écrites). gdbtrace le détecte à la relecture et l'affiche. Sur une
 vraie sonde, les écritures fonctionnent.
+
+### Programmes natifs et pthreads (vue Threads)
+
+Un ELF qui n'est pas ARM (ou `--native`) est un programme de l'hôte : gdb l'exécute lui-même,
+sans serveur ni chargement, et il s'arrête au début de `main`. `--args '…'` lui passe ses
+arguments (syntaxe shell), `--cwd` son répertoire de travail. Il a son propre terminal : sa
+sortie arrive dans la console, et `gdbtrace.s.send_input("…")` écrit sur son entrée (elle ne
+peut pas se mêler aux échanges avec gdb).
+
+- **Vue Threads** : numéro gdb, nom (`pthread_setname_np`), LWP, état, cœur, et où en est
+  chaque thread. Le thread courant est en gras, celui qui a provoqué l'arrêt est rappelé en
+  tête. Double-clic (programme arrêté) : il devient le thread courant, et registres, pile,
+  source et pas à pas portent sur lui. La liste suit la création et la fin des threads, même
+  en marche (tous les threads s'arrêtent ensemble : mode all-stop de gdb).
+- **En marche** : les vues Mémoire et Watch lisent `/proc/<pid>/mem`.
+- **Fin du programme** : état TERMINÉ, avec son code de sortie ; Go le relance, Reset le
+  relance arrêté au début de `main`.
+- Console : `gdbtrace.threads()` (liste, « * » = courant), `gdbtrace.thread("producer")`
+  (par nom ou numéro ; retourne sa pile).
+
+Démo : `examples/native/pthreads.c` (producteur, consommateur et moniteur nommés, file
+protégée par mutex et variables de condition ; `./pthreads N` s'arrête après N tours).
 
 ### Vue RTOS (FreeRTOS)
 
@@ -610,7 +634,7 @@ gdbtrace/
   core/gdb_backend.py   pilote GDB/MI asynchrone (thread lecteur, jetons, événements)
   core/session.py       API haut niveau (run-control, mémoire, registres, varobjs ; breakpoints
                         à action et à compteur, Go.Till, Step.Till / Step.Change)
-  core/target.py        serveurs gdb : QEMU, OpenOCD, distant
+  core/target.py        serveurs gdb : QEMU, OpenOCD, distant ; programme natif (sous gdb)
   core/symbols.py       ELF/DWARF direct (pyelftools) : fonctions, table des lignes
   core/live.py          canal mémoire latéral (OpenOCD TCL, QEMU QMP) + LivePoller
   core/live_vars.py     disposition et décodage des variables sans gdb (Watch en marche)
@@ -645,7 +669,7 @@ gdbtrace/
   core/scripting.py     API `gdbtrace` + console Python
   gui/                  fenêtre tkinter, vues détachables, pompe d'événements thread-safe
   views/                Fichiers, Source, Désassemblage, Registres, Mémoire, Watch, Périphériques, RTOS,
-                        Pile, Breakpoints, Console, ITM, Profil, Trace, Timing, Couverture
+                        Threads, Pile, Breakpoints, Console, ITM, Profil, Trace, Timing, Couverture
 examples/
   firmware/             firmware de démo Cortex-M3 (SysTick 1 kHz, timer CMSDK)
   freertos/             firmware de démo FreeRTOS V11.3.3 (noyau MIT inclus) : 7 tâches,

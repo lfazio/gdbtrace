@@ -1,4 +1,8 @@
-"""Point d'entrée : python -m gdbtrace firmware.elf [--qemu | --openocd CFG... | --remote HOST:PORT].
+"""Point d'entrée : python -m gdbtrace firmware.elf [--qemu | --openocd CFG... | --remote HOST:PORT
+| --native].
+
+Programme natif (`--native`, ou automatiquement pour un ELF qui n'est pas ARM) : exécuté sous
+gdb lui-même, arrêté au début de `main` ; `--args` lui passe ses arguments.
 
 Programmation : `--program [ELF]` écrit l'ELF dans la cible à la connexion (reset, load,
 vérification, reset) ; avec `--batch` et sans script, gdbtrace programme puis quitte
@@ -8,12 +12,27 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import sys
 
-from .core.target import OpenOcdTarget, QemuTarget, RemoteTarget, free_port
+from .core.target import NativeTarget, OpenOcdTarget, QemuTarget, RemoteTarget, free_port
+
+
+def is_native_elf(elf: str) -> bool:
+    """ELF d'une autre architecture qu'ARM (x86-64, AArch64…) : un programme natif."""
+    try:
+        from elftools.elf.elffile import ELFFile
+        with open(elf, "rb") as fh:
+            return ELFFile(fh)["e_machine"] != "EM_ARM"
+    except Exception:  # noqa: BLE001 - illisible : on garde la cible par défaut
+        return False
 
 
 def build_target(args, elf: str) -> object:
+    explicit = args.qemu or args.openocd is not None or args.remote
+    if args.native or (not explicit and is_native_elf(elf)):
+        return NativeTarget(args=shlex.split(args.args or ""),
+                            cwd=os.path.abspath(args.cwd) if args.cwd else None)
     if args.remote:
         host, _, port = args.remote.rpartition(":")
         t = RemoteTarget(host=host or "127.0.0.1", gdb_port=int(port))
@@ -130,7 +149,7 @@ def setup_mtb(args, trace, session, log=print) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     """Options de la ligne de commande (aussi utilisées par les tests du GUI)."""
-    p = argparse.ArgumentParser(prog="gdbtrace", description="GdbTrace : débogueur Cortex-M sur gdb")
+    p = argparse.ArgumentParser(prog="gdbtrace", description="GdbTrace : débogueur Cortex-M (et programmes natifs) sur gdb")
     p.add_argument("elf", nargs="?",
                    help="firmware ELF avec symboles DWARF (facultatif en GUI : Fichier › Programmer un ELF…)")
     g = p.add_mutually_exclusive_group()
@@ -138,6 +157,11 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--openocd", nargs="*", metavar="CFG",
                    help="lancer OpenOCD avec ces fichiers -f (ex. board/st_nucleo_f4.cfg)")
     g.add_argument("--remote", metavar="HOST:PORT", help="serveur gdb déjà lancé (J-Link, pyOCD...)")
+    g.add_argument("--native", action="store_true",
+                   help="programme natif (hôte) exécuté sous gdb, arrêté au début de main "
+                        "(par défaut pour un ELF qui n'est pas ARM)")
+    p.add_argument("--args", metavar="'A B…'", help="programme natif : ses arguments (syntaxe shell)")
+    p.add_argument("--cwd", metavar="DOSSIER", help="programme natif : son répertoire de travail")
     p.add_argument("--tcl", metavar="HOST:PORT",
                    help="avec --remote : port TCL d'un OpenOCD lancé à part (mémoire en direct)")
     p.add_argument("--svd", metavar="FICHIER", help="description CMSIS-SVD des périphériques")
@@ -280,9 +304,11 @@ def main(argv: list[str] | None = None) -> int:
         trace = TraceManager(on_error=print)
         from .core.symbols import SymbolTable
         symbols = SymbolTable(elf)
-        msg = trace.setup_etm(elf, symbols, cycle_accurate=args.etm_cycle_accurate)
-        if trace.etm is not None:
-            trace.detect_etm(s)                  # ETMv3 (M3/M4) ou ETMv4 (M7)
+        msg = None
+        if not target.native:                    # trace d'instructions : Cortex-M seulement
+            msg = trace.setup_etm(elf, symbols, cycle_accurate=args.etm_cycle_accurate)
+            if trace.etm is not None:
+                trace.detect_etm(s)              # ETMv3 (M3/M4) ou ETMv4 (M7)
         if args.etm_sim or args.mtb_sim is not None:
             if msg:
                 print(msg)

@@ -9,3 +9,4 @@ gdbtrace-layout.json
 .pytest_cache/
 .cache/
 *.ppl
+examples/native/pthreads
