@@ -181,15 +181,20 @@ def _wait_instructions(proc, path: str, count: int, deadline: float) -> None:
 
 
 def head(events: Iterable[Event], instructions: int) -> list[Event]:
-    """Les événements jusqu'à la `instructions`-ième instruction exécutée, incluse."""
+    """Les événements jusqu'à la `instructions`-ième instruction exécutée, incluse, et rien
+    après : le chemin coupé finit toujours par une instruction. Une entrée ou un retour
+    d'exception qui la suit appartient à la suite (sa reprise n'est pas dans le chemin) ;
+    le garder rendait la fin du chemin aléatoire, selon l'endroit où tombait une interruption."""
     out: list[Event] = []
+    if instructions <= 0:
+        return out
     n = 0
     for e in events:
+        out.append(e)
         if isinstance(e, Step):
+            n += 1
             if n == instructions:
                 break
-            n += 1
-        out.append(e)
     return out
 
 

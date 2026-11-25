@@ -191,6 +191,32 @@ def test_real_paths_roundtrip(qemu_paths, name):
     _roundtrip(*qemu_paths[name])
 
 
+def test_head_ends_with_an_instruction():
+    """Un chemin coupé après N instructions finit par la Nᵉ : l'exception qui la suit appartient
+    à la suite (gardée, elle rendait la fin du chemin aléatoire selon les interruptions)."""
+    from gdbtrace.trace.etm.qemu_log import head
+    ev = [Step(0x10), Step(0x12), ExcReturn(), Step(0x14), ExcEntry(15, 0x40), Step(0x40)]
+    assert head(ev, 2) == ev[:2] and head(ev, 3) == ev[:4]
+    assert head(ev, 0) == [] and head(ev, 10) == ev
+
+
+@needs_qemu
+@pytest.mark.parametrize("kind", [ExcReturn, ExcEntry])
+def test_roundtrip_cut_where_an_exception_follows(qemu_paths, kind):
+    """Coupe du chemin juste avant une exception (retour, entrée) : l'encodage et le décodage
+    s'accordent. Avant, la coupe gardait l'exception : une instruction de trop (retour) ou une
+    erreur de décodage (entrée), au gré du minutage des SysTick (échec intermittent sous
+    charge)."""
+    from gdbtrace.trace.etm.qemu_log import head
+    img, events = qemu_paths["bare"]
+    k = next(i for i in range(len(events) - 2, 0, -1)
+             if isinstance(events[i], Step) and isinstance(events[i + 1], kind))
+    n = sum(1 for e in events[:k + 1] if isinstance(e, Step))
+    cut = head(events, n)
+    assert cut[-1] is events[k] and n > 200_000
+    _roundtrip(img, cut)
+
+
 @needs_qemu
 def test_cortex_m0plus_path_roundtrip(m0_path):
     """Code ARMv6-M réel (démo compilée pour Cortex-M0+, QEMU microbit)."""
