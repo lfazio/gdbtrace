@@ -47,7 +47,7 @@ NUCLEO_N6 = BoardSpec("nucleo-n657x0-q", "GDBTRACE_N6_SERIAL", None,
 NUCLEO_G070 = BoardSpec("nucleo-g070rb", "GDBTRACE_G070_SERIAL", "configs/nucleo-g070rb.cfg",
                         0x40015800, 0x460, "STM32G070.svd")
 NUCLEO_F072 = BoardSpec("nucleo-f072rb", "GDBTRACE_F072_SERIAL", "configs/nucleo-f072rb.cfg",
-                        0x40015800, 0x448, "STM32F072.svd")
+                        0x40015800, 0x448, "STM32F0x2.svd")
 
 
 def stlink_serials() -> list[tuple[str, str]]:
@@ -227,12 +227,19 @@ def run_gui(argv: list[str], name: str, ready, cleanup=None, extra=None) -> dict
                 time.sleep(0.02)
             return until is None
 
+        def settled():
+            """Plus de travail de fond : SVD en lecture, analyse d'une vue (Timing…)."""
+            return getattr(app, "_svd_pending", None) is None and not any(
+                getattr(v, "_busy", False) for v in app.views.views)
+
         def snapshot(phase):
             # chaque onglet affiché une fois : certaines vues ne se remplissent que visibles
             for nb in app.views.notebooks.values():
                 for tab in nb.tabs():
                     nb.select(tab)
                     pump(0.3)
+            # machine chargée (suite complète) : le relevé attend la fin des travaux de fond
+            pump(until=settled, timeout=60)
             result["phases"][phase] = dump_views(app)
 
         def decoded():

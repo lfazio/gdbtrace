@@ -102,6 +102,27 @@ def test_retry_recovers_from_transient_incoherence():
     assert fr.snapshot(L, flaky, attempts=3).incoherent is None
 
 
+def test_states_from_tcbs_when_lists_never_read_coherently():
+    """Sonde lente, noyau rapide (Cortex-M0 à 8 MHz par OpenOCD) : aucun parcours de liste
+    n'est cohérent. Avec un instantané précédent, l'état de chaque tâche vient de son TCB
+    (la liste qui le contient) ; une tâche passée en attente l'est bien."""
+    L = tiny_layout()
+    mem = build(Mem(), L)
+    prev = fr.snapshot(L, mem.read)
+    assert prev.incoherent is None and [t.state for t in prev.tasks] == ["Running", "Ready"]
+    # B passe dans la liste des délais, mais la tête de la liste prête annonce encore 2
+    # éléments : le parcours est incohérent à chaque essai
+    mem.w(A + L.tcb_state + L.li_next, L.ready + L.list_end)
+    mem.w(B + L.tcb_state + L.li_container, L.delayed1)
+    assert fr.snapshot(L, mem.read, attempts=3).incoherent           # sans instantané
+    snap = fr.snapshot(L, mem.read, prev=prev, attempts=3)
+    assert snap.incoherent is None
+    assert {t.tcb: t.state for t in snap.tasks} == {A: "Running", B: "Blocked"}
+    # un TCB entre deux listes (pvContainer nul) : incohérent, l'appelant garde le précédent
+    mem.w(B + L.tcb_state + L.li_container, 0)
+    assert "hors des listes" in fr.snapshot(L, mem.read, prev=prev).incoherent
+
+
 def test_cm3_saved_context():
     L = tiny_layout()
     mem = Mem()

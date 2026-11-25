@@ -568,13 +568,13 @@ Ces deux cartes portent un cœur ARMv6-M, sans trace : un Cortex-M0+ sur la G070
 | Horloge au reset (gardée par la démo) | HSI16, 16 MHz | HSI, 8 MHz |
 | Flash, RAM | 128 Ko, 36 Ko | 128 Ko, 16 Ko |
 | Configuration OpenOCD | `configs/nucleo-g070rb.cfg` | `configs/nucleo-f072rb.cfg` |
-| SVD (STM32CubeIDE) | `STM32G070.svd` | `STM32F072.svd` |
+| SVD (STM32CubeIDE) | `STM32G070.svd` | `STM32F0x2.svd` |
 | DEV_ID (DBGMCU_IDCODE) | 0x460 | 0x448 |
 | Firmware d'exemple | `examples/nucleo-g070` | `examples/nucleo-f072` |
 
 ### Ce que permet un Cortex-M0 ou M0+
 
-Ces cœurs n'ont ni ITM, ni SWO, ni ETM, ni MTB (STM32G0 : RM0444, chapitre 40) : aucune trace. Ils ont 4 breakpoints matériels et un DWT à 2 comparateurs, avec `DWT_PCSR` sur le M0+ du G0 (sur le M0 du F0, à confirmer par le test sur carte).
+Ces cœurs n'ont ni ITM, ni SWO, ni ETM, ni MTB (STM32G0 : RM0444, chapitre 40) : aucune trace. Ils ont 4 breakpoints matériels et un DWT à 2 comparateurs, avec `DWT_PCSR` sur le M0+ du G0 et sur le M0 du F072 (vérifié sur carte).
 
 | Fonction | Sur ces cartes |
 | --- | --- |
@@ -616,7 +616,7 @@ Elles équivalent à :
 .venv/bin/python -m gdbtrace examples/nucleo-g070/nucleo-g070.elf --program \
     --openocd configs/nucleo-g070rb.cfg --svd STM32G070.svd --cpu-hz 16000000 --os freertos
 .venv/bin/python -m gdbtrace examples/nucleo-f072/nucleo-f072.elf --program \
-    --openocd configs/nucleo-f072rb.cfg --svd STM32F072.svd --cpu-hz 8000000 --os freertos
+    --openocd configs/nucleo-f072rb.cfg --svd STM32F0x2.svd --cpu-hz 8000000 --os freertos
 ```
 
 - Profil : vue **Profil**, source « Auto » ou « Live », **Démarrer** cible en marche.
@@ -941,6 +941,7 @@ Quand une capture ne démarre pas, GdbTrace le dit : le journal de mise en route
 | « SVD STM32G070.svd introuvable » | SVD donné par son nom, absent de STM32CubeIDE | donner son chemin, ou `GDBTRACE_SVD_DIR` ; la session continue sans vue Périphériques |
 | Claude Code : serveur gdbtrace « failed » | interpréteur introuvable (chemin relatif), ou venv sans GdbTrace | chemin absolu de `.venv/bin/python` dans `claude mcp add` ; `claude mcp list` ; journal du serveur sur stderr |
 | Outil MCP `evaluate` : « cible en marche » | variable jamais évaluée cible arrêtée, locale, ou cible sans canal mémoire | l'évaluer une fois après `halt` ; avec `--remote`, ajouter `--tcl` |
+| OpenOCD refuse gdb : « timed out while waiting for target halted », puis « Cannot identify target » | cœur Cortex-M0/M0+ tenu sous reset (connexion sous reset) : un simple halt n'aboutit pas | `configs/nucleo-f072rb.cfg` et `nucleo-g070rb.cfg` font `reset halt` à l'attachement (`gdb-attach`) ; reprendre ce bloc dans une configuration OpenOCD maison |
 | ETMv3 par SWO : le firmware se fige (pile dans une attente de l'ITM) | l'ETM prend toute la broche, l'ITM n'y passe plus | `--etm-filter`, ou mieux `--etm-start` / `--etm-stop` (section 11) ; ou ralentir le cœur |
 | « non pris en charge par cet ETM : cycle-accurate » | l'ETM-M3/M4 n'a pas ce mode | durées estimées ; mesurer avec un ETMv4 (M7, M55) |
 | « Cortex-M0+ (ARMv6-M) : ni ITM, ni SWO, ni ETM » | le cœur n'a pas de trace (STM32G0, STM32F0, STM32L0…) | profil par lecture du PC (« Live ») ; MTB si `--mtb-probe` en trouve une |
@@ -950,8 +951,9 @@ Quand une capture ne démarre pas, GdbTrace le dit : le journal de mise en route
 - **Validé sur carte** :
   - Nucleo-F746ZG (Cortex-M7, OpenOCD) : ETMv4 et ITM par SWO, trace de données du DWT, profil par SWO, vues RTOS et temps des tâches ;
   - Nucleo-N657X0-Q (Cortex-M55, ST-LINK_gdbserver) : vues en marche par le relais, image en RAM, ITM par le SWO de la sonde, ETMv4.5 par l'ETR (boucles à faible coût comprises), trace de données du DWT de l'ARMv8-M, vues RTOS et temps des tâches ;
-  - Nucleo-F446RE (Cortex-M4F, OpenOCD) : ETMv3 et ITM par SWO, filtres de l'ETMv3 (plage et start/stop), trace de données du DWT, profil par SWO, vues RTOS et temps des tâches.
-- **Pas encore validé sur carte** : Nucleo-G070RB (Cortex-M0+) et Nucleo-F072RB (Cortex-M0), par OpenOCD (test prêt : `tests/test_board_m0.py`), lecture de `DWT_PCSR` par OpenOCD (et sa présence sur le Cortex-M0), port de trace parallèle, MTB d'un vrai M0+, `--rtos` d'OpenOCD.
+  - Nucleo-F446RE (Cortex-M4F, OpenOCD) : ETMv3 et ITM par SWO, filtres de l'ETMv3 (plage et start/stop), trace de données du DWT, profil par SWO, vues RTOS et temps des tâches ;
+  - Nucleo-F072RB (Cortex-M0, OpenOCD) : run-control (breakpoints à compteur et à message, Go.Till par le DWT), vues en marche, RTOS (en marche : état de chaque tâche lu dans son TCB), profil par `DWT_PCSR`.
+- **Pas encore validé sur carte** : Nucleo-G070RB (Cortex-M0+, OpenOCD ; test prêt : `tests/test_board_m0.py -k g070`), port de trace parallèle, MTB d'un vrai M0+, `--rtos` d'OpenOCD.
 - **Cortex-M0/M0+** : ni ITM, ni SWO, ni ETM. Sur les STM32G0 et STM32F0, 4 breakpoints matériels et 2 watchpoints, que Go.Till partage avec les watchpoints posés.
 - **ETMv4** : Cortex-M7 (par SWO) et Cortex-M55 (par l'ETR d'un STM32N6), cycle-accurate et horodatage compris. Sur le M55, le filtre ETM prend les comparateurs du DWT (4 plages au plus), et la branche d'une instruction « branch future » (BF, BFL…) n'est pas suivie ; les compilateurs n'en émettent pas.
 - **ETR** : lu en continu tant que la trace ne dépasse pas ce que lit la sonde (~550 Ko/s) ; au-delà, des trous. En cycle-accurate, lu à l'arrêt : un tampon plein ne garde que la fin de l'exécution.

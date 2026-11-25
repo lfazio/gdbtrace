@@ -44,7 +44,7 @@ class M0Board:
 
 
 BOARDS = [M0Board("g070", boards.NUCLEO_G070, "nucleo-g070", "nucleo-g070rb.yaml", "Cortex-M0+", "STM32G07"),
-          M0Board("f072", boards.NUCLEO_F072, "nucleo-f072", "nucleo-f072rb.yaml", "Cortex-M0", "STM32F07")]
+          M0Board("f072", boards.NUCLEO_F072, "nucleo-f072", "nucleo-f072rb.yaml", "Cortex-M0", "STM32F0x2")]
 
 pytestmark = pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="pas de DISPLAY (xvfb-run)")
 
@@ -95,7 +95,8 @@ def run_control(app) -> dict:
         s.go_till(f"produced >= {target}")
         reason = s.wait_stopped(10)
         return {"produced": int(s.evaluate("produced")), "attendu": target,
-                "func": s.frame().func, "raison": (reason or {}).get("reason")}
+                "func": s.frame().func, "raison": (reason or {}).get("reason"),
+                "signal": (reason or {}).get("signal-name"), "dfsr": hex(s.read_u32(0xE000ED30))}
 
     attempt("compteur", counted)
     attempt("message", logged)

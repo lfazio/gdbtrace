@@ -10,6 +10,7 @@ import os
 import re
 import shlex
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -141,6 +142,22 @@ def _stop_number(payload: dict) -> str | None:
 
 _ACTION_REASONS = ("breakpoint-hit", "watchpoint-trigger", "read-watchpoint-trigger",
                    "access-watchpoint-trigger")
+#: watchpoints de gdb (-break-list) et raison d'arrêt de chacun
+_WATCH_REASON = {"hw watchpoint": ("watchpoint-trigger", "wpt"),
+                 "read watchpoint": ("read-watchpoint-trigger", "hw-rwpt"),
+                 "acc watchpoint": ("access-watchpoint-trigger", "hw-awpt")}
+DFSR = 0xE000ED30                 # Debug Fault Status Register (Cortex-M), bits écrits à 1 pour effacer
+#: délai pendant lequel un SIGINT non demandé est pris pour une interruption doublée
+STALE_INTERRUPT_S = 30.0
+DFSR_DWTTRAP = 1 << 2
+
+
+def _truthy(value: str) -> bool:
+    v = str(value).split()[0] if str(value).split() else ""
+    try:
+        return int(v, 0) != 0
+    except ValueError:
+        return v not in ("false", "")
 _KEEP: Any = object()
 
 
@@ -185,6 +202,11 @@ class Session:
         self._actions: dict[str, BreakAction] = {}
         self._counts: dict[str, int] = {}
         self._transient: set[str] = set()
+        #: watchpoints posés au dernier Go et valeur de leur expression (voir _watch_trap)
+        self._watch_vals: dict[str, dict] = {}
+        #: interruption envoyée par halt() mais doublée par un autre arrêt (breakpoint) : le
+        #: serveur peut l'appliquer après la reprise suivante (instant du constat, ou None)
+        self._stale_interrupt: float | None = None
         self.action_log: deque[str] = deque(maxlen=1000)
         # boucle de pas (Step.Till, Step.Change) : une seule reprise vue de l'extérieur
         self._looping = False
@@ -395,7 +417,17 @@ class Session:
                     self._loop_stop.set()
                     return
                 requested, self._halt_requested = self._halt_requested, False
+                if requested and payload.get("reason") != "signal-received":
+                    self._stale_interrupt = time.monotonic()
                 free = not requested and self.state == "running" and self._continuing
+                if (free and self._watch_vals and payload.get("reason") == "signal-received"
+                        and payload.get("signal-name") == "SIGTRAP"):
+                    # peut-être un watchpoint que le serveur n'a pas attribué : arrêt interne
+                    self._internal, self._internal_reason = True, payload
+                    self._held.clear()
+                    threading.Thread(target=self._watch_trap, args=(payload,),
+                                     name="gdbtrace-watch", daemon=True).start()
+                    return
                 act = (self._actions.get(_stop_number(payload) or "")
                        if free and payload.get("reason") in _ACTION_REASONS else None)
                 if act is not None:             # breakpoint à action : arrêt interne
@@ -414,6 +446,17 @@ class Session:
                     if internal:
                         return
                     self._internal = False
+                if (free and self._stale_interrupt is not None
+                        and payload.get("reason") == "signal-received"
+                        and payload.get("signal-name") == "SIGINT"):
+                    # l'interruption d'un halt() doublé par un breakpoint, appliquée par le
+                    # serveur après la reprise (OpenOCD) : personne ne l'a demandée, on repart
+                    stale, self._stale_interrupt = self._stale_interrupt, None
+                    if time.monotonic() - stale < STALE_INTERRUPT_S:
+                        self._internal, self._internal_reason = True, payload
+                        threading.Thread(target=self._resume_after_stale, name="gdbtrace-sigint",
+                                         daemon=True).start()
+                        return
                 held, self._held = self._held, []
             for text in held:                   # sortie retenue pendant la marche
                 self._emit("output", {"stream": "console", "text": text})
@@ -718,6 +761,7 @@ class Session:
             return
         self._stopped.clear()
         self._before_resume()
+        self._arm_watch_check()
         self.gdb.command("-exec-continue --all" if self.non_stop else "-exec-continue")
 
     def halt(self, wait: float = 5.0) -> None:
@@ -794,6 +838,7 @@ class Session:
         self._continuing = True
         self._stopped.clear()
         self._run_resume_hooks()
+        self._arm_watch_check()
         self.gdb.command("-exec-continue")
         return num
 
@@ -991,6 +1036,81 @@ class Session:
                 self.resume_internal()
         except Exception as exc:  # noqa: BLE001 - relance impossible : arrêt visible
             self.log_action(f"Erreur à la relance après l'action : {exc}", error=True)
+            self.deliver_stop(force=True)
+
+    def _resume_after_stale(self) -> None:
+        try:
+            self.resume_internal()
+        except Exception:  # noqa: BLE001 - relance impossible : l'arrêt devient visible
+            self.deliver_stop(force=True)
+
+    # ------------------------------------------------------------------ watchpoints non signalés
+    def _arm_watch_check(self) -> None:
+        """Avant un Go (cible arrêtée) : watchpoints posés et valeur de leur expression. OpenOCD
+        0.12 n'attribue pas toujours un arrêt de watchpoint (Cortex-M0 : SIGTRAP sans adresse,
+        constaté sur STM32F072) ; gdb y voit alors un signal et ne teste ni la valeur ni la
+        condition. `_watch_trap` fait ce travail. Rien pour un programme de l'hôte."""
+        self._watch_vals = {}
+        if getattr(self.target, "native", False):
+            return
+        try:
+            body = self.gdb.command("-break-list")["BreakpointTable"].get("body", [])
+        except (GdbError, KeyError, TypeError):
+            return
+        for b in body:
+            if b.get("type") not in _WATCH_REASON or b.get("enabled") != "y":
+                continue
+            expr = b.get("what") or b.get("exp") or ""
+            try:
+                old = self.evaluate(expr)
+            except GdbError:
+                old = None
+            self._watch_vals[str(b["number"])] = {"expr": expr, "type": b["type"],
+                                                  "cond": b.get("cond"), "old": old}
+
+    def _watch_trap(self, payload: dict) -> None:
+        """Fil de travail (cible arrêtée, arrêt interne) : SIGTRAP pendant un Go avec des
+        watchpoints. DFSR.DWTTRAP dit si c'est le DWT ; alors le watchpoint dont la valeur a
+        changé (et dont la condition est vraie) devient la raison de l'arrêt, comme gdb l'aurait
+        rapporté ; aucun : écriture d'une même valeur, ou condition fausse — relance
+        silencieuse, comme gdb. Un piège d'une autre origine (BKPT) reste visible."""
+        try:
+            dfsr = self.read_u32(DFSR)
+        except (GdbError, ValueError):
+            dfsr = 0
+        try:
+            if not dfsr & DFSR_DWTTRAP:
+                self.deliver_stop()
+                return
+            self.write_u32(DFSR, DFSR_DWTTRAP)          # effacé pour le prochain arrêt
+            hit = None
+            for num, w in self._watch_vals.items():
+                try:
+                    new = self.evaluate(w["expr"])
+                except GdbError:
+                    continue
+                if new == w["old"] and w["type"] == "hw watchpoint":
+                    continue                            # écriture sans changement
+                old, w["old"] = w["old"], new
+                if w["cond"] and not _truthy(self.evaluate(w["cond"])):
+                    continue
+                hit = (num, w, old, new)
+                break
+            if hit is None:
+                self.resume_internal()
+                return
+            num, w, old, new = hit
+            reason, key = _WATCH_REASON[w["type"]]
+            rec = {k: v for k, v in payload.items() if k not in ("signal-name", "signal-meaning")}
+            rec.update({"reason": reason, key: {"number": num, "exp": w["expr"]},
+                        "value": {"old": old, "new": new} if old is not None else {"new": new}})
+            self._internal_reason = rec
+            act = self._actions.get(num)
+            if act is not None:                         # watchpoint à action
+                self._run_action(act, rec)
+            else:
+                self.deliver_stop()
+        except Exception:  # noqa: BLE001 - doute : l'arrêt reste visible
             self.deliver_stop(force=True)
 
     def watch(self, expr: str, access: str = "write") -> str:

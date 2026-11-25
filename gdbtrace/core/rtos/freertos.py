@@ -384,23 +384,35 @@ def snapshot(L: FreeRtosLayout, read: Reader, prev: RtosSnapshot | None = None,
              current_sp: int | None = None, scan_stacks: bool = True,
              attempts: int = 1) -> RtosSnapshot:
     """Lit l'état du noyau. `current_sp` : SP réel de la tâche courante (cible arrêtée).
-    `attempts` > 1 : nouvel essai si les listes ont changé pendant la lecture (en marche)."""
+    `attempts` > 1 : nouvel essai si les listes ont changé pendant la lecture (en marche).
+
+    En marche, parcourir les listes demande plusieurs lectures, que le noyau peut séparer d'un
+    changement de tâche : sur une sonde lente (2 ms par lecture, Cortex-M0 à 8 MHz), aucun
+    parcours n'est cohérent. Alors, avec un instantané précédent (les tâches connues), l'état
+    de chaque tâche est pris dans son propre TCB, lu d'un bloc : la liste qui la contient
+    (`pvContainer` de xStateListItem), et l'objet qu'elle attend (celui de xEventListItem)."""
     result = None
     for _ in range(max(1, attempts)):
         try:
-            return _snapshot(L, read, prev, current_sp, scan_stacks)
+            return _snapshot(L, read, prev, current_sp, scan_stacks, _collect_lists)
         except Incoherent as exc:
             result = RtosSnapshot([], [], 0, None, None, incoherent=str(exc))
+    if prev is not None and prev.tasks and not prev.incoherent:
+        for _ in range(max(1, attempts)):
+            try:
+                return _snapshot(L, read, prev, current_sp, scan_stacks, _collect_tcbs)
+            except Incoherent as exc:
+                result = RtosSnapshot([], [], 0, None, None, incoherent=str(exc))
     return result
 
 
-def _snapshot(L, read, prev, current_sp, scan_stacks) -> RtosSnapshot:
+def _collect_lists(L, read, prev):
+    """Phase critique par les listes du noyau : (TCB courant, [(TCB, liste, état)], TCB lus,
+    objets bruts)."""
     mem = _Mem(L, read)
     current = _u(read(L.current_tcb, L.ptr), 0, L.ptr)
     if current == 0:
-        # aucune tâche créée : les listes du noyau ne sont même pas initialisées
-        return RtosSnapshot([], [], 0, None, False)
-    # --- phase critique : le moins de lectures possible
+        return 0, [], {}, []
     mem.preload_lists()
     found: list[tuple[int, str, str]] = []      # (TCB, liste, état)
     for list_name, list_addr, state in L.kernel_lists():
@@ -411,15 +423,61 @@ def _snapshot(L, read, prev, current_sp, scan_stacks) -> RtosSnapshot:
     if len(found) > MAX_TASKS:
         raise Incoherent("trop de tâches")
     objects_raw = _objects_raw(mem) if L.registry is not None and L.q_size else []
+    return current, found, mem.tcbs, objects_raw
+
+
+def _collect_tcbs(L, read, prev):
+    """Phase critique TCB par TCB (tâches de l'instantané précédent) : chaque TCB, lu d'un bloc,
+    dit la liste qui le contient. Le nombre de tâches du noyau doit être inchangé."""
+    known = [t.tcb for t in prev.tasks]
+    if L.num_tasks:
+        n = _u(read(L.num_tasks, 4), 0)
+        if n != len(known):
+            raise Incoherent(f"{n} tâches au lieu de {len(known)}")
+    current = _u(read(L.current_tcb, L.ptr), 0, L.ptr)
+    lists = {addr: (name, state) for name, addr, state in L.kernel_lists()}
+    found, tcbs = [], {}
+    for addr in known:
+        tcb = read(addr, L.tcb_size)
+        if _u(tcb, L.tcb_state + L.li_owner, L.ptr) != addr:
+            raise Incoherent(f"TCB {addr:#x} : élément de liste sans propriétaire")
+        where = lists.get(_u(tcb, L.tcb_state + L.li_container, L.ptr))
+        if where is None:                       # entre deux listes (changement en cours)
+            raise Incoherent(f"TCB {addr:#x} hors des listes du noyau")
+        found.append((addr, where[0], where[1]))
+        tcbs[addr] = tcb
+    if current not in tcbs:
+        raise Incoherent(f"tâche courante {current:#x} inconnue")
+    objects_raw = []
+    if L.registry is not None and L.q_size:
+        reg = read(L.registry, L.registry_len * L.reg_item_size)
+        for i in range(L.registry_len):
+            off = i * L.reg_item_size
+            handle = _u(reg, off + L.reg_handle, L.ptr)
+            if not handle:
+                continue
+            q = read(handle, L.q_size)
+            waiting = lambda head: [a for a, t in tcbs.items()  # noqa: E731
+                                    if _u(t, L.tcb_event + L.li_container, L.ptr) == head]
+            objects_raw.append((handle, _u(reg, off + L.reg_name, L.ptr), q,
+                                waiting(handle + L.q_wait_send), waiting(handle + L.q_wait_recv)))
+    return current, found, tcbs, objects_raw
+
+
+def _snapshot(L, read, prev, current_sp, scan_stacks, collect) -> RtosSnapshot:
+    # --- phase critique : le moins de lectures possible
+    current, found, tcbs, objects_raw = collect(L, read, prev)
+    if current == 0:
+        # aucune tâche créée : les listes du noyau ne sont même pas initialisées
+        return RtosSnapshot([], [], 0, None, False)
 
     # --- hors phase critique : compteurs, piles, noms
     tick = _u(read(L.tick_count, L.tick_size), 0, L.tick_size) if L.tick_count else None
     running = bool(_u(read(L.sched_running, 4), 0)) if L.sched_running else None
     tasks: dict[int, Task] = {}
     for tcb_addr, list_name, state in found:
-        tasks[tcb_addr] = _task_from_tcb(L, read, tcb_addr, mem.tcbs[tcb_addr], state,
+        tasks[tcb_addr] = _task_from_tcb(L, read, tcb_addr, tcbs[tcb_addr], state,
                                          list_name, scan_stacks)
-    tcbs = mem.tcbs
 
     # liste d'événements dans laquelle attend chaque tâche (0 = aucune)
     event_list = {a: _u(tcbs[a], L.tcb_event + L.li_container, L.ptr) for a in tasks}

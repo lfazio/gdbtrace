@@ -314,13 +314,13 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
   trace de données du DWT, profil par SWO, vue RTOS, temps des tâches. Validé sur
   Nucleo-N657X0-Q (`tests/test_board_n6.py`) : ST-LINK_gdbserver et son relais (mémoire en
   direct, reset), ITM par le SWO de la sonde, ETMv4.5 par l'ETR (boucles LE comprises), DWT
-  de l'ARMv8-M. Prêts, pas encore passés : Nucleo-G070RB et Nucleo-F072RB
-  (`tests/test_board_m0.py` ; DEV_ID 0x460 / 0x448, `STM32G070.svd` / `STM32F072.svd`, et
-  `DWT_PCSR` du Cortex-M0 à confirmer). Validé sur Nucleo-F446RE (`tests/test_board_f446.py`) :
+  de l'ARMv8-M. Validé sur Nucleo-F072RB (`tests/test_board_m0.py -k f072`, DEV_ID 0x448,
+  `STM32F0x2.svd`) : run-control, `DWT_PCSR` du Cortex-M0, RTOS en marche. Prêt, pas encore
+  passé : Nucleo-G070RB (`-k g070`, DEV_ID 0x460, `STM32G070.svd` à confirmer). Validé sur Nucleo-F446RE (`tests/test_board_f446.py`) :
   ETMv3 par SWO (décodage = OpenCSD sur une vraie capture), filtres plage et start/stop,
   ETMFFLR. Un ETMv3 par SWO sans filtre prend toute la broche : l'ITM n'y passe plus et un
   firmware qui attend sa FIFO se fige (dit par `EtmConfig.summary()`). Non validé sur sonde
-  réelle : `--rtos`, `DWT_PCSR` via OpenOCD, port de trace parallèle, MTB (dont le sens de
+  réelle : `--rtos`, port de trace parallèle, MTB (dont le sens de
   l'adresse source d'une entrée d'exception : prise comme adresse de retour). ETMv4 : M7 (ETMv4.0, par SWO) et M55 (ETMv4.5, par l'ETR d'un
   STM32N6), cycle-accurate et horodatage compris ; la branche d'un BF* (v8.1-M) n'est pas
   suivie.
@@ -330,6 +330,13 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
   instruction ; en profondeur de spéculation 1, le dernier élément n'est validé qu'au
   suivant ou par `EtmTrace.flush()` (fait à l'arrêt de la cible). OpenCSD 1.4.1 déborde sur
   une vraie trace d'ETM-M7 (Trace Info SPEC=1) : pour le comparer, ramener SPEC à 0.
+- OpenOCD 0.12 et un Cortex-M0 (constaté sur STM32F072) : sous reset (`connect_assert_srst`),
+  le cœur ne s'arrête pas sur un simple halt et gdb est refusé → `gdb-attach { reset halt }`
+  dans les `.cfg` des M0/M0+ ; un arrêt de watchpoint arrive en SIGTRAP sans adresse →
+  `Session._watch_trap` (DFSR.DWTTRAP, valeur, condition) ; l'interruption d'un `halt()`
+  doublée par un breakpoint est appliquée après la reprise suivante → absorbée
+  (`_stale_interrupt`). Lectures en marche à ~2 ms : aucun parcours des listes FreeRTOS n'est
+  cohérent → état de chaque tâche lu dans son TCB (`freertos._collect_tcbs`).
 - OpenOCD 0.12 recopie dans son journal (stderr, et console gdb cible en marche) le
   résultat de chaque commande TCL : passer par `OpenOcdTcl.query()`, jamais `command()`,
   pour tout ce qui renvoie des données. Le stderr des serveurs doit rester drainé

@@ -233,3 +233,75 @@ def test_stop_during_step_is_visible():
     s._continuing = False
     s._on_mi(SIGINT)
     assert taken == [] and events == ["stopped"]
+
+
+def _until(pred, timeout=2.0):
+    import time
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if pred():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_interrupt_overtaken_by_a_breakpoint_is_absorbed():
+    """halt() doublé par un breakpoint : la cible s'arrête sur lui, mais OpenOCD applique
+    l'interruption après la reprise suivante (constaté sur Nucleo-F072RB). Ce SIGINT que
+    personne n'a demandé est absorbé : relance silencieuse, une seule fois."""
+    s, events, _ = _internal_session()
+    s.set_stop_interceptor(None)
+    s._stopped.set()
+    s.halt()
+    s._on_mi({"type": "notify", "message": "stopped", "payload": {"reason": "breakpoint-hit"}})
+    assert events == ["stopped"] and s.state == "stopped"
+    s.state, s._continuing = "running", True                    # Go suivant
+    s.gdb.sent.clear()
+    s._on_mi(SIGINT)
+    assert _until(lambda: s.gdb.sent == ["-exec-continue"]) and events == ["stopped"]
+    s._on_mi(RUNNING)
+    s._on_mi(SIGINT)                                            # un autre SIGINT : visible
+    assert events == ["stopped", "stopped"]
+
+
+class WatchGdb(FakeGdb):
+    def command(self, cmd, timeout=None):
+        self.sent.append(cmd)
+        if cmd == "-break-list":
+            return {"BreakpointTable": {"body": [{"number": "3", "type": "hw watchpoint",
+                                                  "enabled": "y", "what": "n >= 2",
+                                                  "cond": "n >= 2"}]}}
+        return {}
+
+
+def test_unattributed_watchpoint_trap():
+    """OpenOCD 0.12 sur un Cortex-M0 : un watchpoint arrête la cible en SIGTRAP, sans adresse.
+    Session refait le travail de gdb : DFSR.DWTTRAP, valeur de l'expression, condition."""
+    from gdbtrace.core.session import DFSR, DFSR_DWTTRAP
+    s, events, _ = _internal_session()
+    s.set_stop_interceptor(None)
+    s.gdb = WatchGdb()
+    values, dfsr, writes = iter(["0", "0", "1", "1"]), [DFSR_DWTTRAP], []
+    s.evaluate = lambda expr: next(values)
+    s.read_u32 = lambda addr: dfsr[0] if addr == DFSR else 0
+    s.write_u32 = lambda addr, v: writes.append((addr, v))
+    s._arm_watch_check()                                        # avant le Go : n >= 2 vaut 0
+    trap = {"type": "notify", "message": "stopped",
+            "payload": {"reason": "signal-received", "signal-name": "SIGTRAP",
+                        "frame": {"func": "producteur"}}}
+    sent = len(s.gdb.sent)
+    s._on_mi(trap)                                              # écriture sans changement
+    assert _until(lambda: s.gdb.sent[sent:] == ["-exec-continue"]) and events == []
+    s._on_mi(RUNNING)
+    s._on_mi(trap)                                              # n >= 2 devient vrai
+    assert _until(lambda: events == ["stopped"])
+    r = s.stop_reason
+    assert r["reason"] == "watchpoint-trigger" and r["wpt"]["number"] == "3"
+    assert r["value"] == {"old": "0", "new": "1"} and r["frame"]["func"] == "producteur"
+    assert (DFSR, DFSR_DWTTRAP) in writes
+    # un piège qui ne vient pas du DWT (instruction BKPT) reste un signal
+    s.state = "running"
+    dfsr[0] = 0x2
+    s._on_mi(trap)
+    assert _until(lambda: events == ["stopped", "stopped"])
+    assert s.stop_reason["reason"] == "signal-received"

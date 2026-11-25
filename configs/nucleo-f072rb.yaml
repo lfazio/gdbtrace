@@ -5,7 +5,7 @@ gdbtrace: 1
 nom: Nucleo-F072RB
 cible:
   elf: ../examples/nucleo-f072/nucleo-f072.elf
-  svd: STM32F072.svd
+  svd: STM32F0x2.svd
   cpu-hz: 8000000
   programmer: true
 serveur:
