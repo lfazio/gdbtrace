@@ -169,3 +169,58 @@ def test_formatted_stream_and_file_replay(elf, tmp_path):
     assert src.done.wait(3)
     check_results(sess, text, prof, exc)
     src.stop()
+
+
+# ====================================================================== retard et pertes
+def _itm_text(pkts) -> bytes:
+    from gdbtrace.trace.itm import Instrumentation
+    return b"".join(p.data for p in pkts if isinstance(p, Instrumentation) and p.port == 0)
+
+
+def test_lost_swo_bytes_resync_tpiu_and_itm():
+    """Décodage en retard au-delà de MAX_BACKLOG : des morceaux de taille quelconque sont
+    jetés. Le déformateur TPIU attend la synchronisation suivante (sans cela, chaque trame
+    resterait décalée pour toute la session), l'ITM reprend juste après, et la trace
+    d'instructions est prévenue."""
+    word = b"bonjour "
+    block = frame_bytes(1, b"".join(stim(0, c) for c in word))    # commence par une synchro
+    gaps, got = [], []
+    sess = TraceSession(formatter=True, on_gap=lambda: gaps.append(1))
+    sess.add_sink(got.extend)
+    src = TcpSwoSource("127.0.0.1", 1)
+    src.session = sess
+    src._push(block * 2)
+    src._decode_pending()
+    assert _itm_text(got) == word * 2 and sess.deformatter.synced
+    src.MAX_BACKLOG = 2 * len(block)
+    data = block * 6
+    for i in range(0, len(data), 7):                   # morceaux de 7 octets : coupure quelconque
+        src._push(data[i:i + 7])
+    assert src.lost > 0 and len(data) - src.lost <= 2 * len(block) + 7
+    src._decode_pending()
+    text = _itm_text(got)
+    assert gaps == [1] and sess.gaps == 1 and src.backlog == 0
+    assert len(text) > 2 * len(word) and text == word * (len(text) // len(word))   # mots entiers
+
+
+def test_closed_session_and_restarted_source_start_clean():
+    """Session remplacée : un décodage encore en route ne distribue plus rien. Source relancée :
+    elle repart d'une file vide, sans le retard ni les pertes d'avant."""
+    got = []
+    sess = TraceSession()
+    sess.add_sink(got.extend)
+    sess.close()
+    assert sess.feed(SYNC + stim(0, 65)) == [] and got == []
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]                         # personne n'y écoute
+    src = TcpSwoSource("127.0.0.1", port, retry=0.1)
+    src.MAX_BACKLOG = 4
+    src._push(b"ancien")
+    src._push(b"flux")
+    assert src.backlog and src.lost
+    src.start(TraceSession())
+    try:
+        assert not src._pending and (src.backlog, src.lost) == (0, 0) and not src._gap
+    finally:
+        src.stop()

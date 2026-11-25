@@ -5,6 +5,7 @@ import collections
 import os
 import queue
 import shutil
+import signal
 import socket
 import subprocess
 import threading
@@ -25,16 +26,31 @@ def _wait_port(host: str, port: int, timeout: float) -> None:
     raise TimeoutError(f"{host}:{port} n'écoute pas après {timeout}s")
 
 
+def _load_prctl():
+    """`prctl` de la libc, résolu ici, dans GdbTrace : l'enfant d'un fork ne doit ni importer
+    ni charger de bibliothèque (dlopen), car un autre fil pouvait tenir le verrou d'import, de
+    malloc ou du chargeur au moment du fork, et l'enfant s'y bloquerait."""
+    try:
+        import ctypes
+        return ctypes.CDLL("libc.so.6", use_errno=True).prctl
+    except Exception:  # noqa: BLE001 - autre système : pas de filet
+        return None
+
+
+_PRCTL = _load_prctl()
+_PR_SET_PDEATHSIG = 1
+_SIGTERM = int(signal.SIGTERM)
+
+
 def _die_with_parent() -> None:
     """Dans le processus du serveur (Linux) : SIGTERM quand GdbTrace meurt, même brutalement.
     Sinon un OpenOCD orphelin garde la sonde et ses ports, et la session suivante s'y connecte
-    à son insu."""
-    try:
-        import ctypes
-        import signal
-        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)   # PR_SET_PDEATHSIG
-    except Exception:  # noqa: BLE001 - autre système : pas de filet
-        pass
+    à son insu. Exécutée entre fork et exec : n'appelle que la fonction déjà résolue."""
+    if _PRCTL is not None:
+        try:
+            _PRCTL(_PR_SET_PDEATHSIG, _SIGTERM)
+        except Exception:  # noqa: BLE001 - pas de filet, le serveur démarre quand même
+            pass
 
 
 _spawner: "queue.Queue | None" = None

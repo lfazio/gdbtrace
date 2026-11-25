@@ -283,12 +283,24 @@ class Session:
     def _on_mi(self, rec: dict) -> None:
         t, msg, payload = rec.get("type"), rec.get("message"), rec.get("payload")
         if t == "notify" and msg == "stopped" and (payload or {}).get("reason", "").startswith("exited"):
-            # programme natif terminé (exited-normally, exited, exited-signalled)
+            # programme terminé (exited-normally, exited, exited-signalled) : natif, ou fin
+            # signalée par le serveur d'une cible (rare : semihosting, serveur qui s'arrête)
             payload = payload or {}
             code = payload.get("exit-code")
             self.exit_code = int(code, 8) if code else (0 if payload["reason"] == "exited-normally" else None)
             if self.target is not None and getattr(self.target, "native", False):
                 self.target.pid = None
+            with self._lock:
+                # plus rien à reprendre : arrêt interne, halt en attente, boucle de pas
+                self._internal = self._resuming = False
+                self._halt_requested = self._halt_wanted = False
+                held, self._held = self._held, []
+                if self._looping:               # Step.Till / Step.Change : la boucle s'arrête
+                    self._loop_reason = payload
+                    self._loop_inflight = False
+                    self._loop_stop.set()
+            for text in held:                   # sortie retenue pendant la marche (actions)
+                self._emit("output", {"stream": "console", "text": text})
             self.state = "exited"
             self.stop_reason = payload
             self._emit("exited", payload)
@@ -498,9 +510,17 @@ class Session:
     def restart(self) -> None:
         """Programme natif : relancé depuis le début, arrêté au début de `main`
         (le processus en cours, s'il y en a un, est tué)."""
+        self._need_native()
         if self.state == "running":
             self.halt()
         self._run(start=True)
+
+    def _need_native(self) -> None:
+        """Seul un programme natif se relance : gdb l'exécute lui-même. Une cible dont le
+        serveur a signalé la fin (semihosting, serveur arrêté) ne repart pas ainsi."""
+        if self.target is None or not getattr(self.target, "native", False):
+            raise GdbError("programme terminé sur la cible : Go ne relance qu'un programme "
+                           "natif ; reprogrammer l'ELF ou relancer la session")
 
     def inferior_pid(self) -> int | None:
         """PID du programme natif débogué, None s'il ne tourne pas."""
@@ -513,6 +533,7 @@ class Session:
     def go(self) -> None:
         self._continuing = True
         if self.state == "exited":              # programme natif terminé : relancé
+            self._need_native()
             self._run(start=False)
             return
         self._stopped.clear()
@@ -665,10 +686,11 @@ class Session:
             final.update(steps=steps, met=met)
             if error:
                 final["error"] = error
-            if self.state != "disconnected":
-                self.state = "stopped"
             self.stop_reason = final
-            self._emit("stopped", final)
+            if self.state != "exited":          # programme terminé : « exited » déjà émis
+                if self.state != "disconnected":
+                    self.state = "stopped"
+                self._emit("stopped", final)
             self._stopped.set()
         return final
 

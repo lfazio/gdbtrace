@@ -507,6 +507,34 @@ for t in gdbtrace.tasks():                      # affiche aussi le tableau
 gdbtrace.queues()
 ```
 
+### Threads d'un programme natif
+
+Un ELF de l'hôte (x86-64, AArch64…) est exécuté par gdb lui-même et s'arrête au début de
+`main` ; ses pthreads sont des threads gdb. Tous s'arrêtent ensemble (mode all-stop).
+
+| Appel | Effet |
+|---|---|
+| `threads()` | affiche et renvoie les threads : numéro, nom (`pthread_setname_np`), LWP, état, cœur, position ; `*` = thread courant |
+| `thread(nom ou numéro)` | ce thread devient le thread courant (registres, pile, pas à pas portent sur lui) ; affiche et renvoie sa pile |
+| `session.send_input(texte)` | écrit sur l'entrée standard du programme (il a son propre terminal) |
+
+Chaque élément de `threads()` a les champs `id`, `name`, `lwp`, `state`, `core`, `frame` et
+`current`. Quand le programme se termine, `go()` le relance ; `reset()` le relance arrêté au
+début de `main`.
+
+<!-- test: examples/native/pthreads --args 1000000 -->
+```python
+gdbtrace.break_("consume_step", temporary=True)
+gdbtrace.go()
+gdbtrace.wait(10)                               # arrêt dans le thread « consumer »
+ths = gdbtrace.threads()
+assert {"producer", "consumer"} <= {t.name for t in ths}
+assert next(t for t in ths if t.current).name == "consumer"
+pile = gdbtrace.thread("producer")              # thread courant : producer ; affiche sa pile
+assert "producer" in [f.func for f in pile]
+gdbtrace.thread("consumer")
+```
+
 ## 10. Trace, profil et couverture
 
 | Appel | Effet | Il faut |
@@ -761,6 +789,10 @@ gdbtrace.cov.export("couverture.html")
     une fonction appelée des milliers de fois par seconde, la cible ralentit d'autant.
 - **Go.Till ou Step.Till.** `go_till` est en temps réel mais exige un watchpoint matériel :
   une variable en mémoire, pas un registre. `step_till` accepte tout mais avance pas à pas.
+- **Sous QEMU chargé**, un breakpoint est parfois vu deux fois pour un seul passage. Le pas à
+  pas de QEMU revient alors sans avoir avancé. Le passage est compté deux fois : `hits`,
+  `count=`, message d'action en double. Un script qui compte des passages exacts sous QEMU
+  doit le tolérer.
 
 ## 14. Référence
 
@@ -810,6 +842,7 @@ gdbtrace.cov.export("couverture.html")
 | `load_svd(f)`, `periph(nom, force=False)`, `device` | périphériques (SVD) |
 | `rtos()`, `tasks()`, `queues()`, `task(nom)` | FreeRTOS |
 | `task_times(top=20, unit="us")`, `task_timeline(n=30)` | temps par tâche mesuré par l'ITM |
+| `threads()`, `thread(nom ou n°)`, `session.send_input(texte)` | threads d'un programme natif, thread courant, entrée du programme |
 
 ### Programmation
 

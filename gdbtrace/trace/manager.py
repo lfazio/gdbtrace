@@ -24,6 +24,14 @@ ETM_MAX_BACKLOG = 256 << 20
 ETM_CHUNK = 4096                        # décodage par morceaux : le retard baisse au fil de l'eau
 ETM_YIELD_MAX = 0.5                     # attente maximale du décodage derrière le GUI, par morceau
 
+
+class _Gap(bytes):
+    """Marqueur de la file ETM (vide, reconnu par son identité) : des octets SWO ont été
+    perdus à cet endroit du flux."""
+
+
+_ETM_GAP = _Gap()
+
 LineListener = Callable[[int, str, int], None]
 
 
@@ -305,9 +313,16 @@ class TraceManager:
             with self._etm_cv:
                 while not self._etm_q:
                     self._etm_cv.wait()
-                data = b"".join(self._etm_q)
-                self._etm_q.clear()
-                lost, self._etm_lost_pending = self._etm_lost_pending, False
+                # jusqu'au prochain trou du SWO (marqueur), qui ouvre le lot suivant
+                lost = self._etm_q[0] is _ETM_GAP
+                if lost:
+                    self._etm_q.popleft()
+                parts = []
+                while self._etm_q and self._etm_q[0] is not _ETM_GAP:
+                    parts.append(self._etm_q.popleft())
+                data = b"".join(parts)
+                lost = lost or self._etm_lost_pending
+                self._etm_lost_pending = False
                 self._etm_decoding = True
             etm = self.etm
             try:
@@ -649,7 +664,8 @@ class TraceManager:
     def _start(self, source: SwoSource, formatter: bool) -> None:
         self.stop()
         self.session = TraceSession(formatter=formatter,
-                                    etm_sink=self._etm_feed if self.etm is not None else None)
+                                    etm_sink=self._etm_feed if self.etm is not None else None,
+                                    on_gap=self._swo_gap)
         self.session.add_sink(lambda pkts: [self.text.add(p) for p in pkts])
         self.session.add_sink(self.exceptions)
         self.session.add_sink(self.datatrace)
@@ -662,7 +678,16 @@ class TraceManager:
     def stop(self) -> None:
         if self.source is not None:
             self.source.stop()
+        if self.session is not None:            # un décodage en retard ne distribue plus rien
+            self.session.close()
         self.source = None
+
+    def _swo_gap(self) -> None:
+        """Octets SWO perdus avant le décodage : la trace d'instructions qu'ils portaient a un
+        trou. Un marqueur dans la file ETM le place exactement entre les octets d'avant et
+        ceux d'après ; là, l'ETM attend sa prochaine synchronisation."""
+        if self.etm is not None:
+            self._etm_feed(_ETM_GAP)
 
     def status(self) -> str:
         if self.source is None:

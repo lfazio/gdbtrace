@@ -258,7 +258,10 @@ def test_server_dies_with_gdbtrace(tmp_path):
     gdbtrace.write_text(f"import sys, time\nsys.path.insert(0, {os.path.dirname(__file__)!r})\n"
                         f"from test_live import _server\n_server({server!r}, {port}).start(timeout=5)\n"
                         f"time.sleep(60)\n")
-    gt = subprocess.Popen([sys.executable, str(gdbtrace)], cwd=os.path.dirname(os.path.dirname(__file__)))
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # le paquet n'est pas forcément installé (pip install -e) : chemin donné, comme test_docs
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [root, os.environ.get("PYTHONPATH")]))}
+    gt = subprocess.Popen([sys.executable, str(gdbtrace)], cwd=root, env=env)
     deadline = time.monotonic() + 10
     while not pidfile.exists() and time.monotonic() < deadline:
         time.sleep(0.05)

@@ -268,6 +268,8 @@ class App:
         if not os.path.isfile(path):
             self.report_error(f"ELF introuvable : {path}")
             return
+        if self._refuse_if_busy():              # une programmation à la fois
+            return
         verify = self.verify_program if verify is None else verify
         self._remember_elf(path)
         s = self.session
@@ -486,8 +488,10 @@ class App:
             self.current_frame = None
             code = self.session.exit_code if self.session else None
             sig = data.get("signal-name")
+            then = (" — Go le relance, Reset l'arrête au début de main" if self.native
+                    else " — reprogrammer l'ELF ou relancer la session")
             self.status.set("Programme terminé" + (f" par {sig}" if sig else f" (code {code})")
-                            + " — Go le relance, Reset l'arrête au début de main")
+                            + then)
             for v in list(self.views.views):
                 if hasattr(v, "on_exited"):
                     self.safe(v.on_exited, data)
@@ -562,8 +566,7 @@ class App:
         return self._exclusive
 
     def _need(self, state: str) -> bool:
-        if self._exclusive:
-            self.status.set(f"{self._exclusive} en cours : patienter")
+        if self._refuse_if_busy():
             return False
         return self.session is not None and self.session.state == state
 
@@ -574,8 +577,14 @@ class App:
         return s is not None and s.target is not None and s.target.native
 
     def go(self) -> None:
-        if self._need("stopped") or self._need("exited"):   # terminé : relancé
+        if self._need("stopped"):
             self.run_action(self.session.go)
+        elif self._need("exited"):              # terminé : seul un programme natif se relance
+            if self.native:
+                self.run_action(self.session.go)
+            else:
+                self.status.set("Programme terminé sur la cible : reprogrammer l'ELF ou "
+                                "relancer la session")
 
     def select_thread(self, thread_id: str) -> None:
         """Le thread devient le thread courant (vues Threads, console)."""
@@ -604,8 +613,16 @@ class App:
         if self._need("stopped"):
             self.run_action(self.session.step_asm)
 
+    def _refuse_if_busy(self) -> bool:
+        """Programmation de la flash en cours : la commande attend (vrai = refusée)."""
+        if self._exclusive:
+            self.status.set(f"{self._exclusive} en cours : patienter")
+            return True
+        return False
+
     def reset(self) -> None:
-        self.run_action(self.session.reset)
+        if not self._refuse_if_busy():
+            self.run_action(self.session.reset)
 
     # ================================================================== trace
     def start_etm_swo(self, cpu_hz: int | None = None, swo_hz: int | None = None,

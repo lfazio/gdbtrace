@@ -41,6 +41,11 @@ def test_doc_example(name, opts, code, elf, rtos_elf, tmp_path):
         if a.endswith(".elf"):                  # autre firmware que la démo (FreeRTOS...)
             target = rtos_elf if "freertos" in a else os.path.join(ROOT, a)
             args.remove(a)
+        elif a.startswith("examples/native/"):  # programme de l'hôte, construit ici
+            subprocess.run(["make", "-s", "-C", os.path.join(ROOT, "examples", "native")],
+                           check=True)
+            target = os.path.join(ROOT, a)
+            args.remove(a)
     args = [os.path.join(ROOT, a) if os.path.exists(os.path.join(ROOT, a)) else a for a in args]
     script = tmp_path / "exemple.py"
     script.write_text(code, encoding="utf-8")

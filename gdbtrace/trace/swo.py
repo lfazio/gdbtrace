@@ -25,9 +25,11 @@ class TraceSession:
     """Décode les octets reçus et distribue les paquets aux abonnés (thread de la source)."""
 
     def __init__(self, formatter: bool = False, itm_stream: int = 1, etm_stream: int = 2,
-                 etm_sink: Callable[[bytes], object] | None = None):
+                 etm_sink: Callable[[bytes], object] | None = None,
+                 on_gap: Callable[[], object] | None = None):
         """Avec le formateur TPIU (port parallèle, ORBTrace…), les flux sont séparés par ID :
-        ITM → décodeur ITM, ETM → `etm_sink(octets)` (trace d'instructions)."""
+        ITM → décodeur ITM, ETM → `etm_sink(octets)` (trace d'instructions). `on_gap()` :
+        des octets ont été perdus avant le décodage (voir discontinuity())."""
         self.deformatter = TpiuDeformatter() if formatter else None
         self.itm_stream = itm_stream
         self.etm_stream = etm_stream
@@ -37,6 +39,9 @@ class TraceSession:
         self.sinks: list[PacketSink] = []
         self.bytes = 0
         self.overflows = 0
+        self.gaps = 0
+        self.on_gap = on_gap
+        self.closed = False
         self._lock = threading.Lock()
 
     def add_sink(self, sink: PacketSink) -> None:
@@ -46,8 +51,29 @@ class TraceSession:
         if sink in self.sinks:
             self.sinks.remove(sink)
 
+    def discontinuity(self) -> None:
+        """Des octets ont été perdus entre la capture et le décodage : un morceau de taille
+        quelconque manque. Le déformateur TPIU attend la synchronisation suivante (sinon chaque
+        trame serait décalée pour toute la session), le décodeur ITM oublie le paquet entamé,
+        et `on_gap()` prévient la trace d'instructions (l'ETM se resynchronise aussi)."""
+        with self._lock:
+            self.gaps += 1
+            if self.deformatter is not None:
+                self.deformatter.synced = False
+                self.deformatter.buf.clear()
+                self.deformatter.stream = 0
+            self.decoder.buf.clear()
+        if self.on_gap is not None:
+            self.on_gap()
+
+    def close(self) -> None:
+        """Session remplacée : un fil de décodage encore en route ne distribue plus rien."""
+        self.closed = True
+
     def feed(self, data: bytes) -> list[Packet]:
         with self._lock:
+            if self.closed:
+                return []
             self.bytes += len(data)
             if self.deformatter is not None:
                 chunks = self.deformatter.feed(data)
@@ -59,7 +85,7 @@ class TraceSession:
                         self.etm_sink(etm)
             pkts = self.decoder.feed(data)
             self.overflows += sum(isinstance(p, Overflow) for p in pkts)
-        if pkts:
+        if pkts and not self.closed:
             for sink in list(self.sinks):
                 sink(pkts)
         return pkts
@@ -127,9 +153,14 @@ class TcpSwoSource(SwoSource):
         self._cv = threading.Condition()
         self.backlog = 0                 # octets reçus pas encore décodés
         self.lost = 0                    # octets abandonnés (retard au-delà de MAX_BACKLOG)
+        self._gap = False                # des octets ont été abandonnés depuis le dernier décodage
         self._decoder: threading.Thread | None = None
 
     def start(self, session: TraceSession) -> None:
+        with self._cv:                   # une relance repart d'une file vide
+            self._pending.clear()
+            self.backlog = self.lost = 0
+            self._gap = False
         super().start(session)
         self._decoder = threading.Thread(target=self._decode_loop, name="swo-decoder", daemon=True)
         self._decoder.start()
@@ -150,6 +181,7 @@ class TcpSwoSource(SwoSource):
                 old = self._pending.popleft()
                 self.backlog -= len(old)
                 self.lost += len(old)
+                self._gap = True
             self._cv.notify()
 
     def _decode_loop(self) -> None:
@@ -159,16 +191,24 @@ class TcpSwoSource(SwoSource):
                     self._cv.wait(0.2)
                 if self._stop.is_set():
                     return
-                chunks = list(self._pending)
-                self._pending.clear()
-            data = b"".join(chunks)
-            for i in range(0, len(data), 65536):    # par morceaux : le retard baisse au fil de l'eau
-                if self._stop.is_set():
-                    return
-                piece = data[i:i + 65536]
-                self.session.feed(piece)
-                with self._cv:
-                    self.backlog -= len(piece)
+            self._decode_pending()
+
+    def _decode_pending(self) -> None:
+        """Décode ce qui attend dans la file (fil de décodage)."""
+        with self._cv:
+            chunks = list(self._pending)
+            self._pending.clear()
+            gap, self._gap = self._gap, False
+        if gap:                              # morceaux perdus avant ceux-ci : resynchroniser
+            self.session.discontinuity()
+        data = b"".join(chunks)
+        for i in range(0, len(data), 65536):    # par morceaux : le retard baisse au fil de l'eau
+            if self._stop.is_set():
+                return
+            piece = data[i:i + 65536]
+            self.session.feed(piece)
+            with self._cv:
+                self.backlog -= len(piece)
 
     def _run(self) -> None:
         while not self._stop.is_set():

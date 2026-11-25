@@ -164,3 +164,41 @@ def test_threads_view(native_elf, tmp_path):
     finally:
         app.quit()
         gc.collect()
+
+
+def test_step_loop_ends_with_the_program(native_elf):
+    """Step.Till qui traverse la fin du programme : la boucle s'arrête avec lui, tout de suite,
+    l'état reste « exited » et aucun arrêt n'est inventé après la fin."""
+    s = Session()
+    s.connect(native_elf, NativeTarget(args=["3"]))
+    kinds = []
+    s.on_event(lambda kind, _d: kinds.append(kind) if kind in ("stopped", "exited") else None)
+    try:
+        t0 = time.monotonic()
+        rec = s.step_till("0", max_steps=100_000)
+        assert time.monotonic() - t0 < 30
+        assert s.state == "exited" and kinds == ["exited"]
+        assert rec["met"] is False and rec["reason"].startswith("exited") and rec["steps"] > 0
+        s.go()                                          # programme natif : relancé
+        s.wait_stopped(20)
+        assert s.state == "exited" and s.exit_code == 0
+    finally:
+        s.disconnect()
+
+
+def test_held_console_output_is_delivered_at_exit(native_elf):
+    """Breakpoint à action : la sortie console de gdb est retenue pendant la marche ; la fin
+    du programme la livre (« [Inferior 1 … exited normally] »), au lieu de la garder."""
+    s = Session()
+    out = []
+    s.on_event(lambda k, d: out.append(d["text"]) if k == "output" and d.get("stream") == "console" else None)
+    s.connect(native_elf, NativeTarget(args=["3"]))
+    try:
+        s.break_("produce_step", log="v={value}")
+        s.go()
+        s.wait_stopped(20)
+        assert s.state == "exited" and s.action_log
+        assert any("exited normally" in x for x in out), out
+        assert not s._held and not s.internal_stop
+    finally:
+        s.disconnect()

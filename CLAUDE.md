@@ -198,6 +198,12 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
 
 - Le gdbstub de QEMU ignore les écritures du débogueur dans les périphériques (RAM/ROM
   seulement) ; QEMU n'émule ni ITM ni SWO.
+- QEMU (8.2) sous charge : environ un pas à pas sur quelques centaines revient sans avoir
+  exécuté l'instruction (`vCont;s` → mêmes registres). En enjambant un breakpoint, gdb le
+  revoit alors au même endroit : un passage compté deux fois (hits, `count=`, messages
+  d'action). Masquer les interruptions n'y change rien (`qqemu.sstep` vaut déjà 0x7). Les
+  tests qui comptent des passages exacts sous QEMU le tolèrent (`collapse`,
+  `tests/test_breakactions.py`).
 - Non validé sur sonde réelle : `--rtos`, capture SWO, `DWT_PCSR` via OpenOCD, trace ETM
   matérielle, ETM par SWO, MTB (dont le sens de l'adresse source d'une entrée d'exception :
   prise comme adresse de retour). ETMv4 : M7 (ETMv4.0) seulement, sans cycle-accurate ni
