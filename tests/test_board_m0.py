@@ -101,6 +101,7 @@ def run_control(app) -> dict:
     attempt("compteur", counted)
     attempt("message", logged)
     attempt("go_till", till)
+    attempt("chrono", lambda: boards.chrono_passes(app))
     return out
 
 
@@ -228,11 +229,30 @@ def test_profile_by_dwt_pcsr(run):
 
 # ====================================================================== trace : le cœur n'en a pas
 @pytest.mark.parametrize("kind,label", [("itm", "status"), ("trace", "info"), ("coverage", "info"),
-                                        ("vartrace", "info"), ("tasktime", "info")])
+                                        ("vartrace", "info")])
 def test_trace_views_say_why(run, kind, label):
     why = run["board"].no_trace
     assert why in view(run, "apres", kind)[label]
     assert why in run["trace_status"]
+
+
+def test_task_time_by_ram_log(run):
+    """Sans ITM, le temps des tâches vient du journal en RAM (gdbtrace_task_log), lu en marche
+    par OpenOCD puis à l'arrêt."""
+    tt = view(run, "apres", "tasktime")
+    assert "journal en RAM (SysTick)" in tt["info"], tt["info"]
+    assert {"worker", "consumer", "IDLE"} <= {r["text"] for r in tt["tree"]}
+
+
+# ====================================================================== chrono
+def test_chrono_by_systick(run):
+    """Deux passages par worker_step (vTaskDelay de 5 ms) : SysTick et xTickCount ; la pause de
+    1 s du débogueur entre les deux n'est pas comptée (SysTick gelé, cœur arrêté)."""
+    passes = run["extra"]["chrono"]
+    assert isinstance(passes, list) and len(passes) == 2, passes
+    for p in passes:
+        assert p["source"] == "SysTick" and not p["note"], p
+        assert 0.004 < p["secondes"] < 0.008, p
 
 
 # ====================================================================== run-control

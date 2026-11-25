@@ -163,6 +163,28 @@ def dump_views(app) -> dict:
     return views
 
 
+# ====================================================================== chrono
+def chrono_passes(app) -> list[dict]:
+    """Chrono sur la carte (cible arrêtée) : deux passages par worker_step (la tâche attend
+    5 ms entre les deux), le second après une pause de 1 s du débogueur, qui ne doit pas
+    compter (SysTick et DWT_CYCCNT ne décomptent pas, cœur arrêté)."""
+    s, api = app.session, app.api
+    bp = s.break_("worker_step")
+    out = []
+    try:
+        s.go()
+        s.wait_stopped(10)
+        for pause in (0.0, 1.0):
+            time.sleep(pause)
+            s.go()
+            s.wait_stopped(10)
+            r = api.chrono() or {}
+            out.append({k: r.get(k) for k in ("secondes", "cycles", "source", "note")})
+    finally:
+        s.delete_break(bp.number)
+    return out
+
+
 # ====================================================================== session GUI pilotée
 def run_gui(argv: list[str], name: str, ready, cleanup=None, extra=None) -> dict:
     """La session GUI complète, par le vrai point d'entrée (`main(argv)`), `App.mainloop`

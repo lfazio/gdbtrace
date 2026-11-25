@@ -505,10 +505,38 @@ regs = gdbtrace.periph("SysTick")                # affiche CTRL, LOAD, VAL, CALI
 print(f"période SysTick : {regs['LOAD'] + 1} cycles")
 ```
 
-**Temps par tâche** (sur carte, capture SWO avec horodatage ITM ; firmware qui écrit le TCB
-entrant sur le port ITM 31 à chaque changement de tâche, voir `examples/freertos`) :
-`task_times()` donne activations, temps brut, net (sans les exceptions), part du temps et
-tranches ; `task_timeline(30)` les dernières tranches.
+**Temps par tâche** (firmware qui signale chaque changement de tâche, voir
+`examples/freertos`) : `task_times()` donne activations, temps brut, net (sans les
+exceptions), part du temps et tranches ; `task_timeline(30)` les dernières tranches. Avec une
+capture SWO, la mesure vient de l'ITM (port 31, horodatage ITM) ; sans elle, et sur un
+Cortex-M0/M0+, du journal en RAM `gdbtrace_task_log` (horodatage SysTick, temps net = brut),
+lu par le canal live en marche et par gdb à l'arrêt.
+
+<!-- test: examples/freertos/freertos.elf -->
+```python
+import time
+gdbtrace.go()
+time.sleep(0.3)
+gdbtrace.task_times()                           # en marche : journal en RAM, lu par le canal live
+gdbtrace.halt(); gdbtrace.wait()
+rows = gdbtrace.task_times()                    # à l'arrêt : la fin du journal
+assert {"worker", "consumer", "IDLE"} <= {t.name for t in rows}
+```
+
+**Chrono** : `chrono()` donne le temps du cœur pendant la dernière exécution (de la reprise à
+l'arrêt) et le cumul, mesurés par la cible : SysTick et compte des ticks de FreeRTOS
+(`xTickCount`) ou de la HAL (`uwTick`) sur un Cortex-M0/M0+ et sous QEMU, `DWT_CYCCNT` au-delà.
+Les arrêts ne comptent pas. `chrono_reset()` remet le cumul à zéro.
+
+<!-- test: examples/freertos/freertos.elf -->
+```python
+gdbtrace.break_("worker_step")
+gdbtrace.go(); gdbtrace.wait()
+gdbtrace.go(); gdbtrace.wait()                   # un tour de la tâche worker (attente de 5 ms)
+r = gdbtrace.chrono()                            # ex. « 5,98 ms (149456 cycles, SysTick …) »
+assert r["cycles"] > 0 and r["source"].startswith("SysTick")
+gdbtrace.chrono_reset()
+```
 
 **FreeRTOS** : `tasks()` (TASK.List), `queues()` (objets du noyau), `task("nom")`
 (registres et pile d'appels d'une tâche) et `rtos()` (instantané complet). Un premier arrêt
@@ -868,7 +896,7 @@ gdbtrace.cov.export("couverture.html")
 | `live` | canal live, ou `None` |
 | `load_svd(f)`, `periph(nom, force=False)`, `device` | périphériques (SVD) |
 | `rtos()`, `tasks()`, `queues()`, `task(nom)` | FreeRTOS |
-| `task_times(top=20, unit="us")`, `task_timeline(n=30)` | temps par tâche mesuré par l'ITM |
+| `task_times(top=20, unit="us")`, `task_timeline(n=30)` | temps par tâche (ITM, ou journal en RAM) |
 | `threads()`, `thread(nom ou n°)`, `session.send_input(texte)` | threads d'un programme natif, thread courant, entrée du programme |
 | `thread_stop(nom ou n°)`, `thread_resume(nom ou n°)` | non-stop : un thread seul s'arrête ou repart |
 
@@ -883,6 +911,7 @@ gdbtrace.cov.export("couverture.html")
 | Appel | Rôle |
 |---|---|
 | `profile(secondes=1.0, per_task=False, show=15)` | profil statistique → `Profile` |
+| `chrono()`, `chrono_reset()` | temps de la dernière exécution et cumul → dict (`cycles`, `secondes`, `source`, `note`, `cumul_cycles`, `cumul_secondes`) |
 | `swo_config(cpu_hz, …)`, `itm(port=0)` | SWO, texte ITM |
 | `var_trace(expr, access="write", pc=False)`, `var_samples(expr, n=20, fmt="natural")`, `var_trace_stop(expr=None)` | trace de données du DWT (Var.TRACE) |
 | `etm_swo(cpu_hz, swo_hz=2_000_000, stall=False, stm32=False, port=3443)` | ETM par SWO |

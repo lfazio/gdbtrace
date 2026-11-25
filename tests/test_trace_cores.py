@@ -64,6 +64,7 @@ def test_cortex_m0_and_m4():
     reason = tm.no_trace_reason()
     assert reason.startswith("Cortex-M0 (ARMv6-M) : ni ITM, ni SWO, ni ETM. ")   # pas de MTB
     assert "vue Profil" in reason and "RTOS" in reason              # où trouver les durées
+    assert "gdbtrace_task_log" in reason and "chrono" in reason
     tm.detect_core(FakeCore(M4))
     assert tm.core_name == "Cortex-M4" and tm.no_trace_reason() is None
     tm.detect_core(type("Mute", (), {"read_u32": lambda self, a: (_ for _ in ()).throw(OSError())})())

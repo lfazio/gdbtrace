@@ -64,7 +64,8 @@ def run(request, tmp_path_factory):
     argv = ["--config", CONFIG, "--stlink", serial, "--etm-cycle-accurate", "--etm-timestamps",
             "--layout", str(tmp_path_factory.mktemp("layout") / "layout.json")]
     return boards.run_gui(argv, "n6", ready=lambda app: app.trace.tmc is not None,
-                          cleanup=cleanup, extra=loop_counts)
+                          cleanup=cleanup,
+                          extra=lambda app: {**loop_counts(app), "chrono": boards.chrono_passes(app)})
 
 
 def view(run, phase, kind):
@@ -300,3 +301,13 @@ def test_etr_read_while_running_is_complete(request, tmp_path, run):
     assert res["streamed"] > 1.5 * res["size"] and res["gaps"] == 0 and res["errors"] == 0, res["status"]
     assert len(counts) > 2500, len(counts)                    # tick de 1 ms
     assert all((b - a) % 64 == 1 for a, b in zip(counts, counts[1:]))
+
+
+def test_chrono_by_cyccnt(run):
+    """Deux passages par worker_step (vTaskDelay de 5 ms) mesurés par DWT_CYCCNT ; la pause de
+    1 s du débogueur entre les deux n'est pas comptée."""
+    passes = run["extra"]["chrono"]
+    assert isinstance(passes, list) and len(passes) == 2, passes
+    for p in passes:
+        assert p["source"] == "DWT_CYCCNT" and not p["note"], p
+        assert 0.004 < p["secondes"] < 0.008, p

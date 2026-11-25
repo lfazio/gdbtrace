@@ -49,7 +49,8 @@ Tests sur carte (`tests/test_board_f746.py`, Nucleo-F746ZG, firmware `examples/n
 flashé ; `tests/test_board_n6.py`, Nucleo-N657X0-Q, `examples/nucleo-n6` chargé en RAM par
 ST-LINK_gdbserver ; `tests/test_board_m0.py`, Nucleo-G070RB et Nucleo-F072RB, fixture
 paramétrée par carte (`-k g070`, `-k f072`), `examples/nucleo-g070` / `nucleo-f072` flashés,
-sans trace, run-control éprouvé dans `extra` ; `tests/test_board_f446.py`, Nucleo-F446RE,
+sans trace, run-control et chrono éprouvés dans `extra`, temps des tâches par le journal en
+RAM ; `tests/test_board_f446.py`, Nucleo-F446RE,
 `examples/nucleo-f446` flashé, ETMv3 par SWO en start/stop sur `worker_step`, plus un filtre
 par plage en batch comparé à OpenCSD). Chaque test sur carte lance la session de sa
 configuration (`--config configs/<carte>.yaml`) ; `tests/test_config.py` vérifie qu'elle
@@ -205,7 +206,15 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
 - Temps par tâche (`trace/tasktrace.py`) : le firmware écrit le TCB entrant sur le port ITM 31
   (`traceTASK_SWITCHED_IN`, démo FreeRTOS) ; `TaskTraceSink` en tire tranches, brut/net (trace
   des exceptions du DWT) ; noms relus dans les TCB à l'affichage (`namer`), jamais depuis le
-  fil de capture ; vue `tasktime`.
+  fil de capture ; vue `tasktime`. Sans capture SWO (et sur un M0/M0+), le même crochet remplit
+  l'anneau `gdbtrace_task_log` (horodatage SysTick + ticks, `main.c`) : `TaskLogReader` lit les
+  seules entrées nouvelles (LivePoller en marche, gdb à l'arrêt), compte les pertes, déroule
+  les horodatages 32 bits ; `TraceManager.task_log_active` : jamais avec l'ITM (mesure remise à
+  zéro quand l'ITM prend le relais).
+- Chrono (`core/chrono.py`, posé par `ScriptAPI`) : resume hook au départ, mesure à l'arrêt
+  visible (une par `Session.stop_count`) ; SysTick + compteur de ticks (`xTickCount`,
+  `uwTick`, `ICSR.PENDSTSET`) sur un ARMv6-M ou sous QEMU, `DWT_CYCCNT` au-delà ; les arrêts
+  internes ne passent pas par les hooks ; reset / programmation / connexion l'invalident.
 - ETM (`trace/etm/`) : `etm3.py` (paquets ETMv3.5) → `flow.py` (reconstruction avec
   `image.py`, classification Thumb-2 par capstone ; chaque fonction est balayée d'un seul
   tenant pour connaître la condition des instructions d'un bloc IT — `bxeq lr` décodé seul
@@ -237,6 +246,9 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
   FreeRTOS ARM_CM0 depuis V11.3 : EXC_RETURN puis r4-r11 sur la pile (`port == "CM0"`,
   `vRestoreContextOfFirstTask` + CPUID). La frame factice de fin de tâche se retire par
   l'adresse de `prvTaskExitError` (gdb la nomme d'après la fonction qui la précède).
+  Modèle de cycles par cœur (`etm/cycles.py`, `CycleModel`, `model_for`) : M3/M4 pour les
+  décodeurs ETM (inchangé), M0 / M0+ (tables des TRM ARM) pour la MTB réelle (M0+) ou simulée
+  (QEMU microbit : M0), choisi par `TraceManager._apply_cycle_model` d'après `detect_core`.
 - Puce (`trace/chips.py`, reconnue par DBGMCU_IDCODE) : SWO hors du TPIU du cœur (N6 :
   composant SWO CoreSight, horloge cœur/8, `SwoConfig.chip`), horloges de trace, chaîne
   funnel/ETF/ETR. `trace/tmc.py` (`EtrCapture`, `TraceManager.start_etm_tmc`) : ETM écrit en
@@ -322,7 +334,9 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
   passé : Nucleo-G070RB (`-k g070`, DEV_ID 0x460, `STM32G070.svd` à confirmer). Validé sur Nucleo-F446RE (`tests/test_board_f446.py`) :
   ETMv3 par SWO (décodage = OpenCSD sur une vraie capture), filtres plage et start/stop,
   ETMFFLR. Un ETMv3 par SWO sans filtre prend toute la broche : l'ITM n'y passe plus et un
-  firmware qui attend sa FIFO se fige (dit par `EtmConfig.summary()`). Non validé sur sonde
+  firmware qui attend sa FIFO se fige (dit par `EtmConfig.summary()`). Prêts, pas encore
+  passés sur carte : chrono (`boards.chrono_passes` : SysTick gelé à l'arrêt sur un M0,
+  `DWT_CYCCNT` sur F746 et N6) et journal des tâches en RAM lu en marche. Non validé sur sonde
   réelle : `--rtos`, port de trace parallèle, MTB (dont le sens de
   l'adresse source d'une entrée d'exception : prise comme adresse de retour). ETMv4 : M7 (ETMv4.0, par SWO) et M55 (ETMv4.5, par l'ETR d'un
   STM32N6), cycle-accurate et horodatage compris ; la branche d'un BF* (v8.1-M) n'est pas

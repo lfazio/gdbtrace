@@ -174,7 +174,7 @@ La fenêtre principale range 19 vues en quatre zones à onglets, sous un menu, u
 
 - **Fichier** : Programmer un ELF… (`Ctrl+O`), Reprogrammer l'ELF courant (`Ctrl+R`), ELF récents, Exécuter un script…, Charger un SVD…, Enregistrer le layout, Déconnecter, Quitter.
 - **Configuration** : Nouvelle…, Ouvrir…, Récentes, Modifier…, Enregistrer (`Ctrl+S`), Enregistrer sous…, Connecter, Fermer (section 2).
-- **Run** : les commandes ci-dessus.
+- **Run** : les commandes ci-dessus, Go.Till, Step.Till / Step.Change, Remettre le chrono à zéro.
 - **Trace** : ETM par SWO…, ETM par l'ETR (RAM, STM32N6), Filtre de trace ETM…, Arrêter la capture.
 - **Vues** : ouvre n'importe quelle vue dans une nouvelle fenêtre.
 
@@ -321,15 +321,23 @@ Configuration conseillée du noyau : `configUSE_TRACE_FACILITY 1`, `configRECORD
 
 La vue **Temps des tâches** mesure exactement le temps de chaque tâche, sans échantillonnage. Elle donne par tâche les activations, le temps brut, le temps net (sans les exceptions), la part du temps, la tranche maximale et la moyenne. Un chronogramme montre les dernières tranches, une rangée par tâche, avec la durée au survol.
 
-Côté firmware, trois lignes dans `FreeRTOSConfig.h` et une fonction qui écrit le TCB entrant sur le port ITM 31, comme dans `examples/freertos` :
+Côté firmware, trois lignes dans `FreeRTOSConfig.h` et la fonction `gdbtrace_task_switched_in` de `examples/freertos/main.c`, appelée à chaque changement de tâche avec le TCB entrant et le compte des ticks :
 
 ```c
 #define GDBTRACE_TASK_PORT 31
-void gdbtrace_task_switched_in(void *tcb);         /* écrit tcb sur le port ITM 31 */
-#define traceTASK_SWITCHED_IN() gdbtrace_task_switched_in((void *)pxCurrentTCB)
+void gdbtrace_task_switched_in(void *tcb, uint32_t ticks);
+#define traceTASK_SWITCHED_IN() gdbtrace_task_switched_in((void *)pxCurrentTCB, \
+                                    (uint32_t)(xTickCount + xPendedTicks))
 ```
 
-La fonction reste inerte tant que le débogueur n'a pas activé l'ITM. La mesure demande une capture SWO avec l'horodatage ITM (`--swo-config`, ou Trace › ETM par SWO…).
+La fonction donne chaque changement de deux façons ; GdbTrace prend l'une ou l'autre, jamais les deux :
+
+| Chemin | Quand | Ce qu'il faut |
+| --- | --- | --- |
+| **ITM** : le TCB sur le port 31, horodaté par l'ITM | une capture SWO tourne | `--swo-config`, ou Trace › ETM par SWO… ; inerte tant que le débogueur n'a pas activé l'ITM |
+| **Journal en RAM** : l'anneau `gdbtrace_task_log` (256 entrées, 2 Ko), horodaté en cycles d'après SysTick et le compte des ticks | pas de capture SWO, et sur un Cortex-M0/M0+ (pas d'ITM) | un canal mémoire en marche (OpenOCD, QEMU) : la vue lit les nouvelles entrées pendant la marche, puis la fin à l'arrêt |
+
+Par le journal en RAM, le temps net est le temps brut : pas de trace des exceptions. Si l'anneau se remplit entre deux lectures (sonde lente, changements très fréquents), les plus vieilles entrées sont perdues, et la vue le dit.
 
 ### Vue Threads (programme de l'hôte)
 
@@ -355,14 +363,26 @@ La trace dit ce que la cible a fait sans l'arrêter. Deux familles : l'**ITM**, 
 | Texte écrit par le firmware | ITM | capture SWO |
 | Temps CPU par fonction, ligne, tâche | Profil | capture SWO, ou lecture du PC en marche (OpenOCD, QEMU ; aussi sur un Cortex-M0+ qui a `DWT_PCSR`) |
 | Valeur d'une variable à chaque accès | Variables tracées | capture SWO |
-| Temps par tâche RTOS | Temps des tâches | capture SWO + crochet du firmware (section 6) |
+| Temps par tâche RTOS | Temps des tâches | crochet du firmware (section 6) : capture SWO, ou journal en RAM lu en marche |
+| Temps entre deux arrêts | barre d'état (chrono) | rien : SysTick ou `DWT_CYCCNT` de la cible |
 | Les instructions avant l'arrêt, le flot d'appels | Trace | ETM ou MTB |
 | Durées par fonction et par exception | Timing | ETM ou MTB |
 | Couverture de code | Couverture | ETM ou MTB |
 
 QEMU n'émule ni l'ITM ni le SWO : sous QEMU, seuls le profil par lecture du PC, l'ETM simulé et la MTB simulée fonctionnent.
 
-Un Cortex-M0 ou M0+ (ARMv6-M) n'a ni ITM, ni SWO, ni ETM : seuls le profil par lecture du PC et la MTB, si la puce en a une, y fonctionnent. GdbTrace reconnaît le cœur à la connexion, et les vues de trace le disent (section 10).
+Un Cortex-M0 ou M0+ (ARMv6-M) n'a ni ITM, ni SWO, ni ETM : y fonctionnent le profil par lecture du PC, le temps des tâches par le journal en RAM, le chrono, et la MTB si la puce en a une. GdbTrace reconnaît le cœur à la connexion, et les vues de trace le disent (section 10).
+
+### Chrono (temps entre deux arrêts)
+
+À chaque arrêt, la barre d'état donne le temps du cœur depuis la dernière reprise (Go jusqu'à un breakpoint, Go.Till, pas, Break), et le cumul : « ⏱ 4,98 ms (Σ 12,3 ms, SysTick) ». **Run › Remettre le chrono à zéro** efface le cumul. Dans un script : `gdbtrace.chrono()`.
+
+| Cœur | Source | Précision |
+| --- | --- | --- |
+| Cortex-M0, M0+ (et QEMU, en temps simulé) | SysTick, avec le compte des ticks du logiciel : `xTickCount` (+ `xPendedTicks`) de FreeRTOS, `uwTick` de la HAL STM32 | au cycle ; sans compteur de ticks, à une période de SysTick près (« ≈ ») |
+| Cortex-M3, M4, M7, M55 (carte) | `DWT_CYCCNT`, activé à la première mesure | au cycle ; les tours de 2³² cycles sont rattrapés par le compte des ticks |
+
+Le cœur arrêté par le débogueur, ces compteurs n'avancent pas : les arrêts ne comptent pas. Les arrêts internes (breakpoints à message, AUTOHALT de la MTB) ne relancent pas la mesure. Après un reset, une programmation ou une connexion, la mesure suivante attend une nouvelle reprise. Conversion en µs et ms : `--cpu-hz`.
 
 ### Capture SWO et vue ITM
 
@@ -420,6 +440,8 @@ Les durées sont **mesurées** avec `--etm-cycle-accurate`, et **estimées** par
 - ETMv4 (M7, M55) : l'ETM compte les cycles par groupe de branchements ; le modèle répartit chaque mesure entre les instructions du groupe. Environ 3 fois plus de trace : par SWO, le stall s'impose ; par l'ETR, le tampon garde moins d'exécution.
 
 Le modèle ne connaît ni les attentes mémoire ni les caches : sur une STM32N6 sans cache, les durées mesurées sont environ 25 fois les estimées.
+
+Le modèle suit le cœur détecté : Cortex-M3/M4 pour la trace ETM ; Cortex-M0 ou Cortex-M0+ (tables de cycles de leurs manuels de référence ARM) pour la MTB, réelle ou simulée (QEMU `microbit` : un Cortex-M0). La vue le nomme : « estimé (modèle Cortex-M0, MTB simulée) ».
 
 `--etm-timestamps` (ETMv4) insère dans la trace le compteur de temps global de la puce, à chaque synchronisation ; Trace.List le montre (« horodatage N »).
 
@@ -581,16 +603,19 @@ Ces cœurs n'ont ni ITM, ni SWO, ni ETM, ni MTB (STM32G0 : RM0444, chapitre 40) 
 | Run-control, breakpoints (à compteur, à message), Go.Till, Step.Till et Step.Change | oui ; 4 breakpoints matériels en flash, 2 watchpoints (Go.Till en prend un) |
 | Watch, Mémoire, Registres, Périphériques (SVD), RTOS | oui, cible arrêtée ou en marche (mémoire lue par OpenOCD) |
 | Profil | oui, par lecture de `DWT_PCSR` cible en marche (« Live ») |
-| ITM, Variables tracées, Temps des tâches, Trace, Timing, Couverture | non : ni ITM ni trace d'instructions |
+| Temps des tâches | oui, par le journal en RAM `gdbtrace_task_log` (section 6), lu en marche par OpenOCD |
+| Chrono entre deux arrêts | oui, par SysTick et le compte des ticks de FreeRTOS (section 7) |
+| ITM, Variables tracées, Trace, Timing, Couverture | non : ni ITM ni trace d'instructions |
 
-**Où voir les durées sans trace.** Le temps passé, on le lit dans des registres et en mémoire, cible en marche :
+**Où voir les durées sans trace.** Le temps passé, on le lit dans des registres et en mémoire :
 
 - par fonction et par ligne : vue **Profil**, source « Auto » ou « Live », **Démarrer** cible en marche. GdbTrace lit `DWT_PCSR` (le PC du cœur) des centaines de fois par seconde, sans l'arrêter, et compte où il se trouve ;
-- par tâche : colonne **CPU** de la vue **RTOS**, d'après les compteurs de temps d'exécution de FreeRTOS (`configGENERATE_RUN_TIME_STATS`), relus en marche.
+- par tâche : vue **Temps des tâches**, mesurée au cycle par le journal en RAM (activations, temps brut, tranches, chronogramme) ; et colonne **CPU** de la vue **RTOS** (compteurs de FreeRTOS, au tick) ;
+- d'un arrêt à l'autre : le **chrono** de la barre d'état (par exemple d'un breakpoint au suivant).
 
-Ce sont des proportions (échantillonnage, compteurs du noyau), pas des durées d'appel : celles de la vue Timing demandent une trace d'instructions, que ces cœurs n'ont pas.
+Les durées d'appel par fonction (vue Timing) demandent une trace d'instructions, que ces cœurs n'ont pas.
 
-GdbTrace reconnaît le cœur à la connexion (registre CPUID). Les vues ITM, Variables tracées, Temps des tâches, Trace et Couverture l'affichent : « Cortex-M0+ (ARMv6-M) : ni ITM, ni SWO, ni ETM » (ou « Cortex-M0 … »), et renvoient aux vues Profil et RTOS. Une trace demandée (`--swo-config`, `--etm-config`, `--var-trace`, **Trace › ETM par SWO…**, bouton **Tracer**) est refusée avec ce même message, sans rien écrire dans des registres absents.
+GdbTrace reconnaît le cœur à la connexion (registre CPUID). Les vues ITM, Variables tracées, Trace et Couverture l'affichent : « Cortex-M0+ (ARMv6-M) : ni ITM, ni SWO, ni ETM » (ou « Cortex-M0 … »), et renvoient au profil, au temps des tâches par le journal en RAM et au chrono ; la vue Temps des tâches aussi, quand le firmware n'a pas ce journal. Une trace demandée (`--swo-config`, `--etm-config`, `--var-trace`, **Trace › ETM par SWO…**, bouton **Tracer**) est refusée avec ce même message, sans rien écrire dans des registres absents.
 
 ### Firmware d'exemple
 
@@ -637,13 +662,14 @@ Elles équivalent à :
 
 1. construit et flashe le firmware d'exemple ;
 2. lance l'interface avec la configuration de la carte (`configs/nucleo-g070rb.yaml`, `configs/nucleo-f072rb.yaml`) ;
-3. relève et vérifie toutes les vues (`tests/artifacts/board-g070.json`, `board-f072.json`) : vues à l'arrêt et en marche, RTOS, profil par `DWT_PCSR`, et les vues de trace, qui doivent dire pourquoi elles restent vides.
+3. relève et vérifie toutes les vues (`tests/artifacts/board-g070.json`, `board-f072.json`) : vues à l'arrêt et en marche, RTOS, profil par `DWT_PCSR`, temps des tâches par le journal en RAM, et les autres vues de trace, qui doivent dire pourquoi elles restent vides.
 
-Il éprouve en plus les comparateurs du cœur :
+Il éprouve en plus les comparateurs du cœur et le chrono :
 
 - un breakpoint à compteur ;
 - un breakpoint à message : un message par passage, sans arrêt visible ;
-- un Go.Till sur une globale.
+- un Go.Till sur une globale ;
+- le chrono entre deux passages par `worker_step` (5 ms), dont un après une pause de 1 s du débogueur, qui ne doit pas compter.
 
 Chaque carte est trouvée seule : sonde ST-LINK dans `/sys`, puis identité de la puce (DEV_ID) lue par OpenOCD. `GDBTRACE_G070_SERIAL` et `GDBTRACE_F072_SERIAL` imposent la sonde. Une carte absente ne fait sauter que ses propres tests.
 
@@ -962,7 +988,9 @@ Quand une capture ne démarre pas, GdbTrace le dit : le journal de mise en route
   - Nucleo-N657X0-Q (Cortex-M55, ST-LINK_gdbserver) : vues en marche par le relais, image en RAM, ITM par le SWO de la sonde, ETMv4.5 par l'ETR (boucles à faible coût comprises), trace de données du DWT de l'ARMv8-M, vues RTOS et temps des tâches ;
   - Nucleo-F446RE (Cortex-M4F, OpenOCD) : ETMv3 et ITM par SWO, filtres de l'ETMv3 (plage et start/stop), trace de données du DWT, profil par SWO, vues RTOS et temps des tâches ;
   - Nucleo-F072RB (Cortex-M0, OpenOCD) : run-control (breakpoints à compteur et à message, Go.Till par le DWT), vues en marche, RTOS (en marche : état de chaque tâche lu dans son TCB), profil par `DWT_PCSR`.
-- **Pas encore validé sur carte** : Nucleo-G070RB (Cortex-M0+, OpenOCD ; test prêt : `tests/test_board_m0.py -k g070`), port de trace parallèle, MTB d'un vrai M0+, `--rtos` d'OpenOCD.
+- **Pas encore validé sur carte** : Nucleo-G070RB (Cortex-M0+, OpenOCD ; test prêt : `tests/test_board_m0.py -k g070`), port de trace parallèle, MTB d'un vrai M0+, `--rtos` d'OpenOCD ; le chrono (SysTick gelé pendant l'arrêt sur un Cortex-M0, `DWT_CYCCNT` au-delà) et le journal des tâches en RAM lu en marche (tests sur carte prêts).
+- **Chrono** : sans compteur de ticks connu (`xTickCount`, `uwTick`), la durée n'est connue qu'à une période de SysTick près. Lire `SYST_CSR` peut effacer son drapeau COUNTFLAG pour le logiciel (selon la sonde) : un firmware qui l'attend en boucle peut en manquer un.
+- **Modèles de cycles M0/M0+** : d'après les tables des manuels de référence ARM (mémoire sans attente, multiplieur rapide) ; la sortie d'exception et l'enchaînement, non documentés, sont estimés.
 - **Cortex-M0/M0+** : ni ITM, ni SWO, ni ETM. Sur les STM32G0 et STM32F0, 4 breakpoints matériels et 2 watchpoints, que Go.Till partage avec les watchpoints posés.
 - **ETMv4** : Cortex-M7 (par SWO) et Cortex-M55 (par l'ETR d'un STM32N6), cycle-accurate et horodatage compris. Sur le M55, le filtre ETM prend les comparateurs du DWT (4 plages au plus), et la branche d'une instruction « branch future » (BF, BFL…) n'est pas suivie ; les compilateurs n'en émettent pas.
 - **ETR** : lu en continu tant que la trace ne dépasse pas ce que lit la sonde (~550 Ko/s) ; au-delà, des trous. En cycle-accurate, lu à l'arrêt : un tampon plein ne garde que la fin de l'exécution.

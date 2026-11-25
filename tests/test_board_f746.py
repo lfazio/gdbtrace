@@ -43,7 +43,8 @@ def run(request, tmp_path_factory):
     old = os.environ.get("STLINK_SERIAL")
     os.environ["STLINK_SERIAL"] = serial
     try:
-        return boards.run_gui(argv, "f746", ready=lambda app: app.trace.etm_swo, cleanup=cleanup)
+        return boards.run_gui(argv, "f746", ready=lambda app: app.trace.etm_swo, cleanup=cleanup,
+                              extra=lambda app: {"chrono": boards.chrono_passes(app)})
     finally:
         if old is None:
             os.environ.pop("STLINK_SERIAL", None)
@@ -188,3 +189,13 @@ def test_coverage(run):
         covered, total = (int(x) for x in rows[f][3].split("/"))
         assert 0 < covered <= total, (f, rows[f])
     assert "capture ETM" in view(run, "apres", "coverage")["info"]
+
+
+def test_chrono_by_cyccnt(run):
+    """Deux passages par worker_step (vTaskDelay de 5 ms) mesurés par DWT_CYCCNT ; la pause de
+    1 s du débogueur entre les deux n'est pas comptée."""
+    passes = run["extra"]["chrono"]
+    assert isinstance(passes, list) and len(passes) == 2, passes
+    for p in passes:
+        assert p["source"] == "DWT_CYCCNT" and not p["note"], p
+        assert 0.004 < p["secondes"] < 0.008, p

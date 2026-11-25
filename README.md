@@ -25,6 +25,7 @@ Interface en **tkinter**.
 | 15. Configurations de session | Menu Configuration et `--config FICHIER.yaml` : cible (chemin de l'ELF, SVD), serveur (QEMU, OpenOCD, ST-LINK_gdbserver, gdb pour un programme de l'hôte, serveur déjà lancé), OS (vues RTOS, Temps des tâches ou Threads selon l'OS), script et couverture, trace ; une configuration = une ligne de commande ; exemples dans `configs/`, sessions des tests sur carte | ✅ |
 | 16. Serveur MCP | Un agent (Claude Code…) pilote une session sans interface par le protocole MCP sur stdio : connexion avec les options de la ligne de commande, run-control, breakpoints, données (relues en marche), trace, couverture, timing, code Python avec l'objet `gdbtrace` | ✅ |
 | 17. Nucleo-F446RE (Cortex-M4, ETMv3) | ETMv3 matériel par SWO validé : décodage identique à OpenCSD sur une vraie capture, tours de boucle exacts sur 440 appels ; stall effectif (ETMFFLR), options refusées par l'ETM signalées (pas de cycle-accurate sur un ETM-M4), filtre par le DWT avec ses trous de latence comblés ; alignement TPIU retrouvé sans synchro ; test sur carte | ✅ |
+| 18. Mesure du temps sans trace | Chrono entre deux arrêts (SysTick et compte des ticks sur un Cortex-M0/M0+ et sous QEMU, `DWT_CYCCNT` au-delà) ; temps des tâches sans ITM par un journal en RAM (`gdbtrace_task_log`) lu en marche ; modèles de cycles Cortex-M0 et M0+ (manuels ARM) pour la MTB | 🚧 (à valider sur carte) |
 
 ## Installation
 
@@ -309,17 +310,23 @@ La vue donne, par tâche :
 
 Le chronogramme montre les dernières tranches, une rangée par tâche, avec la durée au survol.
 
-Côté firmware FreeRTOS, trois lignes dans `FreeRTOSConfig.h` et une fonction, comme dans
-`examples/freertos` (inerte tant que le débogueur n'a pas activé l'ITM) :
+Côté firmware FreeRTOS, trois lignes dans `FreeRTOSConfig.h` et la fonction
+`gdbtrace_task_switched_in` de `examples/freertos/main.c` :
 
 ```c
 #define GDBTRACE_TASK_PORT 31
-void gdbtrace_task_switched_in(void *tcb);         /* écrit tcb sur le port ITM 31 */
-#define traceTASK_SWITCHED_IN() gdbtrace_task_switched_in((void *)pxCurrentTCB)
+void gdbtrace_task_switched_in(void *tcb, uint32_t ticks);
+#define traceTASK_SWITCHED_IN() gdbtrace_task_switched_in((void *)pxCurrentTCB, \
+                                    (uint32_t)(xTickCount + xPendedTicks))
 ```
 
-Il faut une capture SWO ou de trace avec l'horodatage ITM (`--swo-config`, Trace › ETM par
-SWO…). Script : `gdbtrace.task_times()`, `gdbtrace.task_timeline(30)`. Validé : le crochet de
+Deux chemins, l'un ou l'autre, jamais les deux :
+- **ITM** : le TCB sur le port 31, avec l'horodatage ITM ; il faut une capture SWO ou de
+  trace (`--swo-config`, Trace › ETM par SWO…) ; inerte tant que l'ITM n'est pas activé ;
+- **journal en RAM**, sans capture SWO et sur un Cortex-M0/M0+ (pas d'ITM) : l'anneau
+  `gdbtrace_task_log` (256 entrées, 2 Ko), horodaté en cycles d'après SysTick et le compte
+  des ticks, lu en marche par le canal mémoire (OpenOCD, QEMU), puis à l'arrêt. Temps net =
+  brut (pas de trace des exceptions) ; un anneau dépassé entre deux lectures est signalé. Script : `gdbtrace.task_times()`, `gdbtrace.task_timeline(30)`. Validé : le crochet de
 la démo reçoit exactement `pxCurrentTCB` à chaque changement (vérifié sous QEMU), calculs
 sur des flux ITM reconstitués, et capture réelle validée sur Nucleo-F746ZG (test sur carte).
 
@@ -475,6 +482,19 @@ OpenCSD 1.4.1 ne compte pas l'élément spéculatif annoncé par Trace Info (SPE
 à chaque synchronisation, GdbTrace non. L'ETMv4.5 d'un Cortex-M55 (STM32N6) est décodé aussi
 (section suivante). Cycle-accurate et horodatage : section « Analyse temporelle ».
 
+### Chrono (temps entre deux arrêts)
+
+À chaque arrêt, la barre d'état donne le temps du cœur depuis la dernière reprise (Go
+jusqu'à un breakpoint, Go.Till, pas) et le cumul : « ⏱ 4,98 ms (Σ 12,3 ms, SysTick) ».
+Mesuré par la cible, sans trace :
+- Cortex-M0/M0+ et QEMU : **SysTick**, avec le compte des ticks du logiciel (`xTickCount` de
+  FreeRTOS, `uwTick` de la HAL STM32) ; sans lui, à une période de SysTick près ;
+- Cortex-M3 et au-delà, sur carte : **`DWT_CYCCNT`**, activé à la première mesure.
+
+Le cœur arrêté, ces compteurs n'avancent pas : les arrêts ne comptent pas, ni les arrêts
+internes des breakpoints à message. Run › Remettre le chrono à zéro ; script :
+`gdbtrace.chrono()`, `gdbtrace.chrono_reset()` ; serveur MCP : outil `chrono`.
+
 ### Analyse temporelle (vue Timing)
 
 L'équivalent de Trace.STATistic.Func et Trace.Chart.Func, calculé depuis la trace ETM :
@@ -487,7 +507,10 @@ L'équivalent de Trace.STATistic.Func et Trace.Chart.Func, calculé depuis la tr
   temps brut ont une couleur fixe (elle les suit d'une analyse à l'autre), les autres sont en
   gris « Autres ». Pointillés : appel coupé par le début ou la fin de la trace.
 
-Unités : cycles ou µs (fréquence du cœur `--cpu-hz`, 25 MHz par défaut).
+Unités : cycles ou µs (fréquence du cœur `--cpu-hz`, 25 MHz par défaut). Sans
+cycle-accurate, les durées viennent d'un modèle de cycles qui suit le cœur : Cortex-M3/M4
+pour l'ETM, Cortex-M0 ou M0+ (tables de leurs manuels de référence ARM) pour la MTB, réelle
+ou simulée ; la vue nomme le modèle.
 
 **D'où viennent les durées** (toujours indiqué en haut de la vue) :
 
