@@ -115,14 +115,18 @@ class TaskTimeView(View):
 
     def render(self, force: bool = False) -> None:
         sink = self.sink
-        key = (sink.generation, self.unit_var.get(), self.canvas.winfo_width(), self.canvas.winfo_height())
+        reason = self.app.trace.no_trace_reason()      # cœur sans ITM (Cortex-M0/M0+)
+        key = (sink.generation, reason, self.unit_var.get(), self.canvas.winfo_width(),
+               self.canvas.winfo_height())
         if not force and key == self._gen:
             return
         self._gen = key
         self._ensure_namer()
         rows = sink.rows()
         conv, unit = self._conv()
-        if not rows:
+        if not rows and reason:
+            self.info.configure(text=f"pas de temps par tâche — {reason}")
+        elif not rows:
             self.info.configure(text="aucun changement de tâche reçu : le firmware écrit le TCB entrant "
                                      "sur le port ITM 31 (traceTASK_SWITCHED_IN) ; capture SWO ou de trace")
         else:

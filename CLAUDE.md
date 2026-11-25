@@ -19,8 +19,9 @@ Le développement avance par jalons (voir le tableau du README). Messages de com
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'   # dev = pytest + capstone (ETM)
 make -C examples/firmware        # demo.elf (Cortex-M3, QEMU mps2-an385)
 make -C examples/freertos        # freertos.elf
-make -C examples/m0plus          # demo.elf Cortex-M0+ (QEMU -M microbit), tampon MTB réservé
+make -C examples/m0plus          # demo.elf Cortex-M0+ (QEMU -M microbit), tampon MTB réservé ; freertos.elf (port ARM_CM0)
 make -C examples/nucleo-n6       # firmware de test STM32N6 (M55, en RAM, boucles v8.1-M, tampon ETR)
+make -C examples/nucleo-g070     # firmware de test STM32G070RB (M0+, flash, sans ITM)
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf               # GUI sur QEMU
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf --etm-sim     # + trace ETM simulée
 .venv/bin/python -m gdbtrace fw.elf --batch --script s.py             # sans GUI
@@ -42,7 +43,8 @@ Aucun linter n'est configuré.
 
 Tests sur carte (`tests/test_board_f746.py`, Nucleo-F746ZG, firmware `examples/nucleo-f746`
 flashé ; `tests/test_board_n6.py`, Nucleo-N657X0-Q, `examples/nucleo-n6` chargé en RAM par
-ST-LINK_gdbserver) : `--boards=auto|require|skip` (`tests/boards.py` trouve la sonde par
+ST-LINK_gdbserver ; `tests/test_board_g070.py`, Nucleo-G070RB, `examples/nucleo-g070` flashé,
+sans trace, run-control éprouvé dans `extra`) : `--boards=auto|require|skip` (`tests/boards.py` trouve la sonde par
 `/sys` puis l'IDCODE, lu par OpenOCD ou ST-LINK_gdbserver). Le GUI tourne par le vrai
 `main()`, `App.mainloop` remplacé par le scénario commun `boards.run_gui` ; le contenu de
 chaque vue est relevé (`boards.dump_views`, dans `tests/artifacts/board-<carte>.json`) puis
@@ -172,6 +174,13 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
   avant ; DLS/LCTP/BF* ordinaires), BXNS/BLXNS, CLRM ; une instruction illisible (Helium) y
   est ordinaire, de la taille de son encodage. Le balayage des blocs IT continue après une
   instruction que capstone ne lit pas.
+- Cœur (`TraceManager.detect_core`, CPUID, à la connexion, chemins GUI et batch) : un
+  ARMv6-M (M0/M0+) n'a ni ITM, ni SWO, ni ETM ; `_require_itm` refuse toute capture en le
+  disant (`setup_error`), `no_trace_reason()` s'affiche dans les vues ITM, Trace, Couverture,
+  Variables tracées, Temps des tâches ; `DWT_PCSR` (profil Live) existe sur le M0+ du G0.
+  FreeRTOS ARM_CM0 depuis V11.3 : EXC_RETURN puis r4-r11 sur la pile (`port == "CM0"`,
+  `vRestoreContextOfFirstTask` + CPUID). La frame factice de fin de tâche se retire par
+  l'adresse de `prvTaskExitError` (gdb la nomme d'après la fonction qui la précède).
 - Puce (`trace/chips.py`, reconnue par DBGMCU_IDCODE) : SWO hors du TPIU du cœur (N6 :
   composant SWO CoreSight, horloge cœur/8, `SwoConfig.chip`), horloges de trace, chaîne
   funnel/ETF/ETR. `trace/tmc.py` (`EtrCapture`, `TraceManager.start_etm_tmc`) : ETM écrit en
@@ -235,7 +244,8 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
   trace de données du DWT, profil par SWO, vue RTOS, temps des tâches. Validé sur
   Nucleo-N657X0-Q (`tests/test_board_n6.py`) : ST-LINK_gdbserver et son relais (mémoire en
   direct, reset), ITM par le SWO de la sonde, ETMv4.5 par l'ETR (boucles LE comprises), DWT
-  de l'ARMv8-M. Non validé sur sonde
+  de l'ARMv8-M. Prêt, pas encore passé : Nucleo-G070RB (`tests/test_board_g070.py`, DEV_ID
+  0x460 et `STM32G070.svd` à confirmer). Non validé sur sonde
   réelle : `--rtos`, `DWT_PCSR` via OpenOCD, port de trace parallèle, ETMv3 matériel (M3/M4,
   y compris par SWO), MTB (dont le sens de l'adresse source d'une entrée d'exception : prise
   comme adresse de retour). ETMv4 : M7 (ETMv4.0, par SWO) et M55 (ETMv4.5, par l'ETR d'un

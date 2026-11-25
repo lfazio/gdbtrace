@@ -718,7 +718,7 @@ class TraceManager:
         """Où en est la trace d'instructions, en une ligne (vues Couverture et Trace) : d'où
         elle vient, ou pourquoi rien n'arrive et quoi faire."""
         if self.etm is None:
-            return "trace ETM indisponible (capstone requis, ou pas d'ELF)"
+            return self.no_trace_reason() or "trace ETM indisponible (capstone requis, ou pas d'ELF)"
         if self.etm_sim is not None or self.mtb_sim is not None or self.mtb is not None:
             return self.source_label()
         if self.tmc is not None:

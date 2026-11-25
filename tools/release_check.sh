@@ -3,7 +3,8 @@
 #
 #   tools/release_check.sh [options de pytest…]
 #
-# Les cartes de test doivent être branchées (Nucleo-F746ZG : tests/test_board_f746.py) :
+# Les cartes de test doivent être branchées (Nucleo-F746ZG : tests/test_board_f746.py ;
+# Nucleo-N657X0-Q : tests/test_board_n6.py ; Nucleo-G070RB : tests/test_board_g070.py) :
 # --boards=require fait échouer la release si l'une manque, au lieu de l'ignorer. L'oracle
 # OpenCSD est construit s'il manque (sinon les tests ETM qui s'y comparent seraient ignorés).
 # Les relevés des vues des tests sur cartes restent dans tests/artifacts/.

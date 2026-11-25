@@ -554,6 +554,11 @@ gdbtrace.thread("consumer")
 | `cov.save(f)`, `cov.load(f)`, `cov.export(f)`, `cov.reset()` | cumul et rapports (`.html`, `.info`, `.json`) | idem |
 | `mtb(n)`, `mtb_stats()`, `mtb_probe()` | MTB d'un Cortex-M0+ | `--mtb` ou `--mtb-sim` |
 
+Sur un Cortex-M0 ou M0+ (ARMv6-M), ni ITM, ni SWO, ni ETM : `swo_config`, `var_trace`,
+`etm_swo` et `etm_etr` lèvent `RuntimeError` avec la raison (« Cortex-M0+ (ARMv6-M) : ni ITM,
+ni SWO, ni ETM »). `profile()` marche par lecture du PC (`DWT_PCSR`) ; `mtb()` si la puce a
+une MTB.
+
 **Trace de données** (sur carte, avec une capture SWO ; QEMU n'émule ni DWT ni ITM) :
 
 ```python

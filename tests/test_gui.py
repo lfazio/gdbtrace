@@ -714,6 +714,36 @@ def test_mtb_autohalt_views(m0_elf, tmp_path):
         close_app(a)
 
 
+def test_cortex_m0_trace_views_say_why(m0_elf, tmp_path):
+    """Cortex-M0 sans MTB (QEMU microbit) : ni ITM, ni SWO, ni ETM. Chaque vue de trace le
+    dit (cœur reconnu à la connexion), au lieu d'attendre une capture qui ne viendra pas."""
+    from gdbtrace.gui.app import App
+    from gdbtrace.views.coverage import CoverageView
+    from gdbtrace.views.itm import ItmView
+    from gdbtrace.views.tasktime import TaskTimeView
+    from gdbtrace.views.trace import TraceView
+    from gdbtrace.views.vartrace import VarTraceView
+    a = App(layout_file=str(tmp_path / "layout.json"))
+    try:
+        s = Session()
+        s.connect(m0_elf, QemuTarget(elf=m0_elf, machine="microbit", gdb_port=free_port()))
+        a.attach(s)
+        assert a.trace.core_name == "Cortex-M0"
+        why = "Cortex-M0 (ARMv6-M) : ni ITM, ni SWO, ni ETM"
+        labels = {}
+        for cls, attr in ((ItmView, "status"), (VarTraceView, "info"), (TaskTimeView, "info"),
+                          (TraceView, "info"), (CoverageView, "info")):
+            v = a.views.show(cls)
+            v.refresh()
+            labels[cls.kind] = getattr(v, attr)
+        assert pump(a, lambda: all(why in w.cget("text") for w in labels.values())), \
+            {k: w.cget("text") for k, w in labels.items()}
+        a.views.find(VarTraceView).trace_expr("counter", "write", False)   # refusé, en le disant
+        assert why in a.status.get() and not a.trace.datatrace.vars
+    finally:
+        close_app(a)
+
+
 def test_etm_over_swo_in_gui(app, qemu_paths, tmp_path):
     """Chemin de l'utilisateur sur la F746 : --etm-config --etm-port swo dans le GUI. Le journal
     de la mise en route va dans la console, la capture démarre, la couverture se remplit ; sans

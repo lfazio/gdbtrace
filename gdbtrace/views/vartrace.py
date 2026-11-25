@@ -113,15 +113,17 @@ class VarTraceView(View):
     def refresh(self) -> None:
         """Cible arrêtée : variables du layout pas encore tracées (reconnexion) reprises."""
         traced = {v.expr for v in self.sink.vars.values()}
+        no_itm = self.app.trace.no_trace_reason() is not None    # dit une fois, dans info
         for expr, access, pc in self.wanted:
-            if expr not in traced:
+            if expr not in traced and not no_itm:
                 self.app.safe(lambda e=expr, a=access, p=pc: self.app.trace.trace_variable(
                     self.session, e, a, p, cpu_hz=self.app.cpu_hz))
         self.render(force=True)
 
     def render(self, force: bool = False) -> None:
         sink = self.sink
-        key = (sink.generation, self.canvas.winfo_width(), self.canvas.winfo_height())
+        reason = self.app.trace.no_trace_reason()      # cœur sans ITM (Cortex-M0/M0+)
+        key = (sink.generation, reason, self.canvas.winfo_width(), self.canvas.winfo_height())
         if not force and key == self._gen:
             return
         self._gen = key
@@ -129,7 +131,8 @@ class VarTraceView(View):
         total = sum(v.count for v in vars_)
         self.info.configure(text=f"{len(vars_)} variable(s), {total} échantillon(s)"
                                  + (f", {sink.lost} paquet(s) d'un comparateur inconnu" if sink.lost else "")
-                                 if vars_ else "aucune variable tracée : saisir une globale, puis Tracer")
+                                 if vars_ else f"pas de trace de données — {reason}" if reason
+                                 else "aucune variable tracée : saisir une globale, puis Tracer")
         self.tree.delete(*self.tree.get_children())
         names = {"write": "écriture", "read": "lecture", "rw": "les deux"}
         for v in vars_:

@@ -42,6 +42,8 @@ NUCLEO_F746 = BoardSpec("nucleo-f746zg", "GDBTRACE_F746_SERIAL", "configs/nucleo
                         0xE0042000, 0x449, "STM32F746.svd")
 NUCLEO_N6 = BoardSpec("nucleo-n657x0-q", "GDBTRACE_N6_SERIAL", None,
                       0x44001000, 0x486, "STM32N657.svd", apid=1)
+NUCLEO_G070 = BoardSpec("nucleo-g070rb", "GDBTRACE_G070_SERIAL", "configs/nucleo-g070rb.cfg",
+                        0x40015800, 0x460, "STM32G070.svd")
 
 
 def stlink_serials() -> list[tuple[str, str]]:

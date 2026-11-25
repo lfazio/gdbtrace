@@ -13,9 +13,10 @@ Comment installer, lancer et utiliser GdbTrace : interface, breakpoints, donnée
 7. [Trace, profil et couverture](#7-trace-profil-et-couverture)
 8. [Sur une Nucleo-F746ZG](#8-sur-une-nucleo-f746zg)
 9. [Sur une Nucleo-N657X0-Q (STM32N6)](#9-sur-une-nucleo-n657x0-q-stm32n6)
-10. [Console et scripts Python](#10-console-et-scripts-python)
-11. [Référence des options](#11-référence-des-options)
-12. [Dépannage et limites](#12-dépannage-et-limites)
+10. [Sur une Nucleo-G070RB (STM32G0)](#10-sur-une-nucleo-g070rb-stm32g0)
+11. [Console et scripts Python](#11-console-et-scripts-python)
+12. [Référence des options](#12-référence-des-options)
+13. [Dépannage et limites](#13-dépannage-et-limites)
 
 ---
 
@@ -199,7 +200,7 @@ Chaque ligne donne le numéro, le type, l'adresse, le nombre de passages (Hits),
 
 Dans le message, `{expression}` est remplacé par la valeur de l'expression C, et `{expression:hex}` par la même valeur dans un format (`hex`, `dec`, `oct`, `bin`, `ascii`). Exemple : `capteur n={counter} tick={tick:hex}` donne `capteur n=7 tick=0x7`.
 
-Un passage avec message est un arrêt interne : les vues ne se rafraîchissent pas et la bannière « Breakpoint N » de gdb est masquée. Chaque passage coûte un aller-retour avec la cible, de l'ordre de la milliseconde : sur une fonction appelée des milliers de fois par seconde, la cible ralentit d'autant. Un script peut aussi poser une action Python qui décide de l'arrêt (section 10 et [`docs/scripting.md`](scripting.md)).
+Un passage avec message est un arrêt interne : les vues ne se rafraîchissent pas et la bannière « Breakpoint N » de gdb est masquée. Chaque passage coûte un aller-retour avec la cible, de l'ordre de la milliseconde : sur une fonction appelée des milliers de fois par seconde, la cible ralentit d'autant. Un script peut aussi poser une action Python qui décide de l'arrêt (section 11 et [`docs/scripting.md`](scripting.md)).
 
 ### Go.Till
 
@@ -276,7 +277,7 @@ Elle s'active quand FreeRTOS est lié dans l'ELF. Elle lit les structures du noy
 - **Contexte d'une tâche** (double-clic, cible arrêtée) : ses registres, relus sur sa pile, et sa pile d'appels. Les registres du cœur sont toujours restaurés ensuite.
 - **En marche** : la vue se rafraîchit par le canal mémoire. Une lecture faite pendant un changement de contexte est détectée et relancée.
 
-Configuration conseillée du noyau : `configUSE_TRACE_FACILITY 1`, `configRECORD_STACK_HIGH_ADDRESS 1`, `configCHECK_FOR_STACK_OVERFLOW 2`, `configQUEUE_REGISTRY_SIZE` > 0, `configGENERATE_RUN_TIME_STATS 1`. Ports gérés pour le contexte des tâches : ARM_CM3 et ARM_CM4F.
+Configuration conseillée du noyau : `configUSE_TRACE_FACILITY 1`, `configRECORD_STACK_HIGH_ADDRESS 1`, `configCHECK_FOR_STACK_OVERFLOW 2`, `configQUEUE_REGISTRY_SIZE` > 0, `configGENERATE_RUN_TIME_STATS 1`. Ports gérés pour le contexte des tâches : ARM_CM3, ARM_CM4F et ARM_CM0. Depuis V11.3, le port ARM_CM0 range sur la pile EXC_RETURN, puis r4-r11 : GdbTrace reconnaît ce cadre (symbole `vRestoreContextOfFirstTask` sur un Cortex-M0/M0+).
 
 ### Temps des tâches
 
@@ -308,7 +309,7 @@ La trace dit ce que la cible a fait sans l'arrêter. Deux familles : l'**ITM**, 
 | Ce qu'on veut | Vue | Il faut |
 | --- | --- | --- |
 | Texte écrit par le firmware | ITM | capture SWO |
-| Temps CPU par fonction, ligne, tâche | Profil | capture SWO, ou lecture du PC en marche (OpenOCD, QEMU) |
+| Temps CPU par fonction, ligne, tâche | Profil | capture SWO, ou lecture du PC en marche (OpenOCD, QEMU ; aussi sur un Cortex-M0+ qui a `DWT_PCSR`) |
 | Valeur d'une variable à chaque accès | Variables tracées | capture SWO |
 | Temps par tâche RTOS | Temps des tâches | capture SWO + crochet du firmware (section 6) |
 | Les instructions avant l'arrêt, le flot d'appels | Trace | ETM ou MTB |
@@ -316,6 +317,8 @@ La trace dit ce que la cible a fait sans l'arrêter. Deux familles : l'**ITM**, 
 | Couverture de code | Couverture | ETM ou MTB |
 
 QEMU n'émule ni l'ITM ni le SWO : sous QEMU, seuls le profil par lecture du PC, l'ETM simulé et la MTB simulée fonctionnent.
+
+Un Cortex-M0 ou M0+ (ARMv6-M) n'a ni ITM, ni SWO, ni ETM : seuls le profil par lecture du PC et la MTB, si la puce en a une, y fonctionnent. GdbTrace reconnaît le cœur à la connexion, et les vues de trace le disent (section 10).
 
 ### Capture SWO et vue ITM
 
@@ -388,6 +391,7 @@ Le Cortex-M0+ n'a ni ETM ni SWO. Sa MTB écrit en SRAM un paquet à chaque branc
 - Le firmware réserve le tampon : `__mtb_buffer__`, aligné sur sa taille, ou `--mtb-buffer adresse:taille`.
 - `--mtb-autohalt` donne une trace complète : la MTB arrête le cœur à chaque tampon plein, GdbTrace le vide et relance, sans arrêt visible. La cible ralentit beaucoup ; préférer un tampon de 4 à 8 Ko.
 - `--mtb-sim` simule la MTB sous QEMU (`--machine microbit`, `examples/m0plus`).
+- La MTB est optionnelle : le STM32G0, par exemple, n'en a pas (section 10).
 
 ## 8. Sur une Nucleo-F746ZG
 
@@ -425,7 +429,7 @@ Le débit du SWO limite la trace sans perte : environ 3,5 MHz de cœur tracé av
 tools/release_check.sh
 ```
 
-Ce script lance toute la suite, construit l'oracle OpenCSD s'il manque, et **exige** les cartes de test : la Nucleo-F746ZG et la Nucleo-N657X0-Q (section 9). Le test sur la F746 (`tests/test_board_f746.py`) :
+Ce script lance toute la suite, construit l'oracle OpenCSD s'il manque, et **exige** les cartes de test : la Nucleo-F746ZG, la Nucleo-N657X0-Q (section 9) et la Nucleo-G070RB (section 10). Le test sur la F746 (`tests/test_board_f746.py`) :
 
 1. construit et flashe le firmware d'exemple ;
 2. lance GdbTrace par son vrai point d'entrée, interface comprise, avec SVD, ETM et ITM par SWO, et une variable tracée ;
@@ -489,7 +493,68 @@ Il vérifie en plus le décodage des boucles LE : le nombre de tours relevé dan
 
 La carte est trouvée seule : sonde ST-LINK dans `/sys`, puis identité de la puce lue par ST-LINK_gdbserver. `GDBTRACE_N6_SERIAL` impose la sonde.
 
-## 10. Console et scripts Python
+## 10. Sur une Nucleo-G070RB (STM32G0)
+
+La Nucleo-G070RB porte un STM32G070RB : un Cortex-M0+ (ARMv6-M) à 16 MHz au reset, 128 Ko de flash et 36 Ko de RAM, avec un ST-Link V2-1 embarqué. GdbTrace y passe par OpenOCD.
+
+### Ce que permet un Cortex-M0+
+
+Le M0+ du STM32G0 n'a ni ITM, ni SWO, ni ETM, ni MTB (RM0444, chapitre 40) : aucune trace. Il a 4 breakpoints matériels et un DWT à 2 comparateurs, avec `DWT_PCSR`.
+
+| Fonction | Sur le G070 |
+| --- | --- |
+| Run-control, breakpoints (à compteur, à message), Go.Till, Step.Till et Step.Change | oui ; 4 breakpoints matériels en flash, 2 watchpoints (Go.Till en prend un) |
+| Watch, Mémoire, Registres, Périphériques (SVD), RTOS | oui, cible arrêtée ou en marche (mémoire lue par OpenOCD) |
+| Profil | oui, par lecture de `DWT_PCSR` cible en marche (« Live ») |
+| ITM, Variables tracées, Temps des tâches, Trace, Timing, Couverture | non : ni ITM ni trace d'instructions |
+
+GdbTrace reconnaît le cœur à la connexion (registre CPUID). Les vues ITM, Variables tracées, Temps des tâches, Trace et Couverture l'affichent : « Cortex-M0+ (ARMv6-M) : ni ITM, ni SWO, ni ETM ». Une trace demandée (`--swo-config`, `--etm-config`, `--var-trace`, **Trace › ETM par SWO…**, bouton **Tracer**) est refusée avec ce même message, sans rien écrire dans des registres absents.
+
+### Firmware d'exemple
+
+`examples/nucleo-g070` construit la démo FreeRTOS de `examples/freertos` pour cette carte :
+
+- même `main.c` ; la sortie ITM y est inerte dès la compilation, car sur un ARMv6-M la zone de l'ITM est réservée ;
+- port FreeRTOS ARM_CM0 de V11.3.3 ;
+- cœur sur HSI16, à 16 MHz ; tas de 16 Ko.
+
+```bash
+make -C examples/nucleo-g070
+```
+
+Sans carte, `examples/m0plus` construit la même démo pour QEMU `-M microbit` (`freertos.elf`) : la vue RTOS et le contexte des tâches d'un M0 s'y vérifient.
+
+### Lancer GdbTrace sur la carte
+
+Avec la configuration OpenOCD fournie (`configs/nucleo-g070rb.cfg`) :
+
+```bash
+.venv/bin/python -m gdbtrace examples/nucleo-g070/nucleo-g070.elf --program \
+    --openocd configs/nucleo-g070rb.cfg --svd STM32G070.svd --cpu-hz 16000000
+```
+
+- Profil : vue **Profil**, source « Auto » ou « Live », **Démarrer** cible en marche.
+- Le fichier SVD vient de STM32CubeIDE.
+- Plusieurs sondes branchées : `STLINK_SERIAL=<numéro de série>` choisit la bonne.
+- La connexion se fait sous reset. Pour s'attacher à un cœur qui tourne sans le réinitialiser : `CONNECT_UNDER_RESET=0` et `--no-load`.
+
+### Test sur carte
+
+`tests/test_board_g070.py` fait comme sur la F746, sans trace :
+
+1. construit et flashe le firmware d'exemple ;
+2. lance l'interface avec le SVD ;
+3. relève et vérifie toutes les vues (`tests/artifacts/board-g070.json`) : vues à l'arrêt et en marche, RTOS, profil par `DWT_PCSR`, et les vues de trace, qui doivent dire pourquoi elles restent vides.
+
+Il éprouve en plus les comparateurs du cœur :
+
+- un breakpoint à compteur ;
+- un breakpoint à message : un message par passage, sans arrêt visible ;
+- un Go.Till sur une globale.
+
+La carte est trouvée seule : sonde ST-LINK dans `/sys`, puis identité de la puce (DEV_ID 0x460) lue par OpenOCD. `GDBTRACE_G070_SERIAL` impose la sonde.
+
+## 11. Console et scripts Python
 
 Tout ce que fait l'interface se pilote aussi en Python, par l'objet `gdbtrace`. La notice complète est à part : [`docs/scripting.md`](scripting.md).
 
@@ -516,7 +581,7 @@ Dans l'interface, **Fichier › Exécuter un script…** fait la même chose. Ex
 
 Un script peut ce que l'interface ne propose pas : une **action Python** sur un breakpoint, qui décide de l'arrêt (`gdbtrace.break_("animate", action=fonction)`), une campagne de tests en intégration continue, une injection de fautes, un journal CSV.
 
-## 11. Référence des options
+## 12. Référence des options
 
 `python -m gdbtrace [ELF] [options]`. L'ELF est facultatif avec l'interface : Fichier › Programmer un ELF… le choisit ensuite. `--help` liste les mêmes options.
 
@@ -590,7 +655,7 @@ Un script peut ce que l'interface ne propose pas : une **action Python** sur un 
 | `--coverage F` | en batch : écrire la couverture à la fin (`.html`, `.info`, `.json`) ; répétable |
 | `--coverage-merge F.json` | ajouter une couverture enregistrée ; répétable |
 
-## 12. Dépannage et limites
+## 13. Dépannage et limites
 
 Quand une capture ne démarre pas, GdbTrace le dit : le journal de mise en route s'affiche dans la console, et les vues ITM, Trace et Couverture donnent la cause. Commencer par là.
 
@@ -613,13 +678,15 @@ Quand une capture ne démarre pas, GdbTrace le dit : le journal de mise en route
 | « tampon de l'ETR » refusé | le firmware ne réserve pas de tampon | un tableau `__etr_buffer__` aligné sur 4 Ko, ou `--etr-buffer ADRESSE:TAILLE` |
 | « ST-LINK_gdbserver lancé sans SWO » | `--swo-config` absent au lancement : le serveur n'a pas démarré sa capture | relancer GdbTrace avec `--swo-config` (et `--cpu-hz`) |
 | Go.Till refusé | la condition porte sur un registre ou une valeur sans adresse | Step.Till |
+| « Cortex-M0+ (ARMv6-M) : ni ITM, ni SWO, ni ETM » | le cœur n'a pas de trace (STM32G0, STM32L0…) | profil par lecture du PC (« Live ») ; MTB si `--mtb-probe` en trouve une |
 
 ### Limites connues
 
 - **Validé sur carte** :
   - Nucleo-F746ZG (Cortex-M7, OpenOCD) : ETMv4 et ITM par SWO, trace de données du DWT, profil par SWO, vues RTOS et temps des tâches ;
   - Nucleo-N657X0-Q (Cortex-M55, ST-LINK_gdbserver) : vues en marche par le relais, image en RAM, ITM par le SWO de la sonde, ETMv4.5 par l'ETR (boucles à faible coût comprises), trace de données du DWT de l'ARMv8-M, vues RTOS et temps des tâches.
-- **Pas encore validé sur carte** : port de trace parallèle, ETMv3 matériel (M3/M4), MTB d'un vrai M0+, `--rtos` d'OpenOCD, lecture de `DWT_PCSR` par OpenOCD.
+- **Pas encore validé sur carte** : Nucleo-G070RB (Cortex-M0+, OpenOCD ; test prêt : `tests/test_board_g070.py`), lecture de `DWT_PCSR` par OpenOCD, port de trace parallèle, ETMv3 matériel (M3/M4), MTB d'un vrai M0+, `--rtos` d'OpenOCD.
+- **Cortex-M0/M0+** : ni ITM, ni SWO, ni ETM. Sur le STM32G0, 4 breakpoints matériels et 2 watchpoints, que Go.Till partage avec les watchpoints posés.
 - **ETMv4** : Cortex-M7 (par SWO) et Cortex-M55 (par l'ETR d'un STM32N6), sans cycle-accurate ni horodatage. Sur le M55, pas de filtre ETM, et la branche d'une instruction « branch future » (BF, BFL…) n'est pas suivie ; les compilateurs n'en émettent pas.
 - **ETR** : lu seulement à l'arrêt ; un tampon plein ne garde que la fin de l'exécution.
 - **SWO d'un STLINK-V3EC (N6)** : un octet perdu de temps en temps à 2 Mbit/s, compté comme une erreur ITM.
