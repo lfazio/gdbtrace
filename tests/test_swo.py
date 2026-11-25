@@ -1,4 +1,5 @@
 """Capture SWO (TCP, fichier), session de trace, configuration ITM/DWT/TPIU."""
+import os
 import socket
 import threading
 import time
@@ -224,3 +225,41 @@ def test_closed_session_and_restarted_source_start_clean():
         assert not src._pending and (src.backlog, src.lost) == (0, 0) and not src._gap
     finally:
         src.stop()
+
+
+# ====================================================================== alignement sans synchro
+#: SWO réel d'une Nucleo-F446RE (ITM et ETMv3 par le formateur TPIU, 2 Mbit/s), 16 Ko pris à
+#: une frontière de trame, sans synchro complète : le TPIU n'en émet qu'au démarrage.
+F446_SWO = os.path.join(os.path.dirname(__file__), "data", "swo-f446-itm-etm.bin")
+
+
+def test_tpiu_alignment_found_without_sync():
+    """Capture connectée après la synchro du TPIU (le cas courant sur STM32F446) : le
+    déformateur retrouve l'alignement dans les données (ID de flux, puis erreurs ITM), et
+    décode ensuite exactement comme une capture synchronisée."""
+    from gdbtrace.trace.tpiu import FULL_SYNC
+    data = open(F446_SWO, "rb").read()
+    ref = TraceSession(formatter=True)
+    ref_pkts = ref.feed(FULL_SYNC + data)
+    assert ref.decoder.errors == 0 and ref.etm_bytes > 5000 and len(ref_pkts) > 500
+    for cut in (1, 2, 6, 23, 90, 1000):                 # décalages impairs et pairs
+        etm = []
+        sess = TraceSession(formatter=True, etm_sink=etm.append)
+        pkts = []
+        for i in range(cut, len(data), 7):
+            pkts += sess.feed(data[i:i + 7])
+        assert sess.deformatter.realigned == 1 and sess.decoder.errors == 0, cut
+        assert len(pkts) > len(ref_pkts) - 200, (cut, len(pkts), len(ref_pkts))
+        assert sess.etm_bytes > ref.etm_bytes - 1500, cut
+
+
+def test_tpiu_without_itm_waits_for_sync():
+    """Sans ITM pour départager les décalages pairs, aucun n'est pris au hasard : on attend
+    la synchro suivante plutôt que de décoder des trames décalées."""
+    etm = bytes(range(256)) * 8
+    stream = frame_bytes(2, etm)
+    sess = TraceSession(formatter=True)
+    sess.feed(stream[4 + 5:])                           # ni synchro ni alignement
+    assert not sess.deformatter.synced and sess.etm_bytes == 0
+    sess.feed(stream)                                   # synchro : tout est décodé
+    assert sess.deformatter.synced and sess.etm_bytes == len(etm)

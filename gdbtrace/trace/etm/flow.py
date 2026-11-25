@@ -9,6 +9,16 @@ Temps (`cycles` de chaque événement) :
 - trace cycle-accurate : cycles **mesurés** ; les cycles sans instruction (format 3 sans
   atome, paquets de cycles) s'ajoutent à l'événement suivant (latence d'exception…) ;
 - sinon : cycles **estimés** par le modèle Cortex-M3/M4 (`cycles.py`).
+
+Filtre par le DWT (ETMv3 des M3/M4) : l'événement TraceEnable est l'égalité de PC d'un
+comparateur du DWT, vraie seulement aux cycles où une instruction du bloc s'exécute ; après
+un branchement (cycles de remplissage du pipeline), la première instruction échappe à la
+trace, puis un I-sync « trace activée » reprend à la suivante (la reprise peut tomber juste
+après le bloc : l'événement est en retard d'une instruction). `heal_ranges` (les blocs
+tracés) : un tel trou est comblé quand l'image dit sans ambiguïté ce qui s'est exécuté entre
+les deux — depuis l'adresse attendue, des instructions du bloc, ordinaires et
+inconditionnelles, jusqu'à l'adresse de reprise. Sinon (exécution hors du bloc, branchement
+indirect ou conditionnel) : trou.
 """
 from __future__ import annotations
 
@@ -28,6 +38,8 @@ class FlowStats:
     unknown_code: int = 0        # adresse hors de l'image (code non chargé, désynchro)
     cycles: int = 0              # total des cycles (mesurés ou estimés)
     gaps: int = 0                # trous émis (TraceGap)
+    healed: int = 0              # trous comblés (instructions du bloc perdues par le filtre)
+    overflows: int = 0           # reprises après débordement de la FIFO de l'ETM (I-sync 2)
 
 
 class FlowDecoder:
@@ -40,6 +52,8 @@ class FlowDecoder:
         self.exc_depth = 0           # exceptions en cours (imbrication)
         self.last_was_return = False # dernier événement : instruction de retour exécutée
         self.synced = False          # un premier I-sync a été reçu
+        #: blocs tracés par un filtre du DWT ; None : aucun trou n'est comblé
+        self.heal_ranges: list[tuple[int, int]] | None = None
 
     @property
     def timing(self) -> str:
@@ -57,9 +71,14 @@ class FlowDecoder:
             if isinstance(p, ISync):
                 # trace réactivée (filtre) ou reprise après débordement : un trou dans le chemin
                 if self.synced and p.reason in (1, 2):
-                    out.append(TraceGap())
-                    self.stats.gaps += 1
-                    self.exc_depth, self.last_was_return = 0, False
+                    if p.reason == 2:
+                        self.stats.overflows += 1
+                    if p.reason == 1 and self._heal(p.addr, out):
+                        self.stats.healed += 1
+                    else:
+                        out.append(TraceGap())
+                        self.stats.gaps += 1
+                        self.exc_depth, self.last_was_return = 0, False
                 self.synced = True
                 self.addr = p.addr
                 self.pending += p.cycles
@@ -89,6 +108,31 @@ class FlowDecoder:
                         self.pending += p.cycles[k]
                     self._atom(atom, out)
         return out
+
+    MAX_HEAL = 8
+
+    def _heal(self, resume: int, out: list[Event]) -> bool:
+        """Trou du filtre du DWT comblé (voir l'en-tête) : vrai si les instructions entre
+        l'adresse attendue et `resume` sont connues ; elles sont alors ajoutées à `out`."""
+        if not self.heal_ranges or self.addr is None:
+            return False
+        inside = lambda a: any(lo <= a < hi for lo, hi in self.heal_ranges)  # noqa: E731
+        missing, a = [], self.addr
+        while a != resume:
+            ins = self.image.instr(a)
+            if (ins is None or len(missing) == self.MAX_HEAL or not inside(a) or ins.cond
+                    or ins.kind == INDIRECT or (ins.kind == DIRECT and ins.call)):
+                return False
+            missing.append(ins)
+            a = ins.target if ins.kind == DIRECT else a + ins.size
+        for ins in missing:                     # exécutées : cycles du modèle
+            taken = ins.kind == DIRECT
+            c = cycles_of(ins, True, taken)
+            out.append(Step(ins.addr, cycles=c, executed=True))
+            self.stats.instructions += 1
+            self.stats.cycles += c
+            self.last_was_return = False
+        return True
 
     def _atom(self, atom: str, out: list[Event]) -> None:
         if self.addr is None:

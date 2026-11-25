@@ -23,6 +23,7 @@ make -C examples/m0plus          # demo.elf Cortex-M0+ (QEMU -M microbit), tampo
 make -C examples/nucleo-n6       # firmware de test STM32N6 (M55, en RAM, boucles v8.1-M, tampon ETR)
 make -C examples/nucleo-g070     # firmware de test STM32G070RB (M0+, flash, sans ITM)
 make -C examples/nucleo-f072     # firmware de test STM32F072RB (M0, 8 MHz ; démarrage et config de nucleo-g070)
+make -C examples/nucleo-f446     # firmware de test STM32F446RE (M4F, flash, ETMv3 par SWO)
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf               # GUI sur QEMU
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf --etm-sim     # + trace ETM simulée
 .venv/bin/python -m gdbtrace fw.elf --batch --script s.py             # sans GUI
@@ -48,7 +49,9 @@ Tests sur carte (`tests/test_board_f746.py`, Nucleo-F746ZG, firmware `examples/n
 flashé ; `tests/test_board_n6.py`, Nucleo-N657X0-Q, `examples/nucleo-n6` chargé en RAM par
 ST-LINK_gdbserver ; `tests/test_board_m0.py`, Nucleo-G070RB et Nucleo-F072RB, fixture
 paramétrée par carte (`-k g070`, `-k f072`), `examples/nucleo-g070` / `nucleo-f072` flashés,
-sans trace, run-control éprouvé dans `extra`). Chaque test sur carte lance la session de sa
+sans trace, run-control éprouvé dans `extra` ; `tests/test_board_f446.py`, Nucleo-F446RE,
+`examples/nucleo-f446` flashé, ETMv3 par SWO en start/stop sur `worker_step`, plus un filtre
+par plage en batch comparé à OpenCSD). Chaque test sur carte lance la session de sa
 configuration (`--config configs/<carte>.yaml`) ; `tests/test_config.py` vérifie qu'elle
 redonne exactement les arguments de la session de test. Options : `--boards=auto|require|skip` (`tests/boards.py` trouve la sonde par
 `/sys` puis l'IDCODE, lu par OpenOCD ou ST-LINK_gdbserver). Le GUI tourne par le vrai
@@ -180,7 +183,10 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
 
 - SWO : source TCP/fichier → `TraceSession` → déformateur TPIU (`tpiu.py`) → `ItmDecoder`
   (`itm.py`) → abonnés (texte ITM, profil, stats d'exceptions). Sur un port parallèle
-  formaté, l'ID 1 va à l'ITM et l'ID 2 à l'ETM.
+  formaté, l'ID 1 va à l'ITM et l'ID 2 à l'ETM. Le TPIU d'un M4 n'émet sa synchro complète
+  qu'au démarrage et à l'arrêt : sans elle (capture connectée après, octets perdus), le
+  déformateur cherche l'alignement dans les données (ID de flux, puis erreurs ITM de chaque
+  décalage, `TraceSession._itm_errors`) ; rien ne se distingue : il attend.
 - Débit : un SWO saturé (2 Mbit/s, ETM-M7) arrive plus vite que le Python ne décode l'ETM.
   `TcpSwoSource` lit la socket dans un fil et décode dans un autre (sinon OpenOCD, monothread,
   se bloque en écrivant : lectures en direct en échec, SWO perdu, ITM corrompu) ; l'ETM a son
@@ -247,6 +253,15 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
   1/2, Trace On) que tout consommateur d'événements doit traiter ; celle qui suit une simple
   reprise après arrêt est retirée par `EtmTrace.resumed()`. L'ETM simulé applique le filtre
   effectif au chemin QEMU (`EtmFilter.apply`) ; la couverture se limite aux plages (`scope`).
+  ETMv3 matériel : l'événement du DWT a une instruction de retard, la trace se coupe et
+  reprend à chaque branchement ; `FlowDecoder.heal_ranges` (blocs du DWT, posés par
+  `configure_etm`, jamais en simulation) comble ces trous quand le code est sans ambiguïté
+  (instructions du bloc, sans branchement indirect ni condition). I-sync raison 2 =
+  débordement (`overflows`), jamais comblé.
+- ETMv3 programmé (`EtmConfig.apply`) : ETMCR relu, une option absente de l'ETM (cycle-accurate
+  sur un ETM-M4) est retirée (`refused`, dite par `summary()`) et le décodeur refait
+  (`TraceManager._rebuild_etm`) ; `--etm-stall` écrit aussi ETMFFLR (seuil FIFOFULL, nul au
+  reset : sans lui, stall ne fait rien).
 - ETM simulé (QEMU n'a pas d'ETM) : QEMU lancé avec `-accel tcg,one-insn-per-tb=on` ; le
   resume hook active le journal (`-d exec,nochain,int`), l'arrêt le convertit en tâche de
   fond (`qemu_log.py` → `encoder.py` → même décodeur). `TraceManager.wait_etm()` attend la
@@ -301,10 +316,12 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
   direct, reset), ITM par le SWO de la sonde, ETMv4.5 par l'ETR (boucles LE comprises), DWT
   de l'ARMv8-M. Prêts, pas encore passés : Nucleo-G070RB et Nucleo-F072RB
   (`tests/test_board_m0.py` ; DEV_ID 0x460 / 0x448, `STM32G070.svd` / `STM32F072.svd`, et
-  `DWT_PCSR` du Cortex-M0 à confirmer). Non validé sur sonde
-  réelle : `--rtos`, `DWT_PCSR` via OpenOCD, port de trace parallèle, ETMv3 matériel (M3/M4,
-  y compris par SWO), MTB (dont le sens de l'adresse source d'une entrée d'exception : prise
-  comme adresse de retour). ETMv4 : M7 (ETMv4.0, par SWO) et M55 (ETMv4.5, par l'ETR d'un
+  `DWT_PCSR` du Cortex-M0 à confirmer). Validé sur Nucleo-F446RE (`tests/test_board_f446.py`) :
+  ETMv3 par SWO (décodage = OpenCSD sur une vraie capture), filtres plage et start/stop,
+  ETMFFLR. Un ETMv3 par SWO sans filtre prend toute la broche : l'ITM n'y passe plus et un
+  firmware qui attend sa FIFO se fige (dit par `EtmConfig.summary()`). Non validé sur sonde
+  réelle : `--rtos`, `DWT_PCSR` via OpenOCD, port de trace parallèle, MTB (dont le sens de
+  l'adresse source d'une entrée d'exception : prise comme adresse de retour). ETMv4 : M7 (ETMv4.0, par SWO) et M55 (ETMv4.5, par l'ETR d'un
   STM32N6), cycle-accurate et horodatage compris ; la branche d'un BF* (v8.1-M) n'est pas
   suivie.
 - ST-LINK_gdbserver : SWV servi en octets ITM bruts (`-z`, débit = `-a` / `-b`) ; l'ST-LINK

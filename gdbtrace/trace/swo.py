@@ -30,7 +30,8 @@ class TraceSession:
         """Avec le formateur TPIU (port parallèle, ORBTrace…), les flux sont séparés par ID :
         ITM → décodeur ITM, ETM → `etm_sink(octets)` (trace d'instructions). `on_gap()` :
         des octets ont été perdus avant le décodage (voir discontinuity())."""
-        self.deformatter = TpiuDeformatter() if formatter else None
+        self.deformatter = (TpiuDeformatter(ids={itm_stream, etm_stream}, scorer=self._itm_errors)
+                            if formatter else None)
         self.itm_stream = itm_stream
         self.etm_stream = etm_stream
         self.etm_sink = etm_sink
@@ -43,6 +44,16 @@ class TraceSession:
         self.on_gap = on_gap
         self.closed = False
         self._lock = threading.Lock()
+
+    def _itm_errors(self, chunks) -> int:
+        """Juge d'un alignement TPIU candidat (voir tpiu.py) : erreurs du décodage ITM de son
+        flux ITM ; trop peu d'octets ITM pour juger : même note pour tous (on attend)."""
+        itm = b"".join(c for sid, c in chunks if sid == self.itm_stream)
+        if len(itm) < 64:
+            return 0
+        dec = ItmDecoder()
+        dec.feed(itm)
+        return dec.errors
 
     def add_sink(self, sink: PacketSink) -> None:
         self.sinks.append(sink)

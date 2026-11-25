@@ -1,0 +1,23 @@
+# Configuration GdbTrace : Nucleo-F446RE (Cortex-M4F), démo FreeRTOS à 16 MHz, par OpenOCD.
+# ETMv3 et ITM par la broche SWO (stall). L'ETM démarre à l'entrée de worker_step et s'arrête
+# sur son retour (bx lr, 0x080002ac dans ce firmware) : sans filtre, l'ETMv3 prend toute la
+# broche et l'ITM n'y passe plus. Une variable tracée par le DWT. C'est la session du test sur
+# carte (tests/test_board_f446.py). Plusieurs sondes : STLINK_SERIAL=<numéro>.
+gdbtrace: 1
+nom: Nucleo-F446RE
+cible:
+  elf: ../examples/nucleo-f446/nucleo-f446.elf
+  svd: STM32F446.svd
+  cpu-hz: 16000000
+  programmer: true
+serveur:
+  type: openocd
+  openocd: [nucleo-f446re.cfg]
+os: freertos
+trace:
+  etm-config: true
+  etm-port: swo
+  etm-stall: true
+  etm-start: [worker_step]
+  etm-stop: ['0x080002ac']
+  var-trace: [produced:write]

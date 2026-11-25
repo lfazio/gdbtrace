@@ -16,7 +16,7 @@ Interface en **tkinter**.
 | 6. Trace ETM | Trace d'instructions ETMv3 (Cortex-M3/M4) : listing avant l'arrêt, flot d'appels, couverture ; ETM simulé sous QEMU ; décodage validé contre OpenCSD | ✅ |
 | 7. Analyse temporelle | Durées par fonction et par exception (appels, brut, net, min/max/moy), chronogramme des appels ; ETM cycle-accurate (validé contre OpenCSD) ou modèle de cycles | ✅ |
 | 8. Couverture de code | Couverture du code objet par la trace ETM, sans instrumentation : instructions, branches prises / non prises, lignes, fonctions ; cumul et fusion de campagnes ; rapports HTML et LCOV | ✅ |
-| 9. MTB et ETM par SWO | Trace MTB des Cortex-M0+ (décodage validé sur chemins QEMU, démo M0+, MTB simulée) ; ETM d'un M3/M4 par la broche SWO, sans sonde de trace | ✅ (à valider sur carte) |
+| 9. MTB et ETM par SWO | Trace MTB des Cortex-M0+ (décodage validé sur chemins QEMU, démo M0+, MTB simulée) ; ETM d'un M3/M4 par la broche SWO, sans sonde de trace (validé sur Nucleo-F446RE) | ✅ (MTB à valider sur carte) |
 | 10. ETMv4 (Cortex-M7) | Trace d'instructions de l'ETM-M7 (ETMv4.0) : décodage validé contre QEMU, OpenCSD et une vraie capture par SWO sur Nucleo-F746ZG ; version de l'ETM détectée ; ETM simulé v4 sous QEMU (`mps2-an500`) ; cycle-accurate (durées mesurées, validées contre DWT_CYCCNT sur F746 et N6) et horodatage | ✅ |
 | 11. Trace ciblée et débogage avancé | Filtres de l'ETM (plages, start/stop) ; trace de données du DWT ; temps par tâche RTOS par ITM ; breakpoints à action et à compteur, Go.Till, Step.Change | ✅ |
 | 12. Programmes natifs | Un ELF de l'hôte (x86-64, AArch64…) débogué sous gdb : arrêt au début de `main`, vue Threads (pthreads nommés, thread courant, changement de thread), mémoire lue en marche dans `/proc/<pid>/mem`, fin et relance du programme ; attachement à un processus lancé (`--pid`), programme servi par gdbserver, mode non-stop | ✅ |
@@ -24,6 +24,7 @@ Interface en **tkinter**.
 | 14. Cortex-M0 et M0+ (STM32G0, STM32F0) | Nucleo-G070RB (M0+) et Nucleo-F072RB (M0) par OpenOCD : cœur ARMv6-M reconnu (CPUID), traces ITM, SWO et ETM refusées en le disant (console, vues de trace) ; profil par `DWT_PCSR` ; FreeRTOS port ARM_CM0 V11.3 (son cadre de pile), validé sous QEMU `microbit` ; test sur carte | 🚧 (à valider sur carte) |
 | 15. Configurations de session | Menu Configuration et `--config FICHIER.yaml` : cible (chemin de l'ELF, SVD), serveur (QEMU, OpenOCD, ST-LINK_gdbserver, gdb pour un programme de l'hôte, serveur déjà lancé), OS (vues RTOS, Temps des tâches ou Threads selon l'OS), script et couverture, trace ; une configuration = une ligne de commande ; exemples dans `configs/`, sessions des tests sur carte | ✅ |
 | 16. Serveur MCP | Un agent (Claude Code…) pilote une session sans interface par le protocole MCP sur stdio : connexion avec les options de la ligne de commande, run-control, breakpoints, données (relues en marche), trace, couverture, timing, code Python avec l'objet `gdbtrace` | ✅ |
+| 17. Nucleo-F446RE (Cortex-M4, ETMv3) | ETMv3 matériel par SWO validé : décodage identique à OpenCSD sur une vraie capture, tours de boucle exacts sur 440 appels ; stall effectif (ETMFFLR), options refusées par l'ETM signalées (pas de cycle-accurate sur un ETM-M4), filtre par le DWT avec ses trous de latence comblés ; alignement TPIU retrouvé sans synchro ; test sur carte | ✅ |
 
 ## Installation
 
@@ -36,7 +37,8 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'     # dev inclut caps
 
 **Notice d'utilisation complète : [`docs/utilisation.md`](docs/utilisation.md)** — installation,
 lancement et cibles, interface, breakpoints, données, RTOS et threads, trace, Nucleo-F746ZG,
-Nucleo-N657X0-Q (STM32N6), Nucleo-G070RB et Nucleo-F072RB (Cortex-M0+, M0), options, dépannage. Le pilotage en Python a la sienne : [`docs/scripting.md`](docs/scripting.md).
+Nucleo-N657X0-Q (STM32N6), Nucleo-G070RB et Nucleo-F072RB (Cortex-M0+, M0), Nucleo-F446RE (STM32F446),
+serveur MCP, options, dépannage. Le pilotage en Python a la sienne : [`docs/scripting.md`](docs/scripting.md).
 
 ```bash
 make -C examples/firmware                                        # firmware de démo Cortex-M3
@@ -49,6 +51,7 @@ make -C examples/nucleo-g070 && .venv/bin/python -m gdbtrace examples/nucleo-g07
     --openocd configs/nucleo-g070rb.cfg --program --cpu-hz 16000000 --svd STM32G070.svd  # STM32G0 (M0+)
 make -C examples/nucleo-f072 && .venv/bin/python -m gdbtrace examples/nucleo-f072/nucleo-f072.elf \
     --openocd configs/nucleo-f072rb.cfg --program --cpu-hz 8000000 --svd STM32F072.svd   # STM32F0 (M0)
+make -C examples/nucleo-f446 && .venv/bin/python -m gdbtrace --config configs/nucleo-f446re.yaml  # STM32F446 (M4), ETMv3
 .venv/bin/python -m gdbtrace fw.elf --remote 127.0.0.1:2331      # J-Link GDB Server, pyOCD...
 .venv/bin/python -m gdbtrace fw.elf --remote 127.0.0.1:3333 --tcl 127.0.0.1:6666  # OpenOCD lancé à part
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf --svd examples/svd/mps2-an385.svd  # périphériques
@@ -104,8 +107,8 @@ trace: {swo-config: true, var-trace: [produced:write]}   # options de trace, san
   commande l'emportent (une valeur remplace, une liste s'ajoute, un serveur d'un autre type
   remplace celui de la configuration). Ex. `--config configs/nucleo-n657x0-q.yaml --stlink SN`.
 - **Exemples** (`configs/`) : `qemu-demo.yaml`, `qemu-freertos.yaml`, `native-pthreads.yaml`, et
-  les sessions des quatre cartes de test (`nucleo-f746zg.yaml`, `nucleo-n657x0-q.yaml`,
-  `nucleo-g070rb.yaml`, `nucleo-f072rb.yaml`).
+  les sessions des cinq cartes de test (`nucleo-f746zg.yaml`, `nucleo-n657x0-q.yaml`,
+  `nucleo-g070rb.yaml`, `nucleo-f072rb.yaml`, `nucleo-f446re.yaml`).
 - Dans un script, `gdbtrace.config` donne la configuration courante (lecture seule).
 
 ### Programmer la cible
@@ -423,11 +426,22 @@ ne porte que sur les plages tracées (le reste n'est pas compté « jamais »).
 | ETM | Moyens | Limites |
 |---|---|---|
 | ETMv4 (M7) | comparateurs d'adresse de l'ETM (une paire par plage, un par déclencheur) | nombre de paires lu dans TRCIDR4 (2 sur un ETM-M7) |
-| ETMv3.5 (M3/M4) | l'ETM n'a pas de comparateur : il prend ceux du DWT (déclenchement ETM sur égalité de PC), par le haut | 2 plages au plus (A OU B) ; une plage est un bloc aligné de 2^n octets qui englobe la plage demandée ; un arrêt demande un démarrage ; les comparateurs pris manquent aux watchpoints de gdb |
+| ETMv3.5 (M3/M4) | l'ETM n'a pas de comparateur : il prend ceux du DWT (déclenchement ETM sur égalité de PC), par le haut | 2 plages au plus (A OU B) ; une plage est un bloc aligné de 2^n octets qui englobe la plage demandée ; un arrêt demande un démarrage ; les comparateurs pris manquent aux watchpoints de gdb ; plage : coûteuse en débit (ci-dessous) |
 
 L'ETM simulé applique le même filtre effectif au chemin de QEMU. Validation : chemin QEMU
 filtré → encodeur → décodeur, identique en ETMv3 et ETMv4 (bare et FreeRTOS) ; registres
-vérifiés sur des cibles factices. À valider sur carte : le comportement réel des comparateurs.
+vérifiés sur des cibles factices ; puis sur carte (Nucleo-F746ZG, Nucleo-N6, Nucleo-F446RE).
+
+**Plage ou start/stop sur un ETMv3 (constaté sur STM32F446).** Une plage passe par
+l'événement TraceEnable, vrai aux seuls cycles où une instruction du bloc s'exécute, avec une
+instruction de retard : après chaque branchement, la trace se coupe puis reprend, et chaque
+reprise coûte un I-sync de 6 octets. GdbTrace comble ces trous quand le code dit sans
+ambiguïté ce qui s'est exécuté (instructions du bloc, sans branchement indirect ni
+condition) ; restent les vrais trous (sortie du bloc, interruption). Mais ces I-sync prennent
+l'essentiel du débit : `worker_step` filtré par plage donne 208 Ko pour 82 000 instructions,
+contre 14 Ko pour 134 000 avec `--etm-start worker_step --etm-stop <son bx lr>`, qui ne
+reprend qu'une fois par appel (les fonctions appelées sont alors tracées aussi). Pour une
+fonction, préférer start/stop.
 
 **Comment le décodeur a été validé sans matériel.**
 1. QEMU fournit le chemin réel instruction par instruction, exceptions comprises.
@@ -441,8 +455,11 @@ Les deux retrouvent exactement le chemin de QEMU :
 - firmware FreeRTOS : 1 477 998 instructions, avec SVC, SysTick, PendSV et 678 exceptions
   enchaînées.
 
-Ce test tourne dans la suite (`tools/build_opencsd.sh` construit OpenCSD dans `.cache/`). Il
-reste à valider sur une vraie sonde de trace.
+Ce test tourne dans la suite (`tools/build_opencsd.sh` construit OpenCSD dans `.cache/`).
+Puis sur matériel, par le SWO d'une Nucleo-F446RE (ETM-M4, 16 MHz, `--etm-stall`) : GdbTrace
+et OpenCSD décodent identiquement une vraie capture, et sur 440 appels de `worker_step(n)`
+tracés en entier, la boucle tourne exactement n % 24 fois, d'un tour de plus à chaque appel
+(133 508 instructions, 0 erreur, 0 débordement).
 
 **ETMv4 (Cortex-M7).** Un atome ne désigne plus une instruction mais un point de passage
 (branchement ou ISB) : le décodeur parcourt le code entre deux atomes. Une exception porte
@@ -476,7 +493,7 @@ Unités : cycles ou µs (fréquence du cœur `--cpu-hz`, 25 MHz par défaut).
 
 | Source | Durées |
 |---|---|
-| ETMv3 en mode *cycle-accurate* (`--etm-cycle-accurate`, ETMCR bit 12) | **mesurées** : chaque instruction porte ses cycles. Environ 8 fois plus de trace. |
+| ETMv3 en mode *cycle-accurate* (`--etm-cycle-accurate`, ETMCR bit 12) | **mesurées** : chaque instruction porte ses cycles. Environ 8 fois plus de trace. L'ETM-M4 n'a pas ce mode (ETMCR relu sur STM32F446) : GdbTrace le dit, et les durées restent estimées. |
 | ETMv4 en mode *cycle-accurate* (`--etm-cycle-accurate`, TRCCONFIGR.CCI) | **mesurées** par segment : un paquet Cycle Count compte les cycles depuis le précédent, à chaque groupe d'éléments P0 (seuil TRCCCCTLR, le minimum de l'ETM) ; le modèle ne fait plus que répartir chaque mesure entre les instructions du segment. Environ 3 fois plus de trace. |
 | ETM simulé sous QEMU, ou ETM matériel sans cycle-accurate | **estimées** par un modèle de cycles Cortex-M3/M4 : ALU 1, LDR 2, STR 1, LDM/STM/PUSH/POP 1+N, branchement pris 1+P (P = 2), TBB/TBH 2+P, SDIV/UDIV 7, entrée d'exception 12, sortie 10, enchaînement 6. Ni attentes mémoire ni flash : un ordre de grandeur, pas une mesure. |
 
@@ -890,9 +907,9 @@ Les tests lancent QEMU (`mps2-an385`) avec le firmware de démo. Sans `DISPLAY`,
 Le client TCL OpenOCD est testé contre un faux serveur TCL, et contre un vrai OpenOCD lancé sans
 sonde (`noinit`) s'il est installé ; il a été utilisé sur une Nucleo-F746ZG. Validés sur cette
 carte (test sur carte, ci-dessous) : capture SWO et ITM, ETMv4 par SWO, trace de données du DWT,
-profil par SWO, vue RTOS et temps des tâches. Restent à valider sur sonde réelle : le support
-RTOS d'OpenOCD (`--rtos`), `DWT_PCSR` via OpenOCD, le port de trace parallèle, l'ETMv3 d'un
-M3/M4 et la MTB d'un M0+.
+profil par SWO, vue RTOS et temps des tâches ; et sur une Nucleo-F446RE, l'ETMv3 par SWO.
+Restent à valider sur sonde réelle : le support RTOS d'OpenOCD (`--rtos`), `DWT_PCSR` via
+OpenOCD, le port de trace parallèle et la MTB d'un M0+.
 Les tests ETM comparent notre décodeur à OpenCSD si `tools/build_opencsd.sh` a été lancé
 (sinon ce test est ignoré) ; la trace ETM nécessite `pip install capstone` (extra `etm`).
 
@@ -922,6 +939,14 @@ ETM écrit en RAM par l'ETR, variable tracée par le DWT de l'ARMv8-M, vues en d
 relais ; en plus, le nombre de tours des boucles LE relevé dans la trace doit suivre le
 firmware (`tests/artifacts/board-n6.json`).
 
+`tests/test_board_f446.py` fait de même sur une **Nucleo-F446RE** (STM32F446, Cortex-M4F),
+par OpenOCD : firmware `examples/nucleo-f446` flashé (la démo FreeRTOS à 16 MHz), ETMv3 et
+ITM par SWO, l'ETM démarré à l'entrée de `worker_step` et arrêté à son retour (sans filtre,
+l'ETMv3 prend toute la broche et le firmware reste bloqué dans l'attente de la FIFO de
+l'ITM). En plus, le nombre de tours de la boucle de chaque appel doit suivre le firmware, et
+un filtre par plage, en mode batch, doit donner la même trace brute qu'OpenCSD
+(`tests/artifacts/board-f446.json`).
+
 `tests/test_board_m0.py` fait de même sur les cartes ARMv6-M, chacune ses tests (`-k g070`,
 `-k f072`) : **Nucleo-G070RB** (STM32G070RB, Cortex-M0+) et **Nucleo-F072RB** (STM32F072RB,
 Cortex-M0), par OpenOCD : firmware `examples/nucleo-g070` ou `examples/nucleo-f072` flashé,
@@ -932,9 +957,10 @@ cœur : breakpoint à compteur, breakpoint à message (arrêts internes, un mess
 Go.Till sur une globale (watchpoint du DWT) (`tests/artifacts/board-g070.json`, `board-f072.json`).
 
 - La carte est trouvée seule : sonde ST-LINK lue dans `/sys`, puis identité de la puce lue
-  sans reset, par OpenOCD (F746, G070, F072) ou par ST-LINK_gdbserver (N6, qu'OpenOCD 0.12
-  ne connaît pas). `GDBTRACE_F746_SERIAL` / `GDBTRACE_N6_SERIAL` / `GDBTRACE_G070_SERIAL` /
-  `GDBTRACE_F072_SERIAL` imposent la sonde ; le SVD vient de
+  sans reset, par OpenOCD (F746, F446, G070, F072) ou par ST-LINK_gdbserver (N6, qu'OpenOCD
+  0.12 ne connaît pas). `GDBTRACE_F746_SERIAL` / `GDBTRACE_F446_SERIAL` /
+  `GDBTRACE_N6_SERIAL` / `GDBTRACE_G070_SERIAL` / `GDBTRACE_F072_SERIAL` imposent la sonde ;
+  le SVD vient de
   STM32CubeIDE (`GDBTRACE_SVD_DIR` sinon).
 - `pytest --boards=auto` (défaut) ignore ces tests sans la carte ; `--boards=require` les fait
   échouer ; `--boards=skip` les désactive.

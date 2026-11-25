@@ -10,21 +10,51 @@ les données sont emballées en trames de 16 octets :
 Les trames sont alignées par la synchro complète FF FF FF 7F ; la demi-synchro FF 7F
 peut s'intercaler entre deux trames (bourrage). Un tampon de TMC (ETB, ETF, ETR) ne contient
 que des trames, alignées sur 16 octets depuis son début : `aligned=True`.
+
+Sur le SWO, la synchro complète est rare : le TPIU d'un Cortex-M4 l'émet au démarrage du
+formateur et à l'arrêt (observé sur STM32F446), pas périodiquement. Une capture qui se
+connecte après, ou qui a perdu des octets, n'en reverrait jamais. Avec `ids` (flux attendus)
+et `scorer`, l'alignement est alors retrouvé dans les données : chaque décalage possible est
+essayé sur SEARCH_FRAMES trames ; un ID de flux inattendu l'élimine (ce qui écarte les
+décalages impairs), et `scorer(morceaux)` (erreurs du décodage ITM) départage les décalages
+pairs, qui ne se distinguent que par l'octet pris pour l'octet auxiliaire.
 """
 from __future__ import annotations
 
 FULL_SYNC = b"\xff\xff\xff\x7f"
 HALF_SYNC = b"\xff\x7f"
 FRAME = 16
+SEARCH_FRAMES = 64
 
 
 class TpiuDeformatter:
-    def __init__(self, aligned: bool = False):
+    def __init__(self, aligned: bool = False, ids=None, scorer=None):
         self.buf = bytearray()
         self.aligned = aligned        # trames alignées, sans synchro (mémoire d'un TMC)
         self.synced = aligned
         self.stream = 0             # ID de flux courant (0 = aucun)
         self.frames = 0
+        #: flux attendus et juge des décalages : alignement retrouvé sans synchro (en-tête)
+        self.ids = set(ids) if ids else None
+        self.scorer = scorer
+        self.realigned = 0          # alignements retrouvés dans les données
+
+    def _find_alignment(self) -> int | None:
+        """Décalage des trames dans `buf`, sans synchro ; None : pas encore assez de données,
+        ou rien ne se distingue (attendre la suite)."""
+        n = SEARCH_FRAMES * FRAME
+        if len(self.buf) < n + FRAME:
+            return None
+        scored = []
+        for off in range(FRAME):
+            chunks = TpiuDeformatter(aligned=True).feed(bytes(self.buf[off:off + n]))
+            if any(sid not in self.ids for sid, _ in chunks):
+                continue
+            scored.append((self.scorer(chunks) if self.scorer else 0, off))
+        scored.sort()
+        if not scored or (len(scored) > 1 and scored[0][0] == scored[1][0]):
+            return None
+        return scored[0][1]
 
     def feed(self, data: bytes) -> list[tuple[int, bytes]]:
         """Retourne [(id_de_flux, octets)] dans l'ordre ; l'ID 0 (null) est ignoré."""
@@ -32,11 +62,23 @@ class TpiuDeformatter:
         out: list[tuple[int, bytearray]] = []
         if not self.synced:
             k = self.buf.find(FULL_SYNC)
-            if k < 0:
+            if k >= 0:
+                del self.buf[:k + 4]
+                self.synced = True
+            elif self.ids is None:
                 del self.buf[:max(0, len(self.buf) - 3)]
                 return []
-            del self.buf[:k + 4]
-            self.synced = True
+            else:
+                off = self._find_alignment()
+                if off is None:                  # on garde quatre fenêtres au plus
+                    excess = len(self.buf) - 4 * SEARCH_FRAMES * FRAME
+                    if excess > 0:
+                        del self.buf[:excess]
+                    return []
+                del self.buf[:off]
+                self.synced = True
+                self.realigned += 1
+                self.stream = 0             # flux de la première trame inconnu avant son ID
         while True:
             if not self.aligned and self.buf[:4] == FULL_SYNC:
                 del self.buf[:4]

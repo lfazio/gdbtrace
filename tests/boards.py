@@ -40,6 +40,8 @@ class BoardSpec:
 
 NUCLEO_F746 = BoardSpec("nucleo-f746zg", "GDBTRACE_F746_SERIAL", "configs/nucleo-f746zg.cfg",
                         0xE0042000, 0x449, "STM32F746.svd")
+NUCLEO_F446 = BoardSpec("nucleo-f446re", "GDBTRACE_F446_SERIAL", "configs/nucleo-f446re.cfg",
+                        0xE0042000, 0x421, "STM32F446.svd")
 NUCLEO_N6 = BoardSpec("nucleo-n657x0-q", "GDBTRACE_N6_SERIAL", None,
                       0x44001000, 0x486, "STM32N657.svd", apid=1)
 NUCLEO_G070 = BoardSpec("nucleo-g070rb", "GDBTRACE_G070_SERIAL", "configs/nucleo-g070rb.cfg",

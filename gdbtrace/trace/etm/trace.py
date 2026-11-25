@@ -55,6 +55,8 @@ class EtmTrace:
         #: ETMv4 : TRCIDR0.COMMOPT (M55 : 1, les paquets de cycles ne portent pas de commit)
         self.commit_opt1 = commit_opt1
         self.cycle_accurate = cycle_accurate and self.version == 3   # ETMv4 : pas encore
+        #: ETMv3 filtré par le DWT : blocs tracés, dont les trous de latence sont comblés
+        self.heal_ranges: list[tuple[int, int]] | None = None
         #: trace produite par l'ETM simulé : ses cycles viennent du modèle, pas du matériel
         self.simulated = False
         self.packets, self.flow = self._decoders()
@@ -79,7 +81,16 @@ class EtmTrace:
             from .flow4 import Etm4Flow
             return (Etm4Decoder(max_spec=self.max_spec, commit_opt1=self.commit_opt1),
                     Etm4Flow(self.image, max_spec=self.max_spec))
-        return Etm3Decoder(cycle_accurate=self.cycle_accurate), FlowDecoder(self.image, self.cycle_accurate)
+        flow = FlowDecoder(self.image, self.cycle_accurate)
+        flow.heal_ranges = getattr(self, "heal_ranges", None)
+        return Etm3Decoder(cycle_accurate=self.cycle_accurate), flow
+
+    def set_heal_ranges(self, ranges) -> None:
+        """ETMv3 filtré par le DWT (matériel) : blocs tracés (voir flow.py) ; None : aucun."""
+        with self._lock:
+            self.heal_ranges = list(ranges) if ranges else None
+            if self.version == 3:
+                self.flow.heal_ranges = self.heal_ranges
 
     def set_max_spec(self, max_spec: int, commit_opt1: bool | None = None) -> None:
         """ETMv4 : profondeur de spéculation de la cible (TRCIDR8) et mode de commit
@@ -191,7 +202,8 @@ class EtmTrace:
                 "non exécutées": fs.not_executed,
                 "erreurs": self.packets.errors + getattr(fs, "errors", 0) + self.fed_errors,
                 "atomes perdus": fs.lost_atoms, "code inconnu": fs.unknown_code, "cycles": fs.cycles,
-                "débordements": getattr(fs, "overflows", 0), "trous": self.gaps}
+                "débordements": getattr(fs, "overflows", 0), "trous": self.gaps,
+                "trous comblés": getattr(fs, "healed", 0)}
 
     @property
     def timing(self) -> str:

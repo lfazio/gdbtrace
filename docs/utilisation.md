@@ -14,9 +14,10 @@ Comment installer, lancer et utiliser GdbTrace : interface, breakpoints, donnée
 8. [Sur une Nucleo-F746ZG](#8-sur-une-nucleo-f746zg)
 9. [Sur une Nucleo-N657X0-Q (STM32N6)](#9-sur-une-nucleo-n657x0-q-stm32n6)
 10. [Sur une Nucleo-G070RB ou une Nucleo-F072RB (Cortex-M0+, Cortex-M0)](#10-sur-une-nucleo-g070rb-ou-une-nucleo-f072rb-cortex-m0-cortex-m0)
-11. [Console, scripts Python et serveur MCP](#11-console-scripts-python-et-serveur-mcp)
-12. [Référence des options](#12-référence-des-options)
-13. [Dépannage et limites](#13-dépannage-et-limites)
+11. [Sur une Nucleo-F446RE (STM32F446)](#11-sur-une-nucleo-f446re-stm32f446)
+12. [Console, scripts Python et serveur MCP](#12-console-scripts-python-et-serveur-mcp)
+13. [Référence des options](#13-référence-des-options)
+14. [Dépannage et limites](#14-dépannage-et-limites)
 
 ---
 
@@ -119,7 +120,7 @@ OK valide la configuration ; une erreur s'affiche en bas de la boîte, qui reste
 
 **Les vues suivent l'OS** : FreeRTOS ouvre les vues RTOS et Temps des tâches ; Pthread ouvre la vue Threads ; aucun OS n'ouvre aucune des trois. Sans configuration, toutes les vues du layout restent.
 
-En ligne de commande, `--config FICHIER.yaml` lance la session de la configuration. Les autres options l'emportent sur elle : une valeur remplace la sienne, une liste (`--var-trace`, `--coverage`…) s'ajoute à la sienne, un serveur d'un autre type remplace le sien. Exemples dans `configs/` : `qemu-demo.yaml`, `qemu-freertos.yaml`, `native-pthreads.yaml`, et les sessions des cartes de test (sections 8 à 10). Le format est décrit dans la section 12.
+En ligne de commande, `--config FICHIER.yaml` lance la session de la configuration. Les autres options l'emportent sur elle : une valeur remplace la sienne, une liste (`--var-trace`, `--coverage`…) s'ajoute à la sienne, un serveur d'un autre type remplace le sien. Exemples dans `configs/` : `qemu-demo.yaml`, `qemu-freertos.yaml`, `native-pthreads.yaml`, et les sessions des cartes de test (sections 8 à 11). Le format est décrit dans la section 13.
 
 ```bash
 .venv/bin/python -m gdbtrace --config configs/qemu-freertos.yaml
@@ -237,7 +238,7 @@ Chaque ligne donne le numéro, le type, l'adresse, le nombre de passages (Hits),
 
 Dans le message, `{expression}` est remplacé par la valeur de l'expression C, et `{expression:hex}` par la même valeur dans un format (`hex`, `dec`, `oct`, `bin`, `ascii`). Exemple : `capteur n={counter} tick={tick:hex}` donne `capteur n=7 tick=0x7`.
 
-Un passage avec message est un arrêt interne : les vues ne se rafraîchissent pas et la bannière « Breakpoint N » de gdb est masquée. Chaque passage coûte un aller-retour avec la cible, de l'ordre de la milliseconde : sur une fonction appelée des milliers de fois par seconde, la cible ralentit d'autant. Un script peut aussi poser une action Python qui décide de l'arrêt (section 11 et [`docs/scripting.md`](scripting.md)).
+Un passage avec message est un arrêt interne : les vues ne se rafraîchissent pas et la bannière « Breakpoint N » de gdb est masquée. Chaque passage coûte un aller-retour avec la cible, de l'ordre de la milliseconde : sur une fonction appelée des milliers de fois par seconde, la cible ralentit d'autant. Un script peut aussi poser une action Python qui décide de l'arrêt (section 12 et [`docs/scripting.md`](scripting.md)).
 
 ### Go.Till
 
@@ -398,9 +399,9 @@ La vue **Variables tracées** suit la valeur d'une globale à chaque accès, cib
 | Tampon en RAM (ETR) | `--etm-config --etm-port etr`, ou **Trace › ETM par l'ETR** | STM32N6 : la puce écrit la trace en RAM, GdbTrace la lit en continu (section 9) |
 | Fichier | `--trace-file` | rejouer une capture |
 
-GdbTrace lit la version de l'ETM sur la cible : ETMv3 pour un M3/M4, ETMv4 pour un M7 ou un M55. `--etm-stall` ralentit le cœur plutôt que de perdre de la trace quand la FIFO de l'ETM déborde ; il est indispensable par SWO sur un cœur rapide.
+GdbTrace lit la version de l'ETM sur la cible : ETMv3 pour un M3/M4, ETMv4 pour un M7 ou un M55. `--etm-stall` ralentit le cœur plutôt que de perdre de la trace quand la FIFO de l'ETM déborde ; il est indispensable par SWO sur un cœur rapide. Une option que l'ETM n'a pas (cycle-accurate sur un ETM-M4) est signalée à la programmation. Un ETMv3 par SWO, sans filtre, peut affamer l'ITM : section 11.
 
-**Filtre** (`--etm-filter`, `--etm-start`, `--etm-stop`, ou **Trace › Filtre de trace ETM…**) : ne tracer qu'une fonction, un fichier ou une plage d'adresses, ou démarrer et arrêter la trace sur un lieu. Le débit va alors à ce qui compte. Chaque reprise de la trace est marquée « trace interrompue ». Sur un Cortex-M55, dont l'ETM n'a pas de comparateurs d'adresse, le filtre passe par les comparateurs du DWT : une paire par plage, un par start ou stop, partagés avec les variables tracées.
+**Filtre** (`--etm-filter`, `--etm-start`, `--etm-stop`, ou **Trace › Filtre de trace ETM…**) : ne tracer qu'une fonction, un fichier ou une plage d'adresses, ou démarrer et arrêter la trace sur un lieu. Le débit va alors à ce qui compte. Chaque reprise de la trace est marquée « trace interrompue ». Sur un Cortex-M55, dont l'ETM n'a pas de comparateurs d'adresse, le filtre passe par les comparateurs du DWT : une paire par plage, un par start ou stop, partagés avec les variables tracées. Sur un M3/M4 (ETMv3) aussi : une plage y coûte cher en débit, start/stop beaucoup moins (section 11).
 
 La vue **Trace** montre :
 
@@ -485,7 +486,7 @@ Le débit du SWO limite la trace sans perte : environ 3,5 MHz de cœur tracé av
 tools/release_check.sh
 ```
 
-Ce script lance toute la suite, construit l'oracle OpenCSD s'il manque, et **exige** les cartes de test : la Nucleo-F746ZG, la Nucleo-N657X0-Q (section 9) et les Nucleo-G070RB et F072RB (section 10). Le test sur la F746 (`tests/test_board_f746.py`) :
+Ce script lance toute la suite, construit l'oracle OpenCSD s'il manque, et **exige** les cartes de test : la Nucleo-F746ZG, la Nucleo-N657X0-Q (section 9) les Nucleo-G070RB et F072RB (section 10) et la Nucleo-F446RE (section 11). Le test sur la F746 (`tests/test_board_f746.py`) :
 
 1. construit et flashe le firmware d'exemple ;
 2. lance GdbTrace par son vrai point d'entrée, interface comprise, avec la configuration `configs/nucleo-f746zg.yaml` : SVD, ETM et ITM par SWO, une variable tracée, FreeRTOS ;
@@ -643,7 +644,64 @@ Chaque carte est trouvée seule : sonde ST-LINK dans `/sys`, puis identité de l
 xvfb-run -a .venv/bin/python -m pytest tests/test_board_m0.py -k f072 --boards=require
 ```
 
-## 11. Console, scripts Python et serveur MCP
+## 11. Sur une Nucleo-F446RE (STM32F446)
+
+La Nucleo-F446RE porte un STM32F446RE : un Cortex-M4F à 16 MHz au reset (HSI), 512 Ko de flash et 128 Ko de RAM, avec un ST-Link V2-1 embarqué. Son boîtier LQFP64 n'a pas de port de trace parallèle : l'ETM (ETMv3.5) passe par la broche SWO (PB3), avec l'ITM. GdbTrace y passe par OpenOCD.
+
+### Firmware d'exemple
+
+`examples/nucleo-f446` construit la démo FreeRTOS de `examples/freertos` pour cette carte : même `main.c`, horloge HSI de 16 MHz, port FreeRTOS de la F746 (ARM_CM7 r0p1, valable sur tout ARMv7E-M à FPU simple précision).
+
+```bash
+make -C examples/nucleo-f446
+```
+
+### Lancer GdbTrace sur la carte
+
+Avec la configuration fournie (`configs/nucleo-f446re.yaml`, ou Configuration › Ouvrir… puis Connecter) :
+
+```bash
+.venv/bin/python -m gdbtrace --config configs/nucleo-f446re.yaml
+```
+
+Elle équivaut à :
+
+```bash
+.venv/bin/python -m gdbtrace examples/nucleo-f446/nucleo-f446.elf --program \
+    --openocd configs/nucleo-f446re.cfg --svd STM32F446.svd --cpu-hz 16000000 \
+    --etm-config --etm-port swo --etm-stall --etm-start worker_step --etm-stop 0x080002ac \
+    --var-trace produced:write
+```
+
+- `0x080002ac` est l'adresse du `bx lr` de `worker_step` dans ce firmware (Désassemblage, ou `arm-none-eabi-objdump -d`) ; le test sur carte vérifie qu'elle n'a pas changé.
+- Plusieurs sondes branchées : `STLINK_SERIAL=<numéro de série>` choisit la bonne.
+- La connexion se fait sous reset ; `CONNECT_UNDER_RESET=0` et `--no-load` pour s'attacher sans reset.
+
+### L'ETMv3 d'un Cortex-M4 par le SWO
+
+Ce qu'on a constaté sur cette carte, et ce que GdbTrace en fait :
+
+| Constat | Conséquence |
+| --- | --- |
+| L'ETMv3 sort environ 1 bit par instruction ; le SWO d'un ST-Link V2-1 tient 2 Mbit/s, soit un cœur à ~3 MHz | à 16 MHz, sans filtre, la trace prend toute la broche. L'ITM n'y passe plus : un firmware qui attend la FIFO de l'ITM (printf ITM bloquant, temps des tâches) reste bloqué. GdbTrace le rappelle à la programmation de l'ETM. **Filtrer la trace.** |
+| `--etm-stall` n'agit qu'avec le seuil FIFOFULL de l'ETM (ETMFFLR, nul au reset) | GdbTrace le programme : seuil de 24 octets, toute la FIFO de l'ETM-M4. Plus aucun débordement. |
+| L'ETM-M4 n'a pas de mode cycle-accurate (le bit d'ETMCR se relit à 0) | `--etm-cycle-accurate` est signalé « non pris en charge par cet ETM », et les durées restent estimées par le modèle de cycles. |
+| Filtre par plage (`--etm-filter`) : l'événement du DWT est en retard d'une instruction ; la trace se coupe et reprend à chaque branchement, et chaque reprise coûte 6 octets | GdbTrace comble ces trous quand le code dit ce qui s'est exécuté, mais le débit part en reprises. Pour une fonction, `--etm-start` sur son entrée et `--etm-stop` sur son retour : une seule reprise par appel, et vingt fois moins de trace par instruction (les fonctions appelées sont tracées aussi). |
+| Le TPIU n'émet sa synchronisation qu'au démarrage | une capture connectée après retrouve l'alignement des trames dans les données (flux ITM et ETM). |
+
+Sur cette carte, le décodage de GdbTrace est identique à celui d'OpenCSD, et la boucle de `worker_step(n)` tourne exactement n % 24 fois sur des centaines d'appels consécutifs.
+
+### Test sur carte
+
+`tests/test_board_f446.py` fait comme sur la F746 :
+
+1. construit et flashe le firmware d'exemple ;
+2. lance l'interface avec le SVD, l'ETM et l'ITM par SWO (stall), l'ETM démarré à l'entrée de `worker_step` et arrêté à son retour, et une variable tracée par le DWT ;
+3. relève et vérifie toutes les vues (`tests/artifacts/board-f446.json`).
+
+En plus, les tours de boucle de chaque appel de `worker_step` doivent suivre le firmware, et un filtre par plage, en mode batch, doit donner la même trace qu'OpenCSD. La carte est trouvée seule : sonde ST-LINK dans `/sys`, puis identité de la puce (DEV_ID 0x421) lue par OpenOCD. `GDBTRACE_F446_SERIAL` impose la sonde.
+
+## 12. Console, scripts Python et serveur MCP
 
 Tout ce que fait l'interface se pilote aussi en Python, par l'objet `gdbtrace`. La notice complète est à part : [`docs/scripting.md`](scripting.md). Un agent (Claude Code) pilote GdbTrace par le serveur MCP.
 
@@ -693,7 +751,7 @@ Ou dans le `.mcp.json` d'un projet (partagé avec l'équipe) :
 Les chemins donnés aux outils (ELF, fichiers de configuration) sont relatifs au répertoire où
 Claude Code a été lancé.
 
-**Session.** L'outil `connect` prend les options de la ligne de commande (section 12), sans
+**Session.** L'outil `connect` prend les options de la ligne de commande (section 13), sans
 `--batch`, `--script` ni `--coverage` : `examples/firmware/demo.elf --etm-sim`, `fw.elf
 --openocd configs/nucleo-f746zg.cfg --program --swo-config --cpu-hz 16000000`, `fw.elf
 --stlink --stlink-ap 1 --ram-boot --program`, `--pid 1234`. Il rend le journal de mise en route
@@ -725,7 +783,7 @@ mémoire (QEMU, OpenOCD, ST-LINK_gdbserver, programme de l'hôte) une variable �
 de l'hôte (aussi ceux arrivés entre deux appels, rendus au suivant). Une erreur (expression
 inconnue, cible en marche) est un résultat d'erreur ; la session continue.
 
-## 12. Référence des options
+## 13. Référence des options
 
 `python -m gdbtrace [ELF] [options]`. L'ELF est facultatif avec l'interface : Fichier › Programmer un ELF… le choisit ensuite. `--help` liste les mêmes options.
 
@@ -856,7 +914,7 @@ trace:
 - À l'enregistrement, un chemin proche du fichier (au plus deux `..`) est écrit relatif, les autres absolus.
 - Une clé inconnue, ou qui ne va pas avec le serveur choisi, est refusée en la nommant.
 
-## 13. Dépannage et limites
+## 14. Dépannage et limites
 
 Quand une capture ne démarre pas, GdbTrace le dit : le journal de mise en route s'affiche dans la console, et les vues ITM, Trace et Couverture donnent la cause. Commencer par là.
 
@@ -879,23 +937,27 @@ Quand une capture ne démarre pas, GdbTrace le dit : le journal de mise en route
 | « tampon de l'ETR » refusé | le firmware ne réserve pas de tampon | un tableau `__etr_buffer__` aligné sur 4 Ko, ou `--etr-buffer ADRESSE:TAILLE` |
 | « ST-LINK_gdbserver lancé sans SWO » | `--swo-config` absent au lancement : le serveur n'a pas démarré sa capture | relancer GdbTrace avec `--swo-config` (et `--cpu-hz`) |
 | Go.Till refusé | la condition porte sur un registre ou une valeur sans adresse | Step.Till |
-| Configuration refusée (« serveur.stlink-ap : option du serveur stlink, pas de openocd ») | une clé du YAML ne va pas avec le serveur, l'OS ou les autres options | le message nomme la clé ; mêmes règles que la ligne de commande (section 12) |
+| Configuration refusée (« serveur.stlink-ap : option du serveur stlink, pas de openocd ») | une clé du YAML ne va pas avec le serveur, l'OS ou les autres options | le message nomme la clé ; mêmes règles que la ligne de commande (section 13) |
 | « SVD STM32G070.svd introuvable » | SVD donné par son nom, absent de STM32CubeIDE | donner son chemin, ou `GDBTRACE_SVD_DIR` ; la session continue sans vue Périphériques |
 | Claude Code : serveur gdbtrace « failed » | interpréteur introuvable (chemin relatif), ou venv sans GdbTrace | chemin absolu de `.venv/bin/python` dans `claude mcp add` ; `claude mcp list` ; journal du serveur sur stderr |
 | Outil MCP `evaluate` : « cible en marche » | variable jamais évaluée cible arrêtée, locale, ou cible sans canal mémoire | l'évaluer une fois après `halt` ; avec `--remote`, ajouter `--tcl` |
+| ETMv3 par SWO : le firmware se fige (pile dans une attente de l'ITM) | l'ETM prend toute la broche, l'ITM n'y passe plus | `--etm-filter`, ou mieux `--etm-start` / `--etm-stop` (section 11) ; ou ralentir le cœur |
+| « non pris en charge par cet ETM : cycle-accurate » | l'ETM-M3/M4 n'a pas ce mode | durées estimées ; mesurer avec un ETMv4 (M7, M55) |
 | « Cortex-M0+ (ARMv6-M) : ni ITM, ni SWO, ni ETM » | le cœur n'a pas de trace (STM32G0, STM32F0, STM32L0…) | profil par lecture du PC (« Live ») ; MTB si `--mtb-probe` en trouve une |
 
 ### Limites connues
 
 - **Validé sur carte** :
   - Nucleo-F746ZG (Cortex-M7, OpenOCD) : ETMv4 et ITM par SWO, trace de données du DWT, profil par SWO, vues RTOS et temps des tâches ;
-  - Nucleo-N657X0-Q (Cortex-M55, ST-LINK_gdbserver) : vues en marche par le relais, image en RAM, ITM par le SWO de la sonde, ETMv4.5 par l'ETR (boucles à faible coût comprises), trace de données du DWT de l'ARMv8-M, vues RTOS et temps des tâches.
-- **Pas encore validé sur carte** : Nucleo-G070RB (Cortex-M0+) et Nucleo-F072RB (Cortex-M0), par OpenOCD (test prêt : `tests/test_board_m0.py`), lecture de `DWT_PCSR` par OpenOCD (et sa présence sur le Cortex-M0), port de trace parallèle, ETMv3 matériel (M3/M4), MTB d'un vrai M0+, `--rtos` d'OpenOCD.
+  - Nucleo-N657X0-Q (Cortex-M55, ST-LINK_gdbserver) : vues en marche par le relais, image en RAM, ITM par le SWO de la sonde, ETMv4.5 par l'ETR (boucles à faible coût comprises), trace de données du DWT de l'ARMv8-M, vues RTOS et temps des tâches ;
+  - Nucleo-F446RE (Cortex-M4F, OpenOCD) : ETMv3 et ITM par SWO, filtres de l'ETMv3 (plage et start/stop), trace de données du DWT, profil par SWO, vues RTOS et temps des tâches.
+- **Pas encore validé sur carte** : Nucleo-G070RB (Cortex-M0+) et Nucleo-F072RB (Cortex-M0), par OpenOCD (test prêt : `tests/test_board_m0.py`), lecture de `DWT_PCSR` par OpenOCD (et sa présence sur le Cortex-M0), port de trace parallèle, MTB d'un vrai M0+, `--rtos` d'OpenOCD.
 - **Cortex-M0/M0+** : ni ITM, ni SWO, ni ETM. Sur les STM32G0 et STM32F0, 4 breakpoints matériels et 2 watchpoints, que Go.Till partage avec les watchpoints posés.
 - **ETMv4** : Cortex-M7 (par SWO) et Cortex-M55 (par l'ETR d'un STM32N6), cycle-accurate et horodatage compris. Sur le M55, le filtre ETM prend les comparateurs du DWT (4 plages au plus), et la branche d'une instruction « branch future » (BF, BFL…) n'est pas suivie ; les compilateurs n'en émettent pas.
 - **ETR** : lu en continu tant que la trace ne dépasse pas ce que lit la sonde (~550 Ko/s) ; au-delà, des trous. En cycle-accurate, lu à l'arrêt : un tampon plein ne garde que la fin de l'exécution.
 - **SWO d'un STLINK-V3EC (N6)** : un octet perdu de temps en temps à 2 Mbit/s, compté comme une erreur ITM.
-- **Filtre ETMv3** : deux plages au plus, chacune agrandie en bloc aligné de 2^n octets.
+- **Filtre ETMv3** : deux plages au plus, chacune agrandie en bloc aligné de 2^n octets ; une plage coûte une reprise de trace (6 octets) à chaque branchement, start/stop une par passage.
+- **ETM-M4** : ni cycle-accurate ni comparateurs d'adresse ; sa FIFO fait 24 octets.
 - **ETM simulé** : QEMU ne dit pas si une instruction conditionnelle d'un bloc IT (hors branchement) a été exécutée ; elle est comptée exécutée. Les branchements conditionnels sont exacts.
 - **Durées** : sans cycle-accurate, ce sont des estimations par un modèle de cycles, sans attentes mémoire. En ETMv4, une mesure couvre un groupe de branchements : sa répartition entre les instructions du groupe reste celle du modèle.
 - **Couverture** : c'est celle du code objet (instructions et branches). La couverture MC/DC demande une analyse du source, hors de portée de la trace.

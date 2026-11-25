@@ -554,8 +554,24 @@ class TraceManager:
         self.etm_filter = cfg.effective_filter()
         log.append(cfg.summary())
         self.set_etm_version(cfg.version)
+        if self.etm is not None and self.etm.version == 3 and not self.etm.simulated:
+            if self.etm.cycle_accurate != cfg.cycle_accurate:   # option refusée par l'ETM
+                self._rebuild_etm(cfg.cycle_accurate)
+            eff = cfg.effective_filter()        # blocs du DWT : trous de latence comblés
+            self.etm.set_heal_ranges(eff.ranges if eff is not None else None)
         self.attach_session(session)            # ETMv4 : validation à chaque arrêt
         return log
+
+    def _rebuild_etm(self, cycle_accurate: bool) -> None:
+        """Décodeur refait pour le mode réel de l'ETM (la trace déjà décodée est abandonnée)."""
+        from .etm.trace import EtmTrace
+        old = self.etm
+        self.etm = EtmTrace(old.image, old.symbols, cycle_accurate=cycle_accurate,
+                            version=old.version, max_spec=old.max_spec, commit_opt1=old.commit_opt1)
+        self.etm.simulated, self.etm.timing_label = old.simulated, old.timing_label
+        if self.etm_sim is not None:
+            self.etm_sim.etm = self.etm
+        self._etm_changed()
 
     def set_etm_filter(self, ranges=(), start=(), stop=(), session=None) -> list[str]:
         """Filtre de la trace ETM : plages (`fib`, `main.c`, `0x100-0x200`), adresses de

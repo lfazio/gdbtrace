@@ -41,6 +41,7 @@ ETM_BASE = 0xE0041000
 ETMCR = ETM_BASE + 0x000
 ETMTEEVR = ETM_BASE + 0x020
 ETMTECR1 = ETM_BASE + 0x024
+ETMFFLR = ETM_BASE + 0x02C    # ETMv3 : seuil FIFOFULL (octets libres), sans quoi stall est inerte
 ETMTRACEIDR = ETM_BASE + 0x200
 ETMLAR = ETM_BASE + 0xFB0
 TPIU_CSPSR = 0xE0040004
@@ -124,6 +125,7 @@ class EtmConfig:
     port_width: int = 4          # bits du port de trace parallèle : 1, 2 ou 4
     trace_id: int = 2            # ID de flux dans les trames TPIU (ITM : 1)
     stall: bool = False          # bloquer le cœur plutôt que perdre de la trace
+    fifofull_level: int = 24     # ETMv3 + stall : cœur retenu sous ce nombre d'octets libres
     cycle_accurate: bool = False # cycles par instruction (analyse temporelle) ; ~8× plus de trace
     timestamps: bool = False
     stm32: bool = False          # activer les broches de trace via DBGMCU_CR
@@ -141,6 +143,7 @@ class EtmConfig:
     dwt_comparators: int = 4     # ETMv3 : comparateurs du DWT (DWT_CTRL.NUMCOMP, lu par apply)
     dwt_reserved: tuple = ()     # ETMv3 : comparateurs déjà pris (trace de données du DWT)
     dwt_used: tuple = ()         # ETMv3 : comparateurs pris par ce filtre (après programmation)
+    refused: tuple = ()          # ETMv3 : options demandées que l'ETM n'a pas (ETMCR relu)
 
     @property
     def prescaler(self) -> int:
@@ -201,6 +204,14 @@ class EtmConfig:
             RegWrite("ETMTEEVR", ETMTEEVR, teevr),
             RegWrite("ETMTECR1", ETMTECR1, tecr1),
             RegWrite("ETMTESSEICR", ETMTESSEICR, tesseicr),
+        ]
+        if self.stall:
+            # ETMCR.STALL seul ne fait rien : FIFOFULL s'active quand il reste moins de
+            # ETMFFLR octets libres, et ETMFFLR vaut 0 au reset (FIFO de 24 octets sur un
+            # ETM-M4, valeur plafonnée par le matériel). Sans lui, chaque I-sync d'un filtre
+            # (6 octets) peut faire déborder la FIFO.
+            writes.append(RegWrite("ETMFFLR", ETMFFLR, self.fifofull_level))
+        writes += [
             RegWrite("ETMCR", ETMCR, self.etmcr),             # fin de programmation : trace active
         ]
         return writes
@@ -437,10 +448,29 @@ class EtmConfig:
                         break
                 else:
                     raise RuntimeError("ETMv4 : TRCSTATR.IDLE jamais atteint")
+        if self.version == 3:
+            self._check_etmcr(session.read_u32(ETMCR))
         return done
+
+    def _check_etmcr(self, back: int) -> None:
+        """ETMv3 : un bit d'ETMCR que l'ETM n'implémente pas se relit à 0 (l'ETM-M4 n'a pas de
+        mode cycle-accurate). L'option est retirée de la configuration — le décodeur suit
+        (`TraceManager.configure_etm`) — et `summary()` le dit."""
+        refused = []
+        for flag, bit, label in (("stall", ETMCR_STALL, "stall"),
+                                 ("timestamps", ETMCR_TIMESTAMP, "horodatage"),
+                                 ("cycle_accurate", ETMCR_CYCLE_ACCURATE, "cycle-accurate")):
+            if getattr(self, flag) and not back & bit:
+                setattr(self, flag, False)
+                refused.append(label)
+        self.refused = tuple(refused)
 
     def summary(self) -> str:
         text = self._summary()
+        if self.refused:
+            text += (f" ; non pris en charge par cet ETM (ETMCR relu) : {', '.join(self.refused)}"
+                     + (" — durées estimées par le modèle de cycles"
+                        if "cycle-accurate" in self.refused else ""))
         eff = self.effective_filter()
         if eff is not None:
             text += " ; " + eff.describe()
@@ -461,6 +491,12 @@ class EtmConfig:
             warn = (f" ; cœur à {self.cpu_hz / 1e6:.0f} MHz > {limit / 1e6:.1f} MHz : la trace "
                     "aura des trous (couverture cumulée : borne basse ; Timing : inutilisable)"
                     if self.cpu_hz > limit else "")
+            if warn and self.version == 3 and not (self.filter and self.filter.active):
+                # observé sur STM32F446 : une boucle d'attente de la FIFO de l'ITM produit
+                # elle-même assez de trace ETMv3 pour garder la broche : elle ne finit jamais
+                warn += (" ; ETMv3 sans filtre : la broche sert l'ETM avant l'ITM, un firmware qui "
+                         "attend la FIFO de l'ITM (printf ITM bloquant) reste bloqué : filtrer "
+                         "(--etm-filter) ou ralentir le cœur")
             return (f"ETM par SWO ({arch}) : ID {self.trace_id}, {self.actual_swo_hz / 1e6:.3f} Mbit/s "
                     f"(ACPR={self.prescaler}, {'Manchester' if self.manchester else 'NRZ'}), "
                     f"formateur TPIU actif ; sans perte jusqu'à un cœur à ~{limit / 1e6:.1f} MHz"
