@@ -46,7 +46,8 @@ def buffer_from_symbols(symbols) -> tuple[int, int] | None:
 class EtrCapture:
     """ETR d'une vraie cible, en tampon circulaire de `size` octets à `buffer`."""
 
-    def __init__(self, session, chip: TraceChip, buffer: int, size: int, trace_id: int = 2):
+    def __init__(self, session, chip: TraceChip, buffer: int, size: int, trace_id: int = 2,
+                 timestamps: bool = False):
         if chip.etr is None:
             raise ValueError(f"{chip.name} : pas d'ETR")
         if buffer % 8 or size % 16 or size < 1024:
@@ -56,6 +57,7 @@ class EtrCapture:
         self.chip = chip
         self.buffer, self.size = buffer, size
         self.trace_id = trace_id
+        self.timestamps = timestamps  # générateur de temps à (re)démarrer
         self.runs = 0                 # exécutions lues
         self.wraps = 0                # exécutions dont le tampon a tourné (début perdu)
         self.bytes = 0                # octets de trace ETM lus
@@ -89,6 +91,10 @@ class EtrCapture:
             if self._r(addr) != value:
                 self._w(addr, value)
             log.append(f"maître AXI de l'ETR ({addr:#010x}) = {value:#06x}")
+        if self.timestamps:
+            line = c.start_timestamps(self._r, self._w)
+            if line:
+                log.append(line)
         return log
 
     def setup(self) -> list[str]:

@@ -7,8 +7,8 @@ ARMv8.1-M à faible coût et Helium dans le tick) et chargé en RAM par le test 
 développement) ; la sonde est trouvée par tests/boards.py.
 
 Une session par le vrai point d'entrée : ST-LINK_gdbserver derrière le relais RSP (mémoire
-en direct), SVD, ITM par le SWO (servi par ST-LINK_gdbserver), ETM écrit en RAM par l'ETR,
-trace de données d'une variable (DWT de l'ARMv8-M). Mêmes phases que la F746 ; le relevé est
+en direct), SVD, ITM par le SWO (servi par ST-LINK_gdbserver), ETM écrit en RAM par l'ETR
+(cycle-accurate et horodatage), trace de données d'une variable (DWT de l'ARMv8-M). Mêmes phases que la F746 ; le relevé est
 dans tests/artifacts/board-n6.json.
 """
 import os
@@ -61,7 +61,7 @@ def run(request, tmp_path_factory):
 
     # la session de configs/nucleo-n657x0-q.yaml (port d'accès 1, image en RAM, ITM par le SWO,
     # ETM par l'ETR, une variable tracée), sur la sonde trouvée
-    argv = ["--config", CONFIG, "--stlink", serial,
+    argv = ["--config", CONFIG, "--stlink", serial, "--etm-cycle-accurate", "--etm-timestamps",
             "--layout", str(tmp_path_factory.mktemp("layout") / "layout.json")]
     return boards.run_gui(argv, "n6", ready=lambda app: app.trace.tmc is not None,
                           cleanup=cleanup, extra=loop_counts)
@@ -195,3 +195,60 @@ def test_coverage(run):
         covered, total = (int(x) for x in rows[f][3].split("/"))
         assert 0 < covered <= total, (f, rows[f])
     assert "ETM par l'ETR" in view(run, "apres", "coverage")["info"]
+
+
+def test_cycle_accurate_timing_and_timestamps(run):
+    """Durées mesurées par l'ETM (paquets Cycle Count), horodatages dans Trace.List."""
+    timing = " ".join(str(v) for v in view(run, "apres", "timing").values() if isinstance(v, str))
+    assert "mesuré" in timing, timing[:300]
+    labels = [r["values"][1] for r in view(run, "apres", "trace")["listing"]]
+    assert any(lb.startswith("── horodatage ") for lb in labels)
+
+
+FILTER_SCRIPT = r'''
+import json, time
+from gdbtrace.trace.etm import qemu_log as ql
+g = gdbtrace
+tm = g.trace
+f = g._symbols().function("worker_step")
+lo, hi = f.start & ~1, f.end
+ret = max(a for a in range(lo, hi, 2) if tm.etm.image.instr(a) and tm.etm.image.instr(a).ret)
+g.go(); time.sleep(0.15); g.halt(); tm.wait_etm(60)
+ev = tm.etm.last(len(tm.etm.history))
+steps = [e for e in ev if isinstance(e, ql.Step)]
+calls, cur, bad = [], None, 0
+for e in ev:
+    if isinstance(e, ql.TraceGap):
+        bad += cur is not None
+        cur = None
+    elif isinstance(e, ql.Step):
+        if e.addr == lo:
+            cur = 1
+        elif cur is not None:
+            cur += 1
+            if e.addr == ret:
+                calls.append(cur)
+                cur = None
+print("RESULT " + json.dumps({"n": len(steps), "inside": sum(lo <= s.addr < hi for s in steps),
+                             "calls": calls, "incomplete": bad, "status": tm.trace_status()}))
+'''
+
+
+def test_etm_filter_by_dwt_on_board(request, tmp_path, run):
+    """L'ETM du M55 n'a pas de comparateurs d'adresse : --etm-filter passe par le DWT. Seul
+    worker_step est tracé, chaque appel en entier (23 instructions de plus à chaque appel)."""
+    import json
+    import sys
+    serial = board_serial(request, boards.NUCLEO_N6)
+    script = tmp_path / "filtre.py"
+    script.write_text(FILTER_SCRIPT)
+    r = subprocess.run([sys.executable, "-m", "gdbtrace", FW, "--stlink", serial, "--stlink-ap", "1",
+                        "--ram-boot", "--program", "--cpu-hz", "64000000", "--etm-config",
+                        "--etm-port", "etr", "--etm-filter", "worker_step", "--batch", "--script",
+                        str(script)], capture_output=True, text=True, timeout=240, cwd=ROOT)
+    line = next((ln for ln in r.stdout.splitlines() if ln.startswith("RESULT ")), None)
+    assert line, r.stdout[-2000:] + r.stderr[-2000:]
+    res = json.loads(line[7:])
+    assert res["n"] > 0 and res["inside"] == res["n"], res
+    assert res["incomplete"] == 0 and len(res["calls"]) >= 3, res
+    assert all((b - a) % (24 * 23) == 23 for a, b in zip(res["calls"], res["calls"][1:])), res

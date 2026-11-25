@@ -210,13 +210,14 @@ class TraceManager:
         v = 4 if v == 4 else 3
         self.set_etm_version(v)
         if v == 4 and self.etm is not None:
-            from .etm.config import TRCIDR8
+            from .etm.config import TRCIDR0, TRCIDR8
             try:                                 # profondeur de spéculation (M7 : 1, M55 : 0)
                 spec = session.read_u32(TRCIDR8)
+                commopt = bool(session.read_u32(TRCIDR0) >> 29 & 1)   # M55 : 1
             except Exception:  # noqa: BLE001 - ETM simulé (QEMU) : celle du M7
                 spec = None
             if spec is not None and spec < 32:
-                self.etm.set_max_spec(spec)
+                self.etm.set_max_spec(spec, commopt)
         return v
 
     def set_etm_version(self, version: int) -> None:
@@ -226,7 +227,7 @@ class TraceManager:
         from .etm.trace import EtmTrace
         old = self.etm
         self.etm = EtmTrace(old.image, old.symbols, cycle_accurate=old.cycle_accurate,
-                            version=version, max_spec=old.max_spec)
+                            version=version, max_spec=old.max_spec, commit_opt1=old.commit_opt1)
         self.etm.simulated, self.etm.timing_label = old.simulated, old.timing_label
         if self.etm_sim is not None:
             self.etm_sim.etm = self.etm
@@ -564,6 +565,9 @@ class TraceManager:
             if session is None or session.state != "stopped":
                 raise RuntimeError("arrêter la cible pour reprogrammer l'ETM")
             self.etm_cfg.filter = flt if flt.active else None
+            # configure_etm reprend les spécifications enregistrées quand le filtre est vide :
+            # mises à jour d'abord, sinon un filtre retiré serait reprogrammé tel quel
+            self.etm_filter_specs = (list(ranges), list(start), list(stop)) if flt.active else None
             log = self.configure_etm(self.etm_cfg, session)
             eff = self.etm_cfg.effective_filter()
         else:                                   # ETM simulé (ou ETM pas encore programmé)
@@ -599,7 +603,7 @@ class TraceManager:
         session.write_u32(DEMCR, session.read_u32(DEMCR) | 1 << 24)
         numcomp = min((session.read_u32(DWT_CTRL) >> 28) & 0xF, 4) or 4
         taken = set(self.datatrace.vars)
-        if self.etm_cfg is not None and getattr(self.etm_cfg, "version", 3) != 4:
+        if self.etm_cfg is not None:            # filtre ETMv3, ou ETMv4 par le DWT (M55)
             taken |= set(self.etm_cfg.dwt_used)
         free = [n for n in range(numcomp - 1, -1, -1) if n not in taken]
         if not free:
@@ -636,7 +640,7 @@ class TraceManager:
     def start_etm_swo(self, session, target=None, cpu_hz: int = 0, swo_hz: int = 2_000_000,
                       stall: bool = False, stm32: bool = False, port: int = 3443,
                       swo: str | None = None, swo_file: str | None = None,
-                      cycle_accurate: bool = False) -> list[str]:
+                      cycle_accurate: bool = False, timestamps: bool = False) -> list[str]:
         """ETM par la broche SWO (cible arrêtée) : TPIU avec formateur (ETM ID 2, ITM ID 1),
         capture du SWO, puis programmation de l'ETM. La capture est servie par OpenOCD
         (`--openocd`, ou `--remote` avec `--tcl`) sur `port`, ou ailleurs : `swo` (HOST:PORT,
@@ -667,7 +671,13 @@ class TraceManager:
                 self.start_file(swo_file, formatter=True)
                 log.append(f"capture SWO rejouée : {swo_file}")
             etm = EtmConfig(port="swo", cpu_hz=cpu_hz, swo_hz=swo_hz, stall=stall, stm32=stm32,
-                            cycle_accurate=cycle_accurate)
+                            cycle_accurate=cycle_accurate, timestamps=timestamps)
+            if timestamps:
+                from .chips import detect_chip
+                chip = detect_chip(session.read_u32)
+                line = chip.start_timestamps(session.read_u32, session.write_u32) if chip else None
+                if line:
+                    log.append(line)
             log += self.configure_etm(etm, session)
         except Exception as exc:
             self.setup_error = f"ETM par SWO : {exc}"
@@ -677,7 +687,7 @@ class TraceManager:
         return log
 
     def start_etm_tmc(self, session, buffer: tuple[int, int] | None = None, stall: bool = False,
-                      chip=None) -> list[str]:
+                      chip=None, cycle_accurate: bool = False, timestamps: bool = False) -> list[str]:
         """ETM écrit en RAM par l'ETR de la puce (cible arrêtée ; STM32N6) : funnel, ETF, ETR
         et ETM programmés, tampon lu à chaque arrêt. `buffer` : (adresse, taille), sinon le
         tampon réservé par le firmware (`__etr_buffer__`). Retourne le journal ; en cas
@@ -702,9 +712,11 @@ class TraceManager:
                                        "ADRESSE:TAILLE")
             if self.detect_etm(session) != 4:
                 raise RuntimeError("l'ETR n'est géré qu'avec un ETMv4")
-            tmc = EtrCapture(session, chip, *buffer)
+            tmc = EtrCapture(session, chip, *buffer, timestamps=timestamps)
             log = tmc.setup()
-            log += self.configure_etm(EtmConfig(port="tmc", version=4, stall=stall), session)
+            log += self.configure_etm(EtmConfig(port="tmc", version=4, stall=stall,
+                                                cycle_accurate=cycle_accurate,
+                                                timestamps=timestamps), session)
         except Exception as exc:
             self.setup_error = f"ETM par l'ETR : {exc}"
             raise

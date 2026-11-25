@@ -12,7 +12,7 @@ import os
 import tkinter as tk
 from tkinter import ttk
 
-from ..trace.etm.qemu_log import ExcEntry, ExcReturn, Step, TraceGap
+from ..trace.etm.qemu_log import CycleMark, ExcEntry, ExcReturn, Step, TimeMark, TraceGap
 from ..trace.itm import exception_name
 from ..gui.view_base import View
 from .profile import _source_line
@@ -168,6 +168,12 @@ class TraceView(View):
                 tv.insert("", "end", text=idx, tags=("exc",),
                           values=("", "── trace interrompue ──", "", ""))
                 prev_func = None
+                continue
+            if isinstance(e, CycleMark):
+                continue
+            if isinstance(e, TimeMark):
+                tv.insert("", "end", text=idx, tags=("exc",),
+                          values=("", f"── horodatage {e.value} ──", "", ""))
                 continue
             ins = self.etm.image.instr(e.addr)
             f = sym.function_at(e.addr) if sym else None

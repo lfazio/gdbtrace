@@ -98,7 +98,8 @@ def setup_trace(args, trace, session, target, log=print) -> None:
         for line in trace.start_etm_swo(session, target, args.cpu_hz, args.swo_hz,
                                          stall=args.etm_stall, stm32=args.stm32,
                                          port=args.swo_port, swo=args.swo, swo_file=args.swo_file,
-                                         cycle_accurate=args.etm_cycle_accurate):
+                                         cycle_accurate=args.etm_cycle_accurate,
+                                         timestamps=args.etm_timestamps):
             log(line)
     else:
         if args.swo_config:
@@ -114,12 +115,14 @@ def setup_trace(args, trace, session, target, log=print) -> None:
             trace.start_file(args.swo_file, args.swo_formatter)
             log(f"capture SWO rejouée : {args.swo_file}")
         if args.etm_config and args.etm_port == "etr":    # ETM écrit en RAM par l'ETR (STM32N6)
-            for line in trace.start_etm_tmc(session, etr_buffer(args), stall=args.etm_stall):
+            for line in trace.start_etm_tmc(session, etr_buffer(args), stall=args.etm_stall,
+                                            cycle_accurate=args.etm_cycle_accurate,
+                                            timestamps=args.etm_timestamps):
                 log(line)
         elif args.etm_config:
             from .trace.etm.config import EtmConfig
             cfg = EtmConfig(port_width=args.etm_width, stm32=args.stm32, stall=args.etm_stall,
-                            cycle_accurate=args.etm_cycle_accurate)
+                            cycle_accurate=args.etm_cycle_accurate, timestamps=args.etm_timestamps)
             for line in trace.configure_etm(cfg, session):
                 log(line)
     if args.mtb_probe:
@@ -219,6 +222,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="programmer l'ETM et le TPIU parallèle à la connexion")
     e.add_argument("--etm-cycle-accurate", action="store_true",
                    help="trace ETM cycle-accurate (durées mesurées pour l'analyse temporelle, ~8× plus de trace)")
+    e.add_argument("--etm-timestamps", action="store_true",
+                   help="horodatage de la trace ETM (compteur de temps global de la puce, aux "
+                        "synchronisations) : marques « horodatage » dans Trace.List")
     e.add_argument("--etm-width", type=int, default=4, choices=(1, 2, 4), help="largeur du port de trace")
     e.add_argument("--etm-port", choices=("parallel", "swo", "etr"), default="parallel",
                    help="sortie de l'ETM : port de trace parallèle (sonde de trace), broche SWO "
@@ -291,6 +297,7 @@ def validate(args) -> list[str]:
     if not args.etm_config:              # options de programmation de l'ETM : sinon ignorées
         stray = [opt for opt, on in ((f"--etm-port {args.etm_port}", args.etm_port != "parallel"),
                                      ("--etm-stall", args.etm_stall), ("--stm32", args.stm32),
+                                     ("--etm-timestamps", args.etm_timestamps),
                                      ("--etm-width", args.etm_width != 4)) if on]
         if stray:
             errors.append(f"{', '.join(stray)} : avec --etm-config (programmer l'ETM)")
@@ -485,6 +492,7 @@ def start_gui_session(app, args) -> None:
     load = False if (args.no_load or program) else None
     app.cpu_hz = args.cpu_hz
     app.etm_cycle_accurate = args.etm_cycle_accurate
+    app.etm_timestamps = args.etm_timestamps
     app.gdb_path = args.gdb
     app.verify_program = verify
     app.verify_var.set(verify)

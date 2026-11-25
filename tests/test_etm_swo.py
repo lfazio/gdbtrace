@@ -114,7 +114,7 @@ def test_etmv4_programming():
     assert s.writes[-1] == (ec.TRCPRGCTLR, 1)
     assert done["TRCVICTLR"] == 0x201 and done["TRCTRACEIDR"] == 2 and done["TPIU_FFCR"] == 0x102
     assert done["TRCSTALLCTLR"] & 1 << 8 and done["TRCVIIECTLR"] == 0
-    with pytest.raises(ValueError, match="cycle-accurate"):    # refusé avant toute écriture
+    with pytest.raises(ValueError, match="TRCCCI"):    # ETM sans comptage : refusé avant d'écrire
         ec.EtmConfig(cycle_accurate=True).apply(S())
     assert ec.etm_version(lambda a: 0x4114F250) == 2                   # ETM-M3 / M4 : ETMv3
 

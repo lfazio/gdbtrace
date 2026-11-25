@@ -63,7 +63,24 @@ class TraceGap:
     next_addr: int | None = field(default=None, compare=False)
 
 
-Event = Step | ExcEntry | ExcReturn | TraceGap
+@dataclass(frozen=True)
+class CycleMark:
+    """ETMv4 cycle-accurate (paquet Cycle Count) : `cycles` **mesurés** depuis la marque
+    précédente. Les événements entre les deux portent des cycles estimés par le modèle ;
+    l'analyse temporelle les ramène à cette mesure (`timing.measured_cycles`). Pas une
+    instruction : les vues qui listent la trace l'ignorent."""
+    cycles: int
+
+
+@dataclass(frozen=True)
+class TimeMark:
+    """Horodatage ETMv4 (paquet Timestamp) : valeur du compteur de temps global de la puce
+    à cet endroit de la trace."""
+    value: int
+
+
+Event = Step | ExcEntry | ExcReturn | TraceGap | CycleMark | TimeMark
+MARKS = (CycleMark, TimeMark)
 
 
 def parse(lines: Iterable[str]) -> Iterator[Event]:

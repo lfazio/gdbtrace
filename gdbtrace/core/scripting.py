@@ -287,7 +287,7 @@ class ScriptAPI:
 
     def trace_list(self, n: int = 30):
         """Trace.List : les `n` dernières instructions exécutées (et exceptions)."""
-        from ..trace.etm.qemu_log import ExcEntry, ExcReturn, TraceGap
+        from ..trace.etm.qemu_log import CycleMark, ExcEntry, ExcReturn, TimeMark, TraceGap
         from ..trace.itm import exception_name
         etm = self._etm()
         events = etm.last(n)
@@ -300,6 +300,10 @@ class ScriptAPI:
                 print(f"{idx:>6}  ── retour d'exception")
             elif isinstance(e, TraceGap):
                 print(f"{idx:>6}  ── trace interrompue")
+            elif isinstance(e, TimeMark):
+                print(f"{idx:>6}  ── horodatage {e.value}")
+            elif isinstance(e, CycleMark):
+                continue
             else:
                 ins = etm.image.instr(e.addr)
                 f = sym.function_at(e.addr) if sym else None
@@ -488,13 +492,15 @@ class ScriptAPI:
                                              stall=stall, stm32=stm32, port=port):
             print(line)
 
-    def etm_etr(self, buffer: tuple[int, int] | None = None, stall: bool = False) -> None:
+    def etm_etr(self, buffer: tuple[int, int] | None = None, stall: bool = False,
+                cycle_accurate: bool = False, timestamps: bool = False) -> None:
         """ETM écrit en RAM par l'ETR de la puce (cible arrêtée ; STM32N6), lu à chaque arrêt ;
         comme --etm-config --etm-port etr. `buffer` : (adresse, taille), sinon le tampon
         réservé par le firmware (`__etr_buffer__`)."""
         if self.trace is None:
             raise RuntimeError("pas de gestionnaire de trace")
-        for line in self.trace.start_etm_tmc(self.s, buffer, stall=stall):
+        for line in self.trace.start_etm_tmc(self.s, buffer, stall=stall, cycle_accurate=cycle_accurate,
+                                             timestamps=timestamps):
             print(line)
 
     def itm(self, port: int = 0) -> str:

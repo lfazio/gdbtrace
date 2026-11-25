@@ -66,15 +66,21 @@ TRCTRACEIDR = ETM_BASE + 0x040
 TRCVICTLR = ETM_BASE + 0x080
 TRCVIIECTLR = ETM_BASE + 0x084
 TRCVISSCTLR = ETM_BASE + 0x088
+TRCVIPCSSCTLR = ETM_BASE + 0x08C           # start / stop par les entrées comparateurs du cœur
+TRCRSCTLR2 = ETM_BASE + 0x208              # sélecteur de ressource 2 (groupe, sélection)
 TRCLAR = ETM_BASE + 0xFB0
 TRCSTATR_IDLE = 1 << 0
 TRCCONFIGR_RES1 = 1 << 0
+TRCCONFIGR_CCI = 1 << 4                    # comptage de cycles (cycle-accurate)
+TRCCONFIGR_TS = 1 << 11                    # horodatage
 VICTLR_ALWAYS = 0x01 | 1 << 9        # EVENT = ressource 1 (toujours vrai), SSSTATUS : démarrée
 STALL_ISTALL = 1 << 8 | 0xC          # ralentir le cœur, seuil haut (LEVEL)
 BITS_PER_INSTRUCTION_V4 = 0.5        # ETMv4 : 0,24 à 0,48 mesuré sur les démos (un atome par branchement)
 
 # filtre : ETMv4 (comparateurs d'adresse) et ETMv3 (comparateurs du DWT)
 TRCIDR4 = ETM_BASE + 0x1F0                # NUMACPAIRS [3:0]
+TRCIDR0 = ETM_BASE + 0x1E0                # TRCCCI [7], TSSIZE [28:24], COMMOPT [29]
+TRCIDR3 = ETM_BASE + 0x1EC                # CCITMIN [11:0]
 TRCIDR8 = ETM_BASE + 0x180                # MAXSPEC : profondeur de spéculation
 TRCACVR0 = ETM_BASE + 0x400               # TRCACVRn : 0x400 + 8n (64 bits)
 TRCACATR0 = ETM_BASE + 0x480              # TRCACATRn : 0x480 + 8n (0 : adresse d'instruction)
@@ -129,6 +135,9 @@ class EtmConfig:
     version: int = 3             # architecture ETM : 3 (M3/M4) ou 4 (M7) ; apply() la détecte
     filter: "EtmFilter | None" = None   # plages et start/stop (filter.py) ; None : tout le code
     ac_pairs: int = 2            # ETMv4 : paires de comparateurs d'adresse (TRCIDR4, lu par apply)
+    cc_threshold: int = 4        # ETMv4 : seuil du comptage de cycles (≥ TRCIDR3.CCITMIN, lu par apply)
+    pe_inputs: int = 0           # ETMv4 : entrées comparateurs du cœur (TRCIDR4.NUMPC : le DWT)
+    dwt_caps: tuple = ()         # ETMv4 sans comparateur d'adresse : DWT_FUNCTIONn.ID, par comparateur
     dwt_comparators: int = 4     # ETMv3 : comparateurs du DWT (DWT_CTRL.NUMCOMP, lu par apply)
     dwt_reserved: tuple = ()     # ETMv3 : comparateurs déjà pris (trace de données du DWT)
     dwt_used: tuple = ()         # ETMv3 : comparateurs pris par ce filtre (après programmation)
@@ -265,6 +274,8 @@ class EtmConfig:
     def _etm4_filter(self) -> tuple[list[RegWrite], int, int, int]:
         """(écritures des comparateurs d'adresse, TRCVICTLR, TRCVIIECTLR, TRCVISSCTLR)."""
         f = self.filter
+        if self.ac_pairs == 0 and self.pe_inputs:      # Cortex-M55 : par le DWT
+            return self._etm4_dwt_filter()
         if f is None or not f.active:
             return [], VICTLR_ALWAYS, 0, 0
         need = 2 * len(f.ranges) + len(f.start) + len(f.stop)
@@ -297,19 +308,78 @@ class EtmConfig:
         victlr = 0x01 | (0 if f.start else VICTLR_SSSTATUS)   # sans démarrage : déjà démarrée
         return writes, victlr, include, sss
 
+    def _etm4_dwt_filter(self) -> tuple[list[RegWrite], int, int, int]:
+        """ETMv4 sans comparateur d'adresse (Cortex-M55 : TRCIDR4.NUMACPAIRS = 0) : ses entrées
+        « comparateurs du cœur » sont les comparateurs du DWT (ARMv8-M), réglés en adresse
+        d'instruction, action « déclencheur seul ». Une plage prend une paire (n-1 : adresse,
+        MATCH 2 ; n : limite incluse, MATCH 3), et les deux entrées de la paire forment la
+        ressource 2, événement de ViewInst (la seule entrée limite laisse passer des trous,
+        vérifié sur une Nucleo-N6) ; start / stop : un comparateur chacun, TRCVIPCSSCTLR.
+        Comparateurs pris par le haut, hors ceux de la trace de données (`dwt_reserved`) ;
+        ceux du filtre précédent qui ne servent plus sont coupés."""
+        f = self.filter
+        old, used = set(self.dwt_used), []
+        writes: list[RegWrite] = []
+
+        def comparator(n: int, addr: int, match: int, what: str) -> None:
+            base = DWT_COMP0 + 16 * n
+            writes.extend([RegWrite(f"DWT_FUNCTION{n}.off", base + 8, 0),
+                           RegWrite(f"DWT_COMP{n} ({what})", base, addr),
+                           RegWrite(f"DWT_FUNCTION{n}", base + 8, match)])   # ACTION 0
+            used.append(n)
+        select = start = stop = 0
+        if f is not None and f.active:
+            caps = self.dwt_caps
+            free = [n for n in range(min(self.pe_inputs, len(caps)) - 1, -1, -1)
+                    if n not in self.dwt_reserved]
+
+            def instr(n):
+                return caps[n] in (0x0A, 0x0B, 0x1A, 0x1E)    # adresse d'instruction
+            for lo, hi in f.ranges:
+                n = next((n for n in free if caps[n] in (0x1A, 0x1E) and n - 1 in free
+                          and instr(n - 1)), None)
+                if n is None:
+                    raise ValueError(f"ETMv4 par le DWT : plus de paire de comparateurs libre pour "
+                                     f"la plage {lo:#x}-{hi:#x} (une paire par plage)"
+                                     + (" ; d'autres tracent des variables" if self.dwt_reserved else ""))
+                free.remove(n)
+                free.remove(n - 1)
+                comparator(n - 1, lo & ~1, 2, "début")
+                comparator(n, hi - 1, 3, "fin")
+                select |= 1 << (n - 1) | 1 << n
+            for addrs, what in ((f.start, "start"), (f.stop, "stop")):
+                for a in addrs:
+                    n = next((n for n in free if instr(n)), None)
+                    if n is None:
+                        raise ValueError(f"ETMv4 par le DWT : plus de comparateur libre pour le {what}")
+                    free.remove(n)
+                    comparator(n, a & ~1, 2, what)
+                    if what == "start":
+                        start |= 1 << n
+                    else:
+                        stop |= 1 << n
+        for n in sorted(old - set(used)):              # filtre précédent : comparateurs rendus
+            writes.append(RegWrite(f"DWT_FUNCTION{n}.off", DWT_COMP0 + 16 * n + 8, 0))
+        if select:
+            writes.append(RegWrite("TRCRSCTLR2", TRCRSCTLR2, 1 << 16 | select))   # groupe 1
+        writes.append(RegWrite("TRCVIPCSSCTLR", TRCVIPCSSCTLR, start | stop << 16))
+        self.dwt_used = tuple(used)
+        victlr = (0x02 if select else 0x01) | (0 if f is not None and f.start else VICTLR_SSSTATUS)
+        return writes, victlr, 0, 0
+
     def _etm4_writes(self) -> list[RegWrite]:
-        if self.cycle_accurate or self.timestamps:
-            raise ValueError("ETMv4 : cycle-accurate et horodatage pas encore décodés par GdbTrace")
         comps, victlr, include, sss = self._etm4_filter()
+        configr = (TRCCONFIGR_RES1 | (TRCCONFIGR_CCI if self.cycle_accurate else 0)
+                   | (TRCCONFIGR_TS if self.timestamps else 0))
         return [
             RegWrite("TRCLAR", TRCLAR, UNLOCK),
             RegWrite("TRCPRGCTLR.off", TRCPRGCTLR, 0),       # arrêt ; apply() attend IDLE
-            RegWrite("TRCCONFIGR", TRCCONFIGR, TRCCONFIGR_RES1),
+            RegWrite("TRCCONFIGR", TRCCONFIGR, configr),
             RegWrite("TRCEVENTCTL0R", TRCEVENTCTL0R, 0),
             RegWrite("TRCEVENTCTL1R", TRCEVENTCTL1R, 0),
             RegWrite("TRCSTALLCTLR", TRCSTALLCTLR, STALL_ISTALL if self.stall else 0),
-            RegWrite("TRCTSCTLR", TRCTSCTLR, 0),
-            RegWrite("TRCCCCTLR", TRCCCCTLR, 0),
+            RegWrite("TRCTSCTLR", TRCTSCTLR, 0),             # horodatage aux synchros seulement
+            RegWrite("TRCCCCTLR", TRCCCCTLR, self.cc_threshold if self.cycle_accurate else 0),
             RegWrite("TRCBBCTLR", TRCBBCTLR, 0),
             RegWrite("TRCTRACEIDR", TRCTRACEIDR, self.trace_id & 0x7F),
             *comps,
@@ -324,12 +394,27 @@ class EtmConfig:
         v = etm_version(session.read_u32)
         if v in (3, 4):
             self.version = v
-        if self.filter is not None and self.filter.active:
-            # ressources de filtrage de cette cible (DWT et ETM lisibles avec TRCENA)
+        if self.version == 4 and (self.cycle_accurate or self.timestamps):
+            session.write_u32(DEMCR, session.read_u32(DEMCR) | 1 << 24)
+            idr0 = session.read_u32(TRCIDR0)
+            if self.cycle_accurate:
+                if not idr0 >> 7 & 1:
+                    raise ValueError("cet ETMv4 ne compte pas les cycles (TRCIDR0.TRCCCI = 0)")
+                self.cc_threshold = max(self.cc_threshold, session.read_u32(TRCIDR3) & 0xFFF)
+            if self.timestamps and not idr0 >> 24 & 0x1F:
+                raise ValueError("cet ETMv4 n'a pas d'horodatage (TRCIDR0.TSSIZE = 0)")
+        if self.version == 4 or (self.filter is not None and self.filter.active):
+            # ressources de filtrage de cette cible (DWT et ETM lisibles avec TRCENA) ; en
+            # ETMv4, toujours : un filtre retiré doit défaire ce qu'il avait programmé
             session.write_u32(DEMCR, session.read_u32(DEMCR) | 1 << 24)
             try:
                 if self.version == 4:
-                    self.ac_pairs = session.read_u32(TRCIDR4) & 0xF
+                    idr4 = session.read_u32(TRCIDR4)
+                    self.ac_pairs, self.pe_inputs = idr4 & 0xF, (idr4 >> 12) & 0xF
+                    if self.ac_pairs == 0 and self.pe_inputs:
+                        numcomp = (session.read_u32(DWT_CTRL) >> 28) & 0xF
+                        self.dwt_caps = tuple((session.read_u32(DWT_COMP0 + 16 * n + 8) >> 27) & 0x1F
+                                              for n in range(numcomp))
                 else:
                     self.dwt_comparators = (session.read_u32(DWT_CTRL) >> 28) & 0xF
             except Exception:  # noqa: BLE001 - registre illisible : valeurs par défaut
@@ -361,12 +446,16 @@ class EtmConfig:
             text += " ; " + eff.describe()
             if self.version != 4:
                 text += " (blocs alignés du DWT ; comparateurs pris par le haut)"
+            elif self.ac_pairs == 0 and self.pe_inputs:
+                text += f" (comparateurs du DWT {', '.join(map(str, sorted(self.dwt_used)))})"
         return text
 
     def _summary(self) -> str:
         arch = f"ETMv{self.version}"
         if self.port == "tmc":
-            return f"ETM ({arch}) vers l'ETR : ID {self.trace_id}" + (", stall" if self.stall else "")
+            return (f"ETM ({arch}) vers l'ETR : ID {self.trace_id}" + (", stall" if self.stall else "")
+                    + (f", cycle-accurate (seuil {self.cc_threshold})" if self.cycle_accurate else "")
+                    + (", horodatage" if self.timestamps else ""))
         if self.port == "swo":
             limit = swo_core_limit_hz(self.actual_swo_hz, self.version)
             warn = (f" ; cœur à {self.cpu_hz / 1e6:.0f} MHz > {limit / 1e6:.1f} MHz : la trace "

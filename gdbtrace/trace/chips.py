@@ -12,7 +12,9 @@ Un Cortex-M3/M4/M7 a son TPIU à 0xE0040000, cadencé par le cœur : c'est le ca
   (tampon en RAM, sortie 0) et le TPIU parallèle (sortie 1, filtrée : sinon il bloque le flux) ;
 - l'ETR est un maître AXI derrière un RIMU (RIFSC_RIMC_ATTR0) qui sort du reset non sécurisé,
   CID 0 : la RAM, sécurisée par défaut, refuse alors ses écritures sans erreur visible. Il doit
-  être déclaré sécurisé, privilégié, CID 1 (celui du cœur).
+  être déclaré sécurisé, privilégié, CID 1 (celui du cœur) ;
+- l'horodatage de l'ETM vient du générateur de temps global (TSGEN, 0xE0086000), arrêté au
+  reset : CNTCR.EN le démarre.
 """
 from __future__ import annotations
 
@@ -39,6 +41,15 @@ class TraceChip:
     replicator_etr_port: int = 0
     #: (adresse, valeur) des attributs du maître AXI de l'ETR (pare-feu de la puce)
     etr_master: tuple[int, int] | None = None
+    #: générateur de temps global CoreSight (horodatage de l'ETM et de l'ITM) ; None : aucun
+    tsgen: int | None = None
+
+    def start_timestamps(self, read_u32, write_u32) -> str | None:
+        """Démarre le générateur de temps (CNTCR.EN) ; libellé pour le journal, ou None."""
+        if self.tsgen is None:
+            return None
+        write_u32(self.tsgen, read_u32(self.tsgen) | 1)
+        return f"générateur de temps ({self.tsgen:#010x}) démarré"
 
 
 STM32N6 = TraceChip(
@@ -49,6 +60,7 @@ STM32N6 = TraceChip(
     etf=0xE0082000, etr=0xE0083000,
     replicator=0xE0085000, replicator_etr_port=0,
     etr_master=(0x54024C10, 1 << 9 | 1 << 8 | 1 << 4),       # RIMC_ATTR0 : MPRIV, MSEC, CID 1
+    tsgen=0xE0086000,
 )
 
 #: DBGMCU_IDCODE : (adresse, masque DEV_ID, valeur) → puce

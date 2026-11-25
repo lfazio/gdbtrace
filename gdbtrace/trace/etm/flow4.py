@@ -23,17 +23,24 @@ déborde à chaque synchronisation.)
 
 Le résultat a la même forme que le chemin tiré du journal QEMU : Step / ExcEntry / ExcReturn,
 avec des cycles **estimés** par le modèle Cortex-M (`cycles.py`).
+
+Cycle-accurate (TRCCONFIGR.CCI) : un paquet Cycle Count donne les cycles écoulés depuis le
+précédent ; il suit les éléments P0 qu'il couvre (et peut porter un Commit, en mode de commit
+0). Il prend place dans la file comme une adresse, et devient une marque `CycleMark` entre les
+événements : l'analyse temporelle ramène à cette mesure les cycles estimés du segment.
+L'horodatage (paquet Timestamp) devient une marque `TimeMark` ; ses cycles éventuels, une
+`CycleMark`.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from .cycles import EXC_ENTRY, EXC_EXIT, TAIL_CHAIN, cycles_of
-from .etm4 import (Address, ASync, Atoms, Cancel, Commit, Context, Discard, Etm4Decoder,
-                   Etm4Packet, ExceptionPacket, ExceptionReturn, Mispredict, Overflow, TraceInfo,
-                   TraceOn)
+from .etm4 import (Address, ASync, Atoms, Cancel, Commit, Context, CycleCount, Discard,
+                   Etm4Decoder, Etm4Packet, ExceptionPacket, ExceptionReturn, Mispredict, Overflow,
+                   Timestamp, TraceInfo, TraceOn)
 from .image import DIRECT, INDIRECT, CodeImage
-from .qemu_log import Event, ExcEntry, ExcReturn, Step, TraceGap
+from .qemu_log import CycleMark, Event, ExcEntry, ExcReturn, Step, TimeMark, TraceGap
 
 #: instructions parcourues au plus sans point de passage (au-delà : désynchronisation)
 MAX_RUN = 1 << 16
@@ -46,6 +53,9 @@ class Flow4Stats:
     lost_atoms: int = 0          # atomes reçus sans adresse ni contexte connus
     unknown_code: int = 0        # adresse hors de l'image (code non chargé, désynchro)
     cycles: int = 0              # total des cycles estimés
+    measured: int = 0            # cycles mesurés (paquets Cycle Count)
+    cycle_counts: int = 0        # paquets Cycle Count
+    timestamps: int = 0          # paquets Timestamp
     overflows: int = 0           # débordements de la FIFO de l'ETM
     errors: int = 0              # séquences impossibles (exception sans adresse...)
     gaps: int = 0                # trous émis (TraceGap)
@@ -66,6 +76,8 @@ class Etm4Flow:
 
     @property
     def timing(self) -> str:
+        if self.stats.cycle_counts:
+            return "mesuré (cycle-accurate ETMv4, réparti par le modèle entre deux mesures)"
         return "estimé (modèle de cycles)"
 
     def _reset(self) -> None:
@@ -122,12 +134,24 @@ class Etm4Flow:
                 if p.atoms:
                     self._push_atoms(p.atoms)
                 mispredict = True
+            elif isinstance(p, CycleCount):
+                self.stats.cycle_counts += 1
+                if p.cycles is not None:           # inconnu après un débordement
+                    self.queue.append(["cc", p.cycles])
+                if p.commit:                       # mode de commit 0 : vaut un Commit
+                    commit = p.commit
+            elif isinstance(p, Timestamp):
+                self.stats.timestamps += 1
+                if p.cycles is not None:
+                    self.queue.append(["cc", p.cycles])
+                self.queue.append(["ts", p.value])
+                continue
             elif isinstance(p, (Overflow, Discard)):
                 discard = True
                 if isinstance(p, Overflow):
                     self.stats.overflows += 1
             else:
-                continue                           # cycles, horodatage, événements
+                continue                           # événements
             if self.depth > self.max_spec:         # validation implicite au-delà de MAXSPEC
                 commit = max(commit, self.depth - self.max_spec)
             # même ordre de résolution qu'OpenCSD
@@ -176,6 +200,11 @@ class Etm4Flow:
             elif kind == "ctx":
                 if e[1]:
                     self.need_ctx = False
+            elif kind == "cc":
+                self.stats.measured += e[1]
+                out.append(CycleMark(e[1]))
+            elif kind == "ts":
+                out.append(TimeMark(e[1]))
             elif kind == "on":
                 # trace réactivée (filtre ViewInst) après un premier tronçon : un trou
                 if self.stats.instructions:
@@ -200,8 +229,12 @@ class Etm4Flow:
     def _cancel(self, n: int) -> None:
         """Retire les `n` éléments P0 les plus récents, et les adresses et contextes reçus
         après eux, comme OpenCSD (cycles et horodatages, qu'il conserve, ne sont pas en file)."""
+        kept = []                                   # cycles et horodatages : gardés
         while n > 0 and self.queue:
             e = self.queue[-1]
+            if e[0] in ("cc", "ts"):
+                kept.append(self.queue.pop())
+                continue
             if e[0] == "atom":
                 k = min(n, len(e[1]))
                 del e[1][len(e[1]) - k:]
@@ -215,6 +248,7 @@ class Etm4Flow:
                 self.depth -= 1
             else:
                 self.queue.pop()
+        self.queue.extend(reversed(kept))
         k = min(n, self.unseen)                     # puis ceux d'avant la synchro
         self.unseen -= k
         self.depth = max(0, self.depth - k)
@@ -372,9 +406,9 @@ class Etm4Flow:
         self.addr = None                            # l'adresse du handler suit
 
 
-def decode(data: bytes, image: CodeImage, max_spec: int = 1,
-           flush: bool = True) -> tuple[list[Event], Etm4Decoder, Etm4Flow]:
-    pk = Etm4Decoder(max_spec=max_spec)
+def decode(data: bytes, image: CodeImage, max_spec: int = 1, flush: bool = True,
+           commit_opt1: bool = False) -> tuple[list[Event], Etm4Decoder, Etm4Flow]:
+    pk = Etm4Decoder(max_spec=max_spec, commit_opt1=commit_opt1)
     fl = Etm4Flow(image, max_spec)
     events = fl.feed(pk.feed(data))
     if flush:

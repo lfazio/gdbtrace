@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from .etm3 import Etm3Decoder
 from .flow import FlowDecoder
 from .image import CodeImage
-from .qemu_log import Event, ExcEntry, ExcReturn, Step, TraceGap
+from .qemu_log import MARKS, Event, ExcEntry, ExcReturn, Step, TraceGap
 
 
 @dataclass
@@ -45,12 +45,15 @@ class FlowRow:
 
 class EtmTrace:
     def __init__(self, image: CodeImage, symbols=None, history: int = 200_000,
-                 cycle_accurate: bool = False, version: int = 3, max_spec: int = 1):
+                 cycle_accurate: bool = False, version: int = 3, max_spec: int = 1,
+                 commit_opt1: bool = False):
         self.image = image
         self.symbols = symbols
         self.version = 4 if version == 4 else 3
         #: ETMv4 : profondeur de spéculation de l'ETM (TRCIDR8.MAXSPEC ; M7 : 1, M55 : 0)
         self.max_spec = max_spec
+        #: ETMv4 : TRCIDR0.COMMOPT (M55 : 1, les paquets de cycles ne portent pas de commit)
+        self.commit_opt1 = commit_opt1
         self.cycle_accurate = cycle_accurate and self.version == 3   # ETMv4 : pas encore
         #: trace produite par l'ETM simulé : ses cycles viennent du modèle, pas du matériel
         self.simulated = False
@@ -74,15 +77,18 @@ class EtmTrace:
         if self.version == 4:
             from .etm4 import Etm4Decoder
             from .flow4 import Etm4Flow
-            return Etm4Decoder(max_spec=self.max_spec), Etm4Flow(self.image, max_spec=self.max_spec)
+            return (Etm4Decoder(max_spec=self.max_spec, commit_opt1=self.commit_opt1),
+                    Etm4Flow(self.image, max_spec=self.max_spec))
         return Etm3Decoder(cycle_accurate=self.cycle_accurate), FlowDecoder(self.image, self.cycle_accurate)
 
-    def set_max_spec(self, max_spec: int) -> None:
-        """ETMv4 : profondeur de spéculation de la cible ; décodeurs refaits si elle change
-        (avant toute trace : ce qui serait en cours de décodage est abandonné)."""
+    def set_max_spec(self, max_spec: int, commit_opt1: bool | None = None) -> None:
+        """ETMv4 : profondeur de spéculation de la cible (TRCIDR8) et mode de commit
+        (TRCIDR0.COMMOPT) ; décodeurs refaits s'ils changent (avant toute trace : ce qui
+        serait en cours de décodage est abandonné)."""
         with self._lock:
-            if max_spec != self.max_spec:
-                self.max_spec = max_spec
+            opt = self.commit_opt1 if commit_opt1 is None else commit_opt1
+            if max_spec != self.max_spec or opt != self.commit_opt1:
+                self.max_spec, self.commit_opt1 = max_spec, opt
                 self.packets, self.flow = self._decoders()
 
     def resumed(self) -> None:
@@ -224,6 +230,8 @@ class EtmTrace:
         pending_call = pending_ret = False
         base = -len(events)
         for i, e in enumerate(events):
+            if isinstance(e, MARKS):                 # cycles mesurés, horodatage
+                continue
             if isinstance(e, TraceGap):              # trace interrompue : la pile est perdue
                 rows.append(FlowRow(base + i, 0, "gap", "", 0))
                 depth, cur_func, pending_call, pending_ret = 0, None, False, False

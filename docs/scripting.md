@@ -883,7 +883,7 @@ gdbtrace.cov.export("couverture.html")
 | `swo_config(cpu_hz, …)`, `itm(port=0)` | SWO, texte ITM |
 | `var_trace(expr, access="write", pc=False)`, `var_samples(expr, n=20, fmt="natural")`, `var_trace_stop(expr=None)` | trace de données du DWT (Var.TRACE) |
 | `etm_swo(cpu_hz, swo_hz=2_000_000, stall=False, stm32=False, port=3443)` | ETM par SWO |
-| `etm_etr(buffer=None, stall=False)` | ETM par l'ETR (tampon en RAM, `(adresse, taille)` ou `__etr_buffer__`) |
+| `etm_etr(buffer=None, stall=False, cycle_accurate=False, timestamps=False)` | ETM par l'ETR (tampon en RAM, `(adresse, taille)` ou `__etr_buffer__`) ; cycles mesurés, horodatage |
 | `etm_config(**options)` | ETM et TPIU parallèle |
 | `etm_filter(*plages, start=(), stop=())` | filtre de la trace ETM ; sans argument : tout le code |
 | `trace_list(n=30)`, `calls(n=40)` | Trace.List, flot d'appels |

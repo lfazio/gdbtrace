@@ -219,3 +219,45 @@ def test_filtered_simulated_trace_cli(elf, tmp_path):
     r = subprocess.run([sys.executable, "-m", "gdbtrace", elf, "--etm-filter", "fib", "--batch"],
                        cwd=ROOT, capture_output=True, text=True, timeout=60)
     assert r.returncode == 2 and "avec une trace ETM" in r.stderr
+
+
+#: DWT_FUNCTIONn d'un Cortex-M55 (STM32N6) au reset : ID [31:27] = capacités du comparateur
+M55_DWT = [0x58000000, 0xF0000000, 0x50000000, 0xF0000000, 0x50000000, 0xD0000000, 0x50000000,
+           0xD0000000]
+
+
+def m55_target():
+    """ETMv4.5 sans comparateur d'adresse (TRCIDR4 : NUMACPAIRS 0, NUMPC 8), DWT à 8."""
+    from gdbtrace.trace.etm import config as ec
+    t = FakeTarget(0x4100F454, numcomp=8, ac_pairs=0)
+    t.regs[ec.TRCIDR4] = 8 << 12
+    for n, v in enumerate(M55_DWT):
+        t.regs[ec.DWT_COMP0 + 16 * n + 8] = v
+    return t
+
+
+def test_etmv4_m55_filter_uses_dwt_comparators():
+    """Validé sur une Nucleo-N6 : appels de worker_step tracés en entier, rien d'autre."""
+    from gdbtrace.trace.etm import config as ec
+    from gdbtrace.trace.etm.config import EtmConfig
+    t = m55_target()
+    cfg = EtmConfig(port="tmc", filter=EtmFilter(ranges=[(0x1A4, 0x1C0)], start=[0x300], stop=[0x320]))
+    done = dict(cfg.apply(t))
+    comp = lambda n: (t.regs[ec.DWT_COMP0 + 16 * n], t.regs[ec.DWT_COMP0 + 16 * n + 8])  # noqa: E731
+    assert comp(6) == (0x1A4, 2) and comp(7) == (0x1BF, 3)      # paire du haut : adresse, limite
+    assert comp(5) == (0x300, 2) and comp(4) == (0x320, 2)      # start, stop
+    assert done["TRCRSCTLR2"] == 1 << 16 | 1 << 6 | 1 << 7     # les deux entrées de la paire
+    assert done["TRCVICTLR"] == 0x02                            # ressource 2, attend son démarrage
+    assert done["TRCVIPCSSCTLR"] == 1 << 5 | 1 << (16 + 4)
+    assert cfg.dwt_used == (6, 7, 5, 4) and "comparateurs du DWT 4, 5, 6, 7" in cfg.summary()
+    cfg.filter = None                                           # filtre retiré : tout est défait
+    done = dict(cfg.apply(t))
+    assert all(done[f"DWT_FUNCTION{n}.off"] == 0 for n in (4, 5, 6, 7))
+    assert done["TRCVIPCSSCTLR"] == 0 and done["TRCVICTLR"] == 0x201 and cfg.dwt_used == ()
+    # comparateur pris par la trace de données : la paire suivante
+    cfg = EtmConfig(port="tmc", filter=EtmFilter(ranges=[(0x100, 0x200)]), dwt_reserved=(7,))
+    cfg.apply(m55_target())
+    assert cfg.dwt_used == (4, 5)
+    with pytest.raises(ValueError, match="plus de paire"):
+        EtmConfig(port="tmc", filter=EtmFilter(ranges=[(0, 2), (4, 6), (8, 10), (12, 14), (16, 18)])
+                  ).apply(m55_target())

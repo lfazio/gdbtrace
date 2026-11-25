@@ -19,6 +19,11 @@ Séquences reprises d'une vraie trace d'ETM-M7 (STM32F746) :
 - avant une exception, Commit des éléments en attente ; paquet Exception toujours sous sa
   forme longue (3 octets) ; Context (mode handler, info 0x03) après l'adresse du handler ;
 - après un retour d'exception, l'adresse de reprise porte le contexte (mode repris).
+
+Cycle-accurate (`cycle_accurate`) : Trace Info annonce le seuil, et un paquet Cycle Count
+(format 1, mode de commit 1 comme un ETM-M55 : sans champ de commit) suit les éléments P0
+qu'il couvre, dès que leurs cycles atteignent le seuil : atomes, exception (avec les
+instructions parcourues avant elle), retour d'exception. Les cycles sont ceux du chemin.
 """
 from __future__ import annotations
 
@@ -60,9 +65,14 @@ def atom_packets(atoms: list[str] | str) -> bytes:
 
 
 class Etm4Encoder:
-    def __init__(self, image: CodeImage, sync_period: int = 1024):
+    def __init__(self, image: CodeImage, sync_period: int = 1024, cycle_accurate: bool = False,
+                 cc_threshold: int = 4):
         self.image = image
         self.sync_period = sync_period
+        self.cycle_accurate = cycle_accurate
+        self.cc_threshold = cc_threshold
+        self.acc = 0                      # cycles des instructions depuis le dernier élément P0
+        self.p0_cycles = 0                # cycles des éléments P0 pas encore comptés
         self.out = bytearray()
         self.atoms: list[str] = []
         self.stack = [0, 0, 0]            # pile d'adresses, comme celle du décodeur
@@ -87,6 +97,22 @@ class Etm4Encoder:
         if self.atoms:
             self._emit(atom_packets(self.atoms))
             self.atoms.clear()
+            self._cycle_count()
+
+    def _cycle_count(self) -> None:
+        """Paquet Cycle Count (format 1, sans commit) des éléments P0 émis, au-delà du seuil."""
+        if not self.cycle_accurate or self.p0_cycles < self.cc_threshold:
+            return
+        count = min(self.p0_cycles - self.cc_threshold, (1 << 21) - 1)
+        out = bytearray([0x0E])
+        while True:
+            b = count & 0x7F
+            count >>= 7
+            out.append(b | (0x80 if count else 0))
+            if not count:
+                break
+        self._emit(bytes(out))
+        self.p0_cycles = 0
 
     def _p0(self) -> None:
         """Un élément P0 de plus ; au-delà de MAXSPEC, le plus ancien est validé implicitement."""
@@ -112,14 +138,15 @@ class Etm4Encoder:
 
     def _sync(self, addr: int) -> None:
         self._flush_atoms()
-        self._emit(ASYNC + TRACE_INFO + (b"" if self.synced else TRACE_ON))
+        info = bytes([0x01, 0x09, 0x01, self.cc_threshold]) if self.cycle_accurate else TRACE_INFO
+        self._emit(ASYNC + info + (b"" if self.synced else TRACE_ON))
         self.stack = [0, 0, 0]                          # Trace Info remet la pile à zéro
         self._address(addr, context=True)
         self.need_addr = False
         self.synced = True
         self._since_sync = 0
 
-    def _exception(self, number: int, ret: int, handler: int) -> None:
+    def _exception(self, number: int, ret: int, handler: int, cycles: int = 0) -> None:
         self._flush_atoms()
         if self.depth:                                  # tout ce qui précède est validé
             self._emit(bytes([0x2D, self.depth]))
@@ -138,6 +165,9 @@ class Etm4Encoder:
         self.need_addr = False
         self.boundary = True
         self.handler = handler
+        self.p0_cycles += self.acc + cycles     # instructions avant l'exception, et son entrée
+        self.acc = 0
+        self._cycle_count()
 
     # ------------------------------------------------------------------ encodage
     def encode(self, events: Iterable[Event]) -> bytes:
@@ -149,6 +179,7 @@ class Etm4Encoder:
         self._last_step: int | None = None  # dernière instruction encodée, tous contextes
         for idx, ev in enumerate(evs):
             if isinstance(ev, Step):
+                self.acc += ev.cycles
                 if not self.synced or (self._since_sync >= self.sync_period and self.boundary):
                     self._sync(ev.addr)
                 elif self.need_addr:
@@ -166,12 +197,15 @@ class Etm4Encoder:
                         break
                     rets.append(ret)
                     ctx_stack.append(last)
-                self._exception(ev.number, ret, ev.handler)
+                self._exception(ev.number, ret, ev.handler, ev.cycles)
                 last = None
             elif isinstance(ev, ExcReturn) and self.synced:
                 self._flush_atoms()
                 self._emit(b"\x07")
                 self._p0()
+                self.p0_cycles += self.acc + ev.cycles
+                self.acc = 0
+                self._cycle_count()
                 self.need_addr = True
                 self.boundary = True
                 if rets:
@@ -184,6 +218,7 @@ class Etm4Encoder:
                 self._flush_atoms()
                 self.synced = False
                 self.need_addr = False
+                self.acc = self.p0_cycles = 0
                 rets, ctx_stack, last = [], [], None
             self.consumed = idx + 1
         self._flush_atoms()
@@ -227,10 +262,13 @@ class Etm4Encoder:
         executed, _taken = outcome(ins, ev.addr, nxt)
         self.atoms.append("E" if executed else "N")
         self._p0()
+        self.p0_cycles += self.acc               # l'atome couvre les instructions jusqu'à lui
+        self.acc = 0
         if ins.kind == INDIRECT and executed:
             self.need_addr = True
         self.boundary = True
 
 
-def encode(events: Iterable[Event], image: CodeImage, sync_period: int = 1024) -> bytes:
-    return Etm4Encoder(image, sync_period).encode(events)
+def encode(events: Iterable[Event], image: CodeImage, sync_period: int = 1024,
+           cycle_accurate: bool = False) -> bytes:
+    return Etm4Encoder(image, sync_period, cycle_accurate).encode(events)

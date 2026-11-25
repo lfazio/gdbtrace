@@ -109,6 +109,7 @@ class App:
         self.cpu_hz = 25_000_000
         self.coverage_in_source = False        # couverture ETM affichée dans la vue Source
         self.etm_cycle_accurate = False        # ETM matériel en mode cycle-accurate (ETMCR bit 12)
+        self.etm_timestamps = False            # horodatage de l'ETM
         # Trace › ETM par SWO… : débit SWO, port TCP servi par OpenOCD, stall, broches STM32
         self.swo_hz = 2_000_000
         self.swo_port = 3443
@@ -712,7 +713,8 @@ class App:
             self.api.cpu_hz = self.cpu_hz
         log = self.safe(lambda: self.trace.start_etm_swo(
             self.session, self.session.target, self.cpu_hz, self.swo_hz, stall=self.etm_stall,
-            stm32=self.stm32, port=self.swo_port, cycle_accurate=self.etm_cycle_accurate))
+            stm32=self.stm32, port=self.swo_port, cycle_accurate=self.etm_cycle_accurate,
+            timestamps=self.etm_timestamps))
         if log:
             self.write_console("\n".join(log) + "\n", "gdb")
             self.status.set(log[-1][:200])
@@ -726,7 +728,9 @@ class App:
         if not self._need("stopped"):
             self.status.set("Arrêter la cible pour configurer la trace (Break)")
             return None
-        log = self.safe(lambda: self.trace.start_etm_tmc(self.session, buffer, stall=self.etm_stall))
+        log = self.safe(lambda: self.trace.start_etm_tmc(
+            self.session, buffer, stall=self.etm_stall, cycle_accurate=self.etm_cycle_accurate,
+            timestamps=self.etm_timestamps))
         if log:
             self.write_console("\n".join(log) + "\n", "gdb")
             self.status.set(log[-1][:200])

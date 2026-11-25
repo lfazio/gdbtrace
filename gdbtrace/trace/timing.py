@@ -25,13 +25,53 @@ Pile d'appels :
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .etm.image import DIRECT, INDIRECT
-from .etm.qemu_log import Event, ExcEntry, ExcReturn, Step, TraceGap
+from .etm.qemu_log import MARKS, CycleMark, Event, ExcEntry, ExcReturn, Step, TraceGap
 from .itm import exception_name
 
 FUNCTION, EXCEPTION = "function", "exception"
+
+
+def measured_cycles(events: list) -> list[Event]:
+    """ETMv4 cycle-accurate : les événements entre deux `CycleMark` portent des cycles
+    estimés par le modèle ; ils sont ramenés à la mesure de la marque qui les clôt (au
+    prorata de l'estimation, arrondis sans perte). Le premier segment reste estimé : son
+    début est hors de la fenêtre, la mesure le déborde. Un segment qui contient un trou de
+    trace met l'écart sur le trou (cycles non tracés), pas sur les instructions. Les marques
+    sont retirées ; sans `CycleMark`, les événements ne changent pas."""
+    if not any(isinstance(e, CycleMark) for e in events):
+        return [e for e in events if not isinstance(e, MARKS)]
+    out: list[Event] = []
+    seg: list[Event] = []
+    started = False
+    for e in events:
+        if isinstance(e, CycleMark):
+            out += _scaled(seg, e.cycles) if started else seg
+            seg, started = [], True
+        elif not isinstance(e, MARKS):
+            seg.append(e)
+    return out + seg                        # après la dernière mesure : estimés
+
+
+def _scaled(seg: list[Event], measured: int) -> list[Event]:
+    if not seg:
+        return seg
+    est = sum(e.cycles for e in seg)
+    gap = next((i for i, e in enumerate(seg) if isinstance(e, TraceGap)), None)
+    if gap is not None or est <= 0:
+        k = gap if gap is not None else len(seg) - 1
+        out = list(seg)
+        out[k] = replace(seg[k], cycles=seg[k].cycles + measured - est)
+        return out
+    out, acc, done = [], 0, 0
+    for e in seg:
+        acc += e.cycles
+        cum = acc * measured // est
+        out.append(replace(e, cycles=cum - done) if e.cycles or cum != done else e)
+        done = cum
+    return out
 
 
 @dataclass
@@ -135,7 +175,7 @@ class TimingAnalyzer:
         self.switches = 0
         self.suspended: list[_Suspended] = []
         self.after_exc = False                  # le pas suit un retour d'exception
-        for e in events:
+        for e in measured_cycles(events):
             if isinstance(e, Step):
                 self._step(e)
             elif isinstance(e, ExcEntry):
@@ -143,7 +183,7 @@ class TimingAnalyzer:
             elif isinstance(e, ExcReturn):
                 self._exc_return(e)
             elif isinstance(e, TraceGap):
-                self._gap()
+                self._gap(e)
         while self.stack:                       # fin de trace : cadres encore ouverts
             self._close(len(self.stack) - 1, complete_end=False)
         for susp in self.suspended:             # tâches jamais reprises
@@ -360,7 +400,7 @@ class TimingAnalyzer:
         self.stack[-1].self_c += e.cycles       # latence d'entrée
         self.t += e.cycles
 
-    def _gap(self) -> None:
+    def _gap(self, e: TraceGap) -> None:
         """Trace interrompue (filtre de l'ETM) : la pile d'appels ne vaut plus ; les cadres
         ouverts sont fermés comme partiels, et la reprise repart d'une pile vide."""
         while self.stack:
@@ -369,7 +409,7 @@ class TimingAnalyzer:
             self._finish(susp)
         self.suspended = []
         self.prev = None
-        self.after_exc = False
+        self.after_exc = False                  # le temps non tracé (e.cycles) n'est à personne
 
     def _exc_return(self, e: ExcReturn) -> None:
         k = self._last_exception()

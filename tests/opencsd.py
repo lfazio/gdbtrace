@@ -72,12 +72,12 @@ ETM_M7_IDR = {"TRCIDR0(0x078)": 0x080006E1, "TRCIDR1(0x079)": 0x4100F400,
 
 
 def make_snapshot_etm4(directory: str, image, framed_trace: bytes, trace_id: int = 2,
-                       configr: int = 0x1) -> None:
+                       configr: int = 0x1, idr: dict | None = None) -> None:
     """Snapshot d'un ETM-M7 (ETMv4). OpenCSD ne connaît pas le Cortex-M7 : on déclare un
     Cortex-M4, de même architecture (ARMv7-M) et de même profil (M) — seuls ceux-ci comptent
     pour le décodage ; les registres d'identification sont ceux du vrai ETM-M7."""
     make_snapshot(directory, image, framed_trace, trace_id)
-    regs = {"TRCCONFIGR(0x004)": configr, "TRCTRACEIDR(0x010)": trace_id, **ETM_M7_IDR}
+    regs = {"TRCCONFIGR(0x004)": configr, "TRCTRACEIDR(0x010)": trace_id, **ETM_M7_IDR, **(idr or {})}
     with open(os.path.join(directory, "etm_0.ini"), "w") as fh:
         fh.write("[device]\nname=ETM_0\nclass=trace_source\ntype=ETM4\n\n[regs]\n"
                  + "".join(f"{k}=0x{v:08X}\n" for k, v in regs.items()))
@@ -134,3 +134,27 @@ def decode(directory: str, image, with_cycles: bool = False,
         elif re.search(r"ERROR|ADDR_NACC|ADDR_UNKNOWN", line):
             errors.append(line)
     return events, errors
+
+
+def cycle_segments(directory: str) -> tuple[list[tuple[int, int]], list[str]]:
+    """ETMv4 cycle-accurate décodé par OpenCSD : [(instructions depuis le comptage précédent,
+    cycles comptés)] dans l'ordre des éléments CYCLE_COUNT, et les lignes d'erreur."""
+    exe, libdir = lister()
+    env = dict(os.environ)
+    if libdir:
+        env["LD_LIBRARY_PATH"] = libdir + ":" + env.get("LD_LIBRARY_PATH", "")
+    out = subprocess.run([exe, "-ss_dir", directory, "-decode_only", "-tpiu", "-logstdout"],
+                         capture_output=True, text=True, env=env, timeout=600).stdout
+    segs, errors, n = [], [], 0
+    for line in out.splitlines():
+        m = _RANGE.search(line)
+        if m:
+            n += int(m.group(3))
+        if "CYCLE_COUNT" in line or (m and "[CC=" in line):
+            c = _CC.search(line)
+            if c:
+                segs.append((n, int(c.group(1))))
+                n = 0
+        elif re.search(r"ERROR|ADDR_NACC|ADDR_UNKNOWN", line):
+            errors.append(line)
+    return segs, errors

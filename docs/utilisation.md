@@ -391,7 +391,7 @@ La vue **Variables tracées** suit la valeur d'une globale à chaque accès, cib
 
 GdbTrace lit la version de l'ETM sur la cible : ETMv3 pour un M3/M4, ETMv4 pour un M7 ou un M55. `--etm-stall` ralentit le cœur plutôt que de perdre de la trace quand la FIFO de l'ETM déborde ; il est indispensable par SWO sur un cœur rapide.
 
-**Filtre** (`--etm-filter`, `--etm-start`, `--etm-stop`, ou **Trace › Filtre de trace ETM…**) : ne tracer qu'une fonction, un fichier ou une plage d'adresses, ou démarrer et arrêter la trace sur un lieu. Le débit va alors à ce qui compte. Chaque reprise de la trace est marquée « trace interrompue ». Pas de filtre sur un Cortex-M55 : son ETM n'a pas de comparateurs d'adresse.
+**Filtre** (`--etm-filter`, `--etm-start`, `--etm-stop`, ou **Trace › Filtre de trace ETM…**) : ne tracer qu'une fonction, un fichier ou une plage d'adresses, ou démarrer et arrêter la trace sur un lieu. Le débit va alors à ce qui compte. Chaque reprise de la trace est marquée « trace interrompue ». Sur un Cortex-M55, dont l'ETM n'a pas de comparateurs d'adresse, le filtre passe par les comparateurs du DWT : une paire par plage, un par start ou stop, partagés avec les variables tracées.
 
 La vue **Trace** montre :
 
@@ -404,7 +404,14 @@ En capture continue, Trace et Timing se redessinent à l'arrêt, et la Couvertur
 
 La vue **Timing** donne, par fonction et par exception, le nombre d'appels, le temps brut (interruptions déduites), le temps net (sans les appelés), le min, le max et la moyenne. Un chronogramme montre les appels dans le temps (molette : zoom ; glisser : déplacer ; clic : source).
 
-Les durées sont **mesurées** avec `--etm-cycle-accurate` (environ 8 fois plus de trace), et **estimées** par un modèle de cycles sinon ; la vue indique toujours laquelle. Unités : cycles ou µs (`--cpu-hz`, 25 MHz par défaut).
+Les durées sont **mesurées** avec `--etm-cycle-accurate`, et **estimées** par un modèle de cycles sinon ; la vue indique toujours laquelle. Unités : cycles ou µs (`--cpu-hz`, 25 MHz par défaut).
+
+- ETMv3 (M3/M4) : chaque instruction porte ses cycles ; environ 8 fois plus de trace.
+- ETMv4 (M7, M55) : l'ETM compte les cycles par groupe de branchements ; le modèle répartit chaque mesure entre les instructions du groupe. Environ 3 fois plus de trace : par SWO, le stall s'impose ; par l'ETR, le tampon garde moins d'exécution.
+
+Le modèle ne connaît ni les attentes mémoire ni les caches : sur une STM32N6 sans cache, les durées mesurées sont environ 25 fois les estimées.
+
+`--etm-timestamps` (ETMv4) insère dans la trace le compteur de temps global de la puce, à chaque synchronisation ; Trace.List le montre (« horodatage N »).
 
 ### Couverture
 
@@ -712,7 +719,8 @@ Un script peut ce que l'interface ne propose pas : une **action Python** sur un 
 | `--etr-buffer ADRESSE:TAILLE` | avec `--etm-port etr` : tampon de l'ETR (défaut : le symbole `__etr_buffer__` du firmware) |
 | `--etm-width 1\|2\|4` | largeur du port parallèle |
 | `--etm-stall` | ralentir le cœur plutôt que perdre de la trace |
-| `--etm-cycle-accurate` | durées mesurées (environ 8 fois plus de trace) |
+| `--etm-cycle-accurate` | durées mesurées (environ 8 fois plus de trace en ETMv3, 3 fois en ETMv4) |
+| `--etm-timestamps` | horodatage de la trace ETMv4 (compteur de temps global de la puce) |
 | `--stm32` | activer les broches de trace (DBGMCU_CR des STM32) |
 | `--etm-filter PLAGE` | ne tracer que cette fonction, ce fichier ou ces adresses ; répétable |
 | `--etm-start LIEU`, `--etm-stop LIEU` | démarrer, arrêter la trace sur un lieu |
@@ -813,11 +821,11 @@ Quand une capture ne démarre pas, GdbTrace le dit : le journal de mise en route
   - Nucleo-N657X0-Q (Cortex-M55, ST-LINK_gdbserver) : vues en marche par le relais, image en RAM, ITM par le SWO de la sonde, ETMv4.5 par l'ETR (boucles à faible coût comprises), trace de données du DWT de l'ARMv8-M, vues RTOS et temps des tâches.
 - **Pas encore validé sur carte** : Nucleo-G070RB (Cortex-M0+) et Nucleo-F072RB (Cortex-M0), par OpenOCD (test prêt : `tests/test_board_m0.py`), lecture de `DWT_PCSR` par OpenOCD (et sa présence sur le Cortex-M0), port de trace parallèle, ETMv3 matériel (M3/M4), MTB d'un vrai M0+, `--rtos` d'OpenOCD.
 - **Cortex-M0/M0+** : ni ITM, ni SWO, ni ETM. Sur les STM32G0 et STM32F0, 4 breakpoints matériels et 2 watchpoints, que Go.Till partage avec les watchpoints posés.
-- **ETMv4** : Cortex-M7 (par SWO) et Cortex-M55 (par l'ETR d'un STM32N6), sans cycle-accurate ni horodatage. Sur le M55, pas de filtre ETM, et la branche d'une instruction « branch future » (BF, BFL…) n'est pas suivie ; les compilateurs n'en émettent pas.
+- **ETMv4** : Cortex-M7 (par SWO) et Cortex-M55 (par l'ETR d'un STM32N6), cycle-accurate et horodatage compris. Sur le M55, le filtre ETM prend les comparateurs du DWT (4 plages au plus), et la branche d'une instruction « branch future » (BF, BFL…) n'est pas suivie ; les compilateurs n'en émettent pas.
 - **ETR** : lu seulement à l'arrêt ; un tampon plein ne garde que la fin de l'exécution.
 - **SWO d'un STLINK-V3EC (N6)** : un octet perdu de temps en temps à 2 Mbit/s, compté comme une erreur ITM.
 - **Filtre ETMv3** : deux plages au plus, chacune agrandie en bloc aligné de 2^n octets.
 - **ETM simulé** : QEMU ne dit pas si une instruction conditionnelle d'un bloc IT (hors branchement) a été exécutée ; elle est comptée exécutée. Les branchements conditionnels sont exacts.
-- **Durées** : sans cycle-accurate, ce sont des estimations par un modèle de cycles, sans attentes mémoire.
+- **Durées** : sans cycle-accurate, ce sont des estimations par un modèle de cycles, sans attentes mémoire. En ETMv4, une mesure couvre un groupe de branchements : sa répartition entre les instructions du groupe reste celle du modèle.
 - **Couverture** : c'est celle du code objet (instructions et branches). La couverture MC/DC demande une analyse du source, hors de portée de la trace.
 - **QEMU chargé** : un breakpoint est parfois vu deux fois pour un seul passage, car le pas à pas de QEMU revient sans avoir avancé. Le compteur de passages et les messages d'action comptent alors ce doublon. C'est propre à QEMU.

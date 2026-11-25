@@ -171,7 +171,8 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
   rien ne doit parcourir les instructions une à une en Python sur ce chemin.
 - Trace de données (`trace/datatrace.py`) : comparateurs du DWT (FUNCTION 0xD/0xC/0x2, +PC
   0xF/0xE/0x3) programmés par `TraceManager.trace_variable` (cible arrêtée, pris par le haut,
-  partagés avec le filtre ETMv3 : `EtmConfig.dwt_reserved` / `dwt_used`) ; `DataTraceSink`
+  partagés avec le filtre ETMv3 et celui du M55 : `EtmConfig.dwt_reserved` / `dwt_used`) ;
+  `DataTraceSink`
   (abonné ITM) range les paquets en échantillons typés par variable ; vue `vartrace`.
 - Temps par tâche (`trace/tasktrace.py`) : le firmware écrit le TCB entrant sur le port ITM 31
   (`traceTASK_SWITCHED_IN`, démo FreeRTOS) ; `TaskTraceSink` en tire tranches, brut/net (trace
@@ -186,7 +187,16 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
   par fonction et par exception (vue Timing).
 - ETMv4 (Cortex-M7, Cortex-M55) : `etm4.py` (paquets) → `flow4.py` (file de spéculation,
   parcours du code entre points de passage) ; `encoder4.py` pour les tests et l'ETM simulé.
-  MAXSPEC (TRCIDR8 : M7 1, M55 0) passe au décodeur (`EtmTrace.set_max_spec`). Image
+  MAXSPEC (TRCIDR8 : M7 1, M55 0) et COMMOPT (TRCIDR0) passent au décodeur
+  (`EtmTrace.set_max_spec`). Cycle-accurate ETMv4 : les paquets Cycle Count prennent place
+  dans la file comme les adresses et deviennent des marques `CycleMark` (cycles mesurés depuis
+  la précédente), l'horodatage des `TimeMark` ; `timing.measured_cycles` ramène les cycles
+  estimés de chaque segment à la mesure. Tout consommateur d'événements doit laisser passer
+  ces marques (`qemu_log.MARKS`) : ce ne sont pas des instructions. Filtre d'un ETMv4 sans
+  comparateur d'adresse (M55 : TRCIDR4.NUMACPAIRS 0, NUMPC 8) : `EtmConfig._etm4_dwt_filter`,
+  comparateurs du DWT en adresse d'instruction / limite, action « déclencheur », lus comme
+  entrées de l'ETM (ressource TRCRSCTLR2 des deux entrées d'une paire, TRCVIPCSSCTLR pour
+  start / stop) ; un filtre retiré coupe ses comparateurs. Image
   ARMv8-M (`CodeImage.arch`, Tag_CPU_arch de l'ELF) : capstone en mode V8, et `decode_v8m`
   avant capstone pour les boucles à faible coût (LE = branchement conditionnel arrière, WLS
   avant ; DLS/LCTP/BF* ordinaires), BXNS/BLXNS, CLRM ; une instruction illisible (Helium) y
@@ -272,8 +282,8 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
   réelle : `--rtos`, `DWT_PCSR` via OpenOCD, port de trace parallèle, ETMv3 matériel (M3/M4,
   y compris par SWO), MTB (dont le sens de l'adresse source d'une entrée d'exception : prise
   comme adresse de retour). ETMv4 : M7 (ETMv4.0, par SWO) et M55 (ETMv4.5, par l'ETR d'un
-  STM32N6), sans cycle-accurate ni horodatage ; pas de filtre sur le M55 (aucun comparateur
-  d'adresse dans son ETM) ; la branche d'un BF* (v8.1-M) n'est pas suivie.
+  STM32N6), cycle-accurate et horodatage compris ; la branche d'un BF* (v8.1-M) n'est pas
+  suivie.
 - ST-LINK_gdbserver : SWV servi en octets ITM bruts (`-z`, débit = `-a` / `-b`) ; l'ST-LINK
   intégré d'une N6 perd parfois un octet de SWO à 2 Mbit/s.
 - ETMv4 : un atome = un point de passage (`Instr.waypoint` : branchement ou ISB), pas une

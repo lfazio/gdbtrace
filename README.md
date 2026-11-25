@@ -17,7 +17,7 @@ Interface en **tkinter**.
 | 7. Analyse temporelle | Durées par fonction et par exception (appels, brut, net, min/max/moy), chronogramme des appels ; ETM cycle-accurate (validé contre OpenCSD) ou modèle de cycles | ✅ |
 | 8. Couverture de code | Couverture du code objet par la trace ETM, sans instrumentation : instructions, branches prises / non prises, lignes, fonctions ; cumul et fusion de campagnes ; rapports HTML et LCOV | ✅ |
 | 9. MTB et ETM par SWO | Trace MTB des Cortex-M0+ (décodage validé sur chemins QEMU, démo M0+, MTB simulée) ; ETM d'un M3/M4 par la broche SWO, sans sonde de trace | ✅ (à valider sur carte) |
-| 10. ETMv4 (Cortex-M7) | Trace d'instructions de l'ETM-M7 (ETMv4.0) : décodage validé contre QEMU, OpenCSD et une vraie capture par SWO sur Nucleo-F746ZG ; version de l'ETM détectée ; ETM simulé v4 sous QEMU (`mps2-an500`) | 🚧 (cycle-accurate et horodatage à venir) |
+| 10. ETMv4 (Cortex-M7) | Trace d'instructions de l'ETM-M7 (ETMv4.0) : décodage validé contre QEMU, OpenCSD et une vraie capture par SWO sur Nucleo-F746ZG ; version de l'ETM détectée ; ETM simulé v4 sous QEMU (`mps2-an500`) ; cycle-accurate (durées mesurées, validées contre DWT_CYCCNT sur F746 et N6) et horodatage | ✅ |
 | 11. Trace ciblée et débogage avancé | Filtres de l'ETM (plages, start/stop) ; trace de données du DWT ; temps par tâche RTOS par ITM ; breakpoints à action et à compteur, Go.Till, Step.Change | ✅ |
 | 12. Programmes natifs | Un ELF de l'hôte (x86-64, AArch64…) débogué sous gdb : arrêt au début de `main`, vue Threads (pthreads nommés, thread courant, changement de thread), mémoire lue en marche dans `/proc/<pid>/mem`, fin et relance du programme | ✅ |
 | 13. ST-LINK_gdbserver et STM32N6 (Cortex-M55) | ST-LINK_gdbserver piloté derrière un relais RSP (mémoire en direct, reset système), image exécutée en RAM ; ITM par le SWO de la sonde ; ETMv4.5 écrit en RAM par l'ETR, lu à chaque arrêt ; décodage ARMv8.1-M (boucles à faible coût, Helium) ; DWT de l'ARMv8-M ; validé sur Nucleo-N657X0-Q | ✅ |
@@ -436,7 +436,7 @@ GdbTrace et OpenCSD identiques sur 194 127 événements. Deux constats sur cette
 premiers octets sortent avant que le formateur TPIU ne démarre (GdbTrace les ignore), et
 OpenCSD 1.4.1 ne compte pas l'élément spéculatif annoncé par Trace Info (SPEC=1) : il déborde
 à chaque synchronisation, GdbTrace non. L'ETMv4.5 d'un Cortex-M55 (STM32N6) est décodé aussi
-(section suivante). Pas encore pris en charge : cycle-accurate et horodatage en ETMv4.
+(section suivante). Cycle-accurate et horodatage : section « Analyse temporelle ».
 
 ### Analyse temporelle (vue Timing)
 
@@ -456,11 +456,21 @@ Unités : cycles ou µs (fréquence du cœur `--cpu-hz`, 25 MHz par défaut).
 
 | Source | Durées |
 |---|---|
-| ETM en mode *cycle-accurate* (`--etm-cycle-accurate`, ETMCR bit 12) | **mesurées** : chaque instruction porte ses cycles. Environ 8 fois plus de trace. |
+| ETMv3 en mode *cycle-accurate* (`--etm-cycle-accurate`, ETMCR bit 12) | **mesurées** : chaque instruction porte ses cycles. Environ 8 fois plus de trace. |
+| ETMv4 en mode *cycle-accurate* (`--etm-cycle-accurate`, TRCCONFIGR.CCI) | **mesurées** par segment : un paquet Cycle Count compte les cycles depuis le précédent, à chaque groupe d'éléments P0 (seuil TRCCCCTLR, le minimum de l'ETM) ; le modèle ne fait plus que répartir chaque mesure entre les instructions du segment. Environ 3 fois plus de trace. |
 | ETM simulé sous QEMU, ou ETM matériel sans cycle-accurate | **estimées** par un modèle de cycles Cortex-M3/M4 : ALU 1, LDR 2, STR 1, LDM/STM/PUSH/POP 1+N, branchement pris 1+P (P = 2), TBB/TBH 2+P, SDIV/UDIV 7, entrée d'exception 12, sortie 10, enchaînement 6. Ni attentes mémoire ni flash : un ordre de grandeur, pas une mesure. |
 
 Le décodage cycle-accurate (formats de P-header, paquets de cycles, I-sync avec cycles) est
-validé contre OpenCSD, cycle par cycle, sur les mêmes chemins QEMU que la trace ETM.
+validé contre OpenCSD, cycle par cycle, sur les mêmes chemins QEMU que la trace ETM. En
+ETMv4 : contre OpenCSD (mêmes instructions entre les mêmes comptages), puis sur carte, où la
+somme des cycles mesurés égale l'écart de DWT_CYCCNT sur la même exécution : à 0,005 % près
+sur la Nucleo-N6 (ETR), à 0,3 % sur la Nucleo-F746 (SWO, où un débordement de l'ETM fait
+perdre un comptage). Sur la N6, les durées mesurées sont ~25 fois celles du modèle : le cœur
+lit son code en AXISRAM, sans cache.
+
+**Horodatage** (`--etm-timestamps`, ETMv4) : le compteur de temps global de la puce (TSGEN
+sur un STM32N6, démarré par GdbTrace) est inséré aux synchronisations de la trace ; Trace.List
+le montre (« horodatage N »).
 
 **Pile d'appels reconstruite.** Un appel (BL/BLX) empile son adresse de retour ; le cadre se
 ferme quand l'exécution l'atteint. Branchement vers le début d'une fonction : appel terminal.
@@ -625,9 +635,16 @@ Helium appelées à chaque tick (`lob.c`).
   suit le firmware (40, 41… 64, 1, 2…). L'ETM du M55 ne spécule pas (MAXSPEC 0, lu dans
   TRCIDR8).
 
-Limites : l'ETM du M55 n'a pas de comparateurs d'adresse (filtrage par plages pas encore pris
-en charge ; il passerait par le DWT). La branche d'un BF* n'est pas suivie (les compilateurs
-n'en émettent pas). Le SWO capturé par l'ST-LINK intégré perd parfois un octet à 2 Mbit/s :
+**Filtre** (`--etm-filter`, `--etm-start`, `--etm-stop`) : l'ETM du M55 n'a pas de
+comparateurs d'adresse, mais ses « entrées comparateurs du cœur » sont ceux du DWT. Une plage
+prend une paire du DWT (adresse d'instruction, puis limite incluse), dont les deux entrées
+forment la ressource qui commande ViewInst ; start et stop prennent un comparateur chacun.
+Plages exactes, 4 paires au plus sur un M55, comparateurs pris par le haut, partagés avec la
+trace de données. Validé sur la carte : avec `--etm-filter worker_step`, seuls les appels de
+`worker_step` sont tracés, chacun en entier (23 instructions de plus à chaque appel, comme le
+veut le firmware). La seule entrée limite ne suffit pas : des appels y perdent leur début.
+
+Limites : la branche d'un BF* n'est pas suivie (les compilateurs n'en émettent pas). Le SWO capturé par l'ST-LINK intégré perd parfois un octet à 2 Mbit/s :
 le décodeur ITM le compte comme une erreur, sans décaler les ports.
 
 ### Trace MTB (Cortex-M0+)
