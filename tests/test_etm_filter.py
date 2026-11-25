@@ -202,8 +202,14 @@ def test_filtered_simulated_trace_cli(elf, tmp_path):
         "assert 'fib' in names and 'main' not in names, names\n"
         "print('filtré', len(steps), gdbtrace.trace.source_label())\n"
         "gdbtrace.etm_filter()\n"
-        "gdbtrace.break_('animate', temporary=True); gdbtrace.go(); gdbtrace.wait(10)\n"
-        "assert any(not (eff[0] <= e.addr < eff[1]) for e in gdbtrace._etm().last(5000) if isinstance(e, Step))\n"
+        # QEMU 8.2 chargé : le pas qui enjambe le breakpoint revient parfois sans avoir avancé,
+        # et la cible se rarrête aussitôt sur animate (CLAUDE.md, limites) : on relance
+        "for _ in range(3):\n"
+        "    gdbtrace.break_('animate', temporary=True); gdbtrace.go(); gdbtrace.wait(10)\n"
+        "    if any(not (eff[0] <= e.addr < eff[1]) for e in gdbtrace._etm().last(5000) if isinstance(e, Step)):\n"
+        "        break\n"
+        "else:\n"
+        "    raise AssertionError('filtre retiré : rien tracé hors de fib')\n"
         "print('OK')\n")
     r = subprocess.run([sys.executable, "-m", "gdbtrace", elf, "--etm-sim", "--etm-filter", "fib",
                         "--batch", "--script", str(script)], cwd=ROOT, capture_output=True, text=True,

@@ -132,6 +132,8 @@ class App:
         # description des périphériques (CMSIS-SVD)
         self.device: svd.Device | None = None
         self.svd_path: str | None = None
+        self._svd_pending: str | None = None      # SVD en cours de lecture (tâche de fond)
+        self._svd_token = 0                       # un SVD remplacé ou retiré périme la lecture
         self._pending_output: list[tuple[str, str]] = []
 
         self.views = ViewManager(self)
@@ -469,14 +471,24 @@ class App:
     def load_svd(self, path: str, background: bool = False) -> None:
         """Charge un SVD ; `background` : analysé hors du thread GUI (celui d'un STM32N6 fait
         22 Mo, plus d'une seconde), les vues suivent à la fin."""
+        self._svd_token += 1
+        token = self._svd_token
         if background:
             self.status.set(f"lecture du SVD {os.path.basename(path)}…")
-            self.pump.background(svd.parse, path, then=lambda dev: self._svd_loaded(dev, path))
+            self._svd_pending = os.path.abspath(path)
+            self.pump.background(svd.parse, path, then=lambda dev: self._svd_loaded(dev, path, token))
             return
-        self._svd_loaded(svd.parse(path), path)
+        self._svd_loaded(svd.parse(path), path, token)
+
+    def wants_svd(self, path: str) -> bool:
+        """Ce SVD n'est ni chargé ni en cours de lecture."""
+        return os.path.abspath(path) not in (self.svd_path, self._svd_pending)
 
     def unload_svd(self) -> None:
-        """Plus de SVD (configuration fermée, ou sans SVD) : vue Périphériques vide."""
+        """Plus de SVD (configuration fermée, ou sans SVD) : vue Périphériques vide. Une lecture
+        encore en cours est oubliée."""
+        self._svd_token += 1
+        self._svd_pending = None
         if self.device is None:
             return
         self.device = None
@@ -487,7 +499,10 @@ class App:
             if hasattr(v, "on_svd_loaded"):
                 self.safe(v.on_svd_loaded)
 
-    def _svd_loaded(self, device, path: str) -> None:
+    def _svd_loaded(self, device, path: str, token: int | None = None) -> None:
+        if token is not None and token != self._svd_token:
+            return                                # remplacé ou retiré pendant la lecture
+        self._svd_pending = None
         self.device = device
         self.svd_path = os.path.abspath(path)
         if self.api:
@@ -882,7 +897,7 @@ class App:
                 path, warning = svd.locate(args.svd)
                 if warning:
                     self.report_error(warning)
-                if path and path != self.svd_path:
+                if path and self.wants_svd(path):
                     self.safe(lambda: self.load_svd(path, background=True))
             else:
                 self.unload_svd()

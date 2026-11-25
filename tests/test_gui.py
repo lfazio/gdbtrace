@@ -769,6 +769,33 @@ def test_configuration_open_connect_close(rtos_elf, tmp_path):
         close_app(a)
 
 
+def test_configuration_svd_read_outlived(tmp_path, monkeypatch):
+    """Un SVD encore en lecture quand la configuration est fermée (ou rouverte) n'est ni
+    installé à retardement, ni relu deux fois."""
+    from conftest import ROOT
+    from gdbtrace.gui import app as appmod
+    parse, calls = appmod.svd.parse, []
+
+    def slow(path):
+        calls.append(path)
+        time.sleep(0.8)
+        return parse(path)
+    monkeypatch.setattr(appmod.svd, "parse", slow)
+    a = appmod.App(layout_file=str(tmp_path / "layout.json"))
+    try:
+        path = os.path.join(ROOT, "configs", "qemu-demo.yaml")
+        assert a.open_config(path)
+        a.apply_config(a.config)                      # même SVD, encore en lecture : pas relu
+        assert len(calls) == 1
+        a.close_config()
+        pump(a, lambda: False, timeout=1.5)
+        assert a.device is None and a.svd_path is None
+        assert a.open_config(path)
+        assert pump(a, lambda: a.device is not None, timeout=5) and len(calls) == 2
+    finally:
+        close_app(a)
+
+
 def test_configuration_os_views_and_layout(tmp_path):
     """OS « aucun » : ni RTOS, ni Temps des tâches, ni Threads ; le layout enregistré ne les
     oublie pas : relancé sans configuration, GdbTrace les rouvre."""

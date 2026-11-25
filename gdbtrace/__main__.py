@@ -491,7 +491,7 @@ def start_gui_session(app, args) -> None:
     app.target_factory = lambda e: build_target(args, e)     # Fichier › Programmer un ELF…
     # valeurs initiales de Trace › ETM par SWO…
     app.swo_hz, app.swo_port, app.etm_stall, app.stm32 = args.swo_hz, args.swo_port, args.etm_stall, args.stm32
-    if args.svd and args.svd != app.svd_path:
+    if args.svd and app.wants_svd(args.svd):        # pas deux lectures du même SVD
         app.safe(lambda: app.load_svd(args.svd, background=True))
 
     def log(line: str) -> None:
