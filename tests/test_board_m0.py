@@ -1,29 +1,50 @@
-"""Test applicatif sur Nucleo-G070RB (STM32G070RB, Cortex-M0+) : le GUI de GdbTrace, toutes ses
-vues, sur la vraie carte, par OpenOCD.
+"""Test applicatif sur les cartes Cortex-M0/M0+ (ARMv6-M) : le GUI de GdbTrace, toutes ses vues,
+sur la vraie carte, par OpenOCD. Les mêmes tests pour chaque carte (fixture paramétrée) :
+
+- Nucleo-G070RB (STM32G070RB, Cortex-M0+, HSI16 à 16 MHz) : `-k g070` ;
+- Nucleo-F072RB (STM32F072RB, Cortex-M0, HSI à 8 MHz) : `-k f072`.
 
 À passer à chaque release (`pytest --boards=require`). Reproductible : le firmware de test est
-construit depuis ce dépôt (examples/nucleo-g070 : la démo FreeRTOS, port ARM_CM0, à 16 MHz)
-et flashé par le test ; la sonde est trouvée par tests/boards.py.
+construit depuis ce dépôt (examples/nucleo-g070, examples/nucleo-f072 : la démo FreeRTOS, port
+ARM_CM0) et flashé par le test ; la sonde est trouvée par tests/boards.py. Une carte absente
+ne fait sauter que ses propres tests (`--boards=auto`).
 
-Le M0+ du STM32G0 n'a ni ITM, ni SWO, ni ETM, ni MTB (RM0444 §40) : la session n'a aucune
+Ces cœurs n'ont ni ITM, ni SWO, ni ETM, ni MTB (STM32G0 : RM0444 §40) : la session n'a aucune
 trace, et les vues de trace doivent dire pourquoi. Tout le reste est vérifié : vues à l'arrêt,
 vues en direct (mémoire lue par OpenOCD, cible en marche), profil par DWT_PCSR, RTOS (cadre
 de pile du port ARM_CM0), et le run-control qui use des 4 breakpoints et 2 watchpoints du
-cœur (`extra`). Mêmes phases que la F746 ; le relevé est dans tests/artifacts/board-g070.json.
+cœur (`extra`). Mêmes phases que la F746 ; le relevé est dans
+tests/artifacts/board-<carte>.json.
 """
 import os
 import subprocess
 import time
+from dataclasses import dataclass
 
 import pytest
 from conftest import ROOT, board_serial
 
 import boards
 
-FW_DIR = os.path.join(ROOT, "examples", "nucleo-g070")
-FW = os.path.join(FW_DIR, "nucleo-g070.elf")
 TASKS = {"producer", "consumer", "worker", "sleeper", "hog", "IDLE", "Tmr Svc"}
-NO_TRACE = "Cortex-M0+ (ARMv6-M) : ni ITM, ni SWO, ni ETM"
+
+
+@dataclass(frozen=True)
+class M0Board:
+    name: str                       # id du test et nom du relevé : g070 → board-g070.json
+    spec: boards.BoardSpec
+    firmware: str                   # dossier de examples/, ELF du même nom
+    cpu_hz: int                     # horloge du reset (aucune configuration d'horloge)
+    core: str                       # nom du cœur dans la raison « pas de trace »
+    device: str                     # début du nom de la puce dans le SVD
+
+    @property
+    def no_trace(self) -> str:
+        return f"{self.core} (ARMv6-M) : ni ITM, ni SWO, ni ETM"
+
+
+BOARDS = [M0Board("g070", boards.NUCLEO_G070, "nucleo-g070", 16_000_000, "Cortex-M0+", "STM32G07"),
+          M0Board("f072", boards.NUCLEO_F072, "nucleo-f072", 8_000_000, "Cortex-M0", "STM32F07")]
 
 pytestmark = pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="pas de DISPLAY (xvfb-run)")
 
@@ -82,20 +103,26 @@ def run_control(app) -> dict:
     return out
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="module", params=BOARDS, ids=[b.name for b in BOARDS])
 def run(request, tmp_path_factory):
-    """La session GUI complète ; retourne {phase: {vue: contenu}} et le reste du relevé."""
-    serial = board_serial(request, boards.NUCLEO_G070)
-    svd = boards.find_svd(boards.NUCLEO_G070.svd)
-    subprocess.run(["make", "-s", "-C", FW_DIR], check=True)
-    argv = [FW, "--openocd", boards.NUCLEO_G070.openocd_cfg, "--program", "--cpu-hz", "16000000",
+    """La session GUI complète sur une carte ; retourne {phase: {vue: contenu}}, le reste du
+    relevé, et la carte (`board`)."""
+    board: M0Board = request.param
+    serial = board_serial(request, board.spec)
+    svd = boards.find_svd(board.spec.svd)
+    fw_dir = os.path.join(ROOT, "examples", board.firmware)
+    subprocess.run(["make", "-s", "-C", fw_dir], check=True)
+    argv = [os.path.join(fw_dir, f"{board.firmware}.elf"), "--openocd", board.spec.openocd_cfg,
+            "--program", "--cpu-hz", str(board.cpu_hz),
             "--layout", str(tmp_path_factory.mktemp("layout") / "layout.json")]
     if svd:
         argv += ["--svd", svd]
     old = os.environ.get("STLINK_SERIAL")
     os.environ["STLINK_SERIAL"] = serial
     try:
-        return boards.run_gui(argv, "g070", ready=lambda app: True, extra=run_control)
+        result = boards.run_gui(argv, board.name, ready=lambda app: True, extra=run_control)
+        result["board"] = board
+        return result
     finally:
         if old is None:
             os.environ.pop("STLINK_SERIAL", None)
@@ -116,7 +143,7 @@ def test_session_and_no_error(run):
 
 def test_console_traces_the_setup(run):
     text = view(run, "arret", "console")["out"]
-    assert "nucleo-g070.elf programmé" in text and "vérifié" in text
+    assert f"{run['board'].firmware}.elf programmé" in text and "vérifié" in text
 
 
 def test_gui_stays_responsive(run):
@@ -169,7 +196,7 @@ def test_rtos_tasks_and_stacks(run):
 
 def test_peripherals_from_svd(run):
     per = view(run, "arret", "peripherals")
-    assert "STM32G070" in per["dev_label"]
+    assert run["board"].device in per["dev_label"], per["dev_label"]
     assert {"RCC", "GPIOA", "TIM3"} <= {r["text"] for r in per["tree"]}
 
 
@@ -205,8 +232,9 @@ def test_profile_by_dwt_pcsr(run):
 @pytest.mark.parametrize("kind,label", [("itm", "status"), ("trace", "info"), ("coverage", "info"),
                                         ("vartrace", "info"), ("tasktime", "info")])
 def test_trace_views_say_why(run, kind, label):
-    assert NO_TRACE in view(run, "apres", kind)[label]
-    assert NO_TRACE in run["trace_status"]
+    why = run["board"].no_trace
+    assert why in view(run, "apres", kind)[label]
+    assert why in run["trace_status"]
 
 
 # ====================================================================== run-control

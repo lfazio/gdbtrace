@@ -127,7 +127,8 @@ class OpenOcdTcl(LiveMemory):
 
     def sample_pc(self) -> int | None:
         """Lecture de DWT_PCSR par l'AHB-AP : PC récent, cœur non arrêté (Cortex-M0+, M3, M4,
-        M7…). En ARMv6-M, PCSR est optionnel : le M0+ du STM32G0 l'a (RM0444 §40.8.2).
+        M7…). En ARMv6-M, PCSR est optionnel : le M0+ du STM32G0 l'a (RM0444 §40.8.2) ; le
+        Cortex-M0 aussi d'après son TRM (STM32F0 : à confirmer sur carte).
 
         DEMCR.TRCENA (DWTENA en ARMv6-M, même bit 24) doit être à 1 (activé au premier appel).
         0xFFFFFFFF : pas d'échantillon (cœur arrêté ou en sommeil)."""

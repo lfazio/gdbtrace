@@ -1,6 +1,7 @@
 /* Démarrage du firmware de test gdbtrace sur Nucleo-G070RB (Cortex-M0+) : table des vecteurs
  * système (aucune interruption de périphérique n'est utilisée), .data copiée, .bss mise à zéro.
- * Horloge : HSI16 du reset (16 MHz), sans configuration. Gestionnaires du port FreeRTOS
+ * Horloge : celle du reset, sans configuration (HSI16 sur la G070). Sert aussi à la
+ * Nucleo-F072RB (../nucleo-f072, HSI 8 MHz) et à QEMU microbit (../m0plus). Gestionnaires du port FreeRTOS
  * ARM_CM0 (V11.3) : SVC_Handler, PendSV_Handler, SysTick_Handler. */
 #include <stdint.h>
 

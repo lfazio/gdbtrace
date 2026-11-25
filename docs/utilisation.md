@@ -13,7 +13,7 @@ Comment installer, lancer et utiliser GdbTrace : interface, breakpoints, donnée
 7. [Trace, profil et couverture](#7-trace-profil-et-couverture)
 8. [Sur une Nucleo-F746ZG](#8-sur-une-nucleo-f746zg)
 9. [Sur une Nucleo-N657X0-Q (STM32N6)](#9-sur-une-nucleo-n657x0-q-stm32n6)
-10. [Sur une Nucleo-G070RB (STM32G0)](#10-sur-une-nucleo-g070rb-stm32g0)
+10. [Sur une Nucleo-G070RB ou une Nucleo-F072RB (Cortex-M0+, Cortex-M0)](#10-sur-une-nucleo-g070rb-ou-une-nucleo-f072rb-cortex-m0-cortex-m0)
 11. [Console et scripts Python](#11-console-et-scripts-python)
 12. [Référence des options](#12-référence-des-options)
 13. [Dépannage et limites](#13-dépannage-et-limites)
@@ -391,7 +391,7 @@ Le Cortex-M0+ n'a ni ETM ni SWO. Sa MTB écrit en SRAM un paquet à chaque branc
 - Le firmware réserve le tampon : `__mtb_buffer__`, aligné sur sa taille, ou `--mtb-buffer adresse:taille`.
 - `--mtb-autohalt` donne une trace complète : la MTB arrête le cœur à chaque tampon plein, GdbTrace le vide et relance, sans arrêt visible. La cible ralentit beaucoup ; préférer un tampon de 4 à 8 Ko.
 - `--mtb-sim` simule la MTB sous QEMU (`--machine microbit`, `examples/m0plus`).
-- La MTB est optionnelle : le STM32G0, par exemple, n'en a pas (section 10).
+- La MTB est optionnelle : les STM32G0 et STM32F0, par exemple, n'en ont pas (section 10).
 
 ## 8. Sur une Nucleo-F746ZG
 
@@ -429,7 +429,7 @@ Le débit du SWO limite la trace sans perte : environ 3,5 MHz de cœur tracé av
 tools/release_check.sh
 ```
 
-Ce script lance toute la suite, construit l'oracle OpenCSD s'il manque, et **exige** les cartes de test : la Nucleo-F746ZG, la Nucleo-N657X0-Q (section 9) et la Nucleo-G070RB (section 10). Le test sur la F746 (`tests/test_board_f746.py`) :
+Ce script lance toute la suite, construit l'oracle OpenCSD s'il manque, et **exige** les cartes de test : la Nucleo-F746ZG, la Nucleo-N657X0-Q (section 9) et les Nucleo-G070RB et F072RB (section 10). Le test sur la F746 (`tests/test_board_f746.py`) :
 
 1. construit et flashe le firmware d'exemple ;
 2. lance GdbTrace par son vrai point d'entrée, interface comprise, avec SVD, ETM et ITM par SWO, et une variable tracée ;
@@ -493,44 +493,59 @@ Il vérifie en plus le décodage des boucles LE : le nombre de tours relevé dan
 
 La carte est trouvée seule : sonde ST-LINK dans `/sys`, puis identité de la puce lue par ST-LINK_gdbserver. `GDBTRACE_N6_SERIAL` impose la sonde.
 
-## 10. Sur une Nucleo-G070RB (STM32G0)
+## 10. Sur une Nucleo-G070RB ou une Nucleo-F072RB (Cortex-M0+, Cortex-M0)
 
-La Nucleo-G070RB porte un STM32G070RB : un Cortex-M0+ (ARMv6-M) à 16 MHz au reset, 128 Ko de flash et 36 Ko de RAM, avec un ST-Link V2-1 embarqué. GdbTrace y passe par OpenOCD.
+Ces deux cartes portent un cœur ARMv6-M, sans trace : un Cortex-M0+ sur la G070, un Cortex-M0 sur la F072. Chacune a un ST-Link V2-1 embarqué, et GdbTrace y passe par OpenOCD.
 
-### Ce que permet un Cortex-M0+
+| | Nucleo-G070RB | Nucleo-F072RB |
+| --- | --- | --- |
+| Puce | STM32G070RB | STM32F072RB |
+| Cœur | Cortex-M0+ | Cortex-M0 |
+| Horloge au reset (gardée par la démo) | HSI16, 16 MHz | HSI, 8 MHz |
+| Flash, RAM | 128 Ko, 36 Ko | 128 Ko, 16 Ko |
+| Configuration OpenOCD | `configs/nucleo-g070rb.cfg` | `configs/nucleo-f072rb.cfg` |
+| SVD (STM32CubeIDE) | `STM32G070.svd` | `STM32F072.svd` |
+| DEV_ID (DBGMCU_IDCODE) | 0x460 | 0x448 |
+| Firmware d'exemple | `examples/nucleo-g070` | `examples/nucleo-f072` |
 
-Le M0+ du STM32G0 n'a ni ITM, ni SWO, ni ETM, ni MTB (RM0444, chapitre 40) : aucune trace. Il a 4 breakpoints matériels et un DWT à 2 comparateurs, avec `DWT_PCSR`.
+### Ce que permet un Cortex-M0 ou M0+
 
-| Fonction | Sur le G070 |
+Ces cœurs n'ont ni ITM, ni SWO, ni ETM, ni MTB (STM32G0 : RM0444, chapitre 40) : aucune trace. Ils ont 4 breakpoints matériels et un DWT à 2 comparateurs, avec `DWT_PCSR` sur le M0+ du G0 (sur le M0 du F0, à confirmer par le test sur carte).
+
+| Fonction | Sur ces cartes |
 | --- | --- |
 | Run-control, breakpoints (à compteur, à message), Go.Till, Step.Till et Step.Change | oui ; 4 breakpoints matériels en flash, 2 watchpoints (Go.Till en prend un) |
 | Watch, Mémoire, Registres, Périphériques (SVD), RTOS | oui, cible arrêtée ou en marche (mémoire lue par OpenOCD) |
 | Profil | oui, par lecture de `DWT_PCSR` cible en marche (« Live ») |
 | ITM, Variables tracées, Temps des tâches, Trace, Timing, Couverture | non : ni ITM ni trace d'instructions |
 
-GdbTrace reconnaît le cœur à la connexion (registre CPUID). Les vues ITM, Variables tracées, Temps des tâches, Trace et Couverture l'affichent : « Cortex-M0+ (ARMv6-M) : ni ITM, ni SWO, ni ETM ». Une trace demandée (`--swo-config`, `--etm-config`, `--var-trace`, **Trace › ETM par SWO…**, bouton **Tracer**) est refusée avec ce même message, sans rien écrire dans des registres absents.
+GdbTrace reconnaît le cœur à la connexion (registre CPUID). Les vues ITM, Variables tracées, Temps des tâches, Trace et Couverture l'affichent : « Cortex-M0+ (ARMv6-M) : ni ITM, ni SWO, ni ETM » (ou « Cortex-M0 … »). Une trace demandée (`--swo-config`, `--etm-config`, `--var-trace`, **Trace › ETM par SWO…**, bouton **Tracer**) est refusée avec ce même message, sans rien écrire dans des registres absents.
 
 ### Firmware d'exemple
 
-`examples/nucleo-g070` construit la démo FreeRTOS de `examples/freertos` pour cette carte :
+`examples/nucleo-g070` et `examples/nucleo-f072` construisent la démo FreeRTOS de `examples/freertos` pour ces cartes :
 
 - même `main.c` ; la sortie ITM y est inerte dès la compilation, car sur un ARMv6-M la zone de l'ITM est réservée ;
 - port FreeRTOS ARM_CM0 de V11.3.3 ;
-- cœur sur HSI16, à 16 MHz ; tas de 16 Ko.
+- horloge du reset, sans configuration ; tas de 16 Ko sur la G070, de 9 Ko sur la F072 ;
+- même démarrage et même configuration FreeRTOS (ceux de `examples/nucleo-g070`) ; seules l'édition de liens, l'horloge et la taille du tas changent.
 
 ```bash
 make -C examples/nucleo-g070
+make -C examples/nucleo-f072
 ```
 
-Sans carte, `examples/m0plus` construit la même démo pour QEMU `-M microbit` (`freertos.elf`) : la vue RTOS et le contexte des tâches d'un M0 s'y vérifient.
+Sans carte, `examples/m0plus` construit la même démo pour QEMU `-M microbit` (`freertos.elf`, Cortex-M0) : la vue RTOS et le contexte des tâches d'un M0 s'y vérifient.
 
 ### Lancer GdbTrace sur la carte
 
-Avec la configuration OpenOCD fournie (`configs/nucleo-g070rb.cfg`) :
+Avec la configuration OpenOCD fournie :
 
 ```bash
 .venv/bin/python -m gdbtrace examples/nucleo-g070/nucleo-g070.elf --program \
     --openocd configs/nucleo-g070rb.cfg --svd STM32G070.svd --cpu-hz 16000000
+.venv/bin/python -m gdbtrace examples/nucleo-f072/nucleo-f072.elf --program \
+    --openocd configs/nucleo-f072rb.cfg --svd STM32F072.svd --cpu-hz 8000000
 ```
 
 - Profil : vue **Profil**, source « Auto » ou « Live », **Démarrer** cible en marche.
@@ -540,11 +555,11 @@ Avec la configuration OpenOCD fournie (`configs/nucleo-g070rb.cfg`) :
 
 ### Test sur carte
 
-`tests/test_board_g070.py` fait comme sur la F746, sans trace :
+`tests/test_board_m0.py` fait comme sur la F746, sans trace, pour chacune des deux cartes (`-k g070`, `-k f072`) :
 
 1. construit et flashe le firmware d'exemple ;
 2. lance l'interface avec le SVD ;
-3. relève et vérifie toutes les vues (`tests/artifacts/board-g070.json`) : vues à l'arrêt et en marche, RTOS, profil par `DWT_PCSR`, et les vues de trace, qui doivent dire pourquoi elles restent vides.
+3. relève et vérifie toutes les vues (`tests/artifacts/board-g070.json`, `board-f072.json`) : vues à l'arrêt et en marche, RTOS, profil par `DWT_PCSR`, et les vues de trace, qui doivent dire pourquoi elles restent vides.
 
 Il éprouve en plus les comparateurs du cœur :
 
@@ -552,7 +567,11 @@ Il éprouve en plus les comparateurs du cœur :
 - un breakpoint à message : un message par passage, sans arrêt visible ;
 - un Go.Till sur une globale.
 
-La carte est trouvée seule : sonde ST-LINK dans `/sys`, puis identité de la puce (DEV_ID 0x460) lue par OpenOCD. `GDBTRACE_G070_SERIAL` impose la sonde.
+Chaque carte est trouvée seule : sonde ST-LINK dans `/sys`, puis identité de la puce (DEV_ID) lue par OpenOCD. `GDBTRACE_G070_SERIAL` et `GDBTRACE_F072_SERIAL` imposent la sonde. Une carte absente ne fait sauter que ses propres tests.
+
+```bash
+xvfb-run -a .venv/bin/python -m pytest tests/test_board_m0.py -k f072 --boards=require
+```
 
 ## 11. Console et scripts Python
 
@@ -678,15 +697,15 @@ Quand une capture ne démarre pas, GdbTrace le dit : le journal de mise en route
 | « tampon de l'ETR » refusé | le firmware ne réserve pas de tampon | un tableau `__etr_buffer__` aligné sur 4 Ko, ou `--etr-buffer ADRESSE:TAILLE` |
 | « ST-LINK_gdbserver lancé sans SWO » | `--swo-config` absent au lancement : le serveur n'a pas démarré sa capture | relancer GdbTrace avec `--swo-config` (et `--cpu-hz`) |
 | Go.Till refusé | la condition porte sur un registre ou une valeur sans adresse | Step.Till |
-| « Cortex-M0+ (ARMv6-M) : ni ITM, ni SWO, ni ETM » | le cœur n'a pas de trace (STM32G0, STM32L0…) | profil par lecture du PC (« Live ») ; MTB si `--mtb-probe` en trouve une |
+| « Cortex-M0+ (ARMv6-M) : ni ITM, ni SWO, ni ETM » | le cœur n'a pas de trace (STM32G0, STM32F0, STM32L0…) | profil par lecture du PC (« Live ») ; MTB si `--mtb-probe` en trouve une |
 
 ### Limites connues
 
 - **Validé sur carte** :
   - Nucleo-F746ZG (Cortex-M7, OpenOCD) : ETMv4 et ITM par SWO, trace de données du DWT, profil par SWO, vues RTOS et temps des tâches ;
   - Nucleo-N657X0-Q (Cortex-M55, ST-LINK_gdbserver) : vues en marche par le relais, image en RAM, ITM par le SWO de la sonde, ETMv4.5 par l'ETR (boucles à faible coût comprises), trace de données du DWT de l'ARMv8-M, vues RTOS et temps des tâches.
-- **Pas encore validé sur carte** : Nucleo-G070RB (Cortex-M0+, OpenOCD ; test prêt : `tests/test_board_g070.py`), lecture de `DWT_PCSR` par OpenOCD, port de trace parallèle, ETMv3 matériel (M3/M4), MTB d'un vrai M0+, `--rtos` d'OpenOCD.
-- **Cortex-M0/M0+** : ni ITM, ni SWO, ni ETM. Sur le STM32G0, 4 breakpoints matériels et 2 watchpoints, que Go.Till partage avec les watchpoints posés.
+- **Pas encore validé sur carte** : Nucleo-G070RB (Cortex-M0+) et Nucleo-F072RB (Cortex-M0), par OpenOCD (test prêt : `tests/test_board_m0.py`), lecture de `DWT_PCSR` par OpenOCD (et sa présence sur le Cortex-M0), port de trace parallèle, ETMv3 matériel (M3/M4), MTB d'un vrai M0+, `--rtos` d'OpenOCD.
+- **Cortex-M0/M0+** : ni ITM, ni SWO, ni ETM. Sur les STM32G0 et STM32F0, 4 breakpoints matériels et 2 watchpoints, que Go.Till partage avec les watchpoints posés.
 - **ETMv4** : Cortex-M7 (par SWO) et Cortex-M55 (par l'ETR d'un STM32N6), sans cycle-accurate ni horodatage. Sur le M55, pas de filtre ETM, et la branche d'une instruction « branch future » (BF, BFL…) n'est pas suivie ; les compilateurs n'en émettent pas.
 - **ETR** : lu seulement à l'arrêt ; un tampon plein ne garde que la fin de l'exécution.
 - **SWO d'un STLINK-V3EC (N6)** : un octet perdu de temps en temps à 2 Mbit/s, compté comme une erreur ITM.

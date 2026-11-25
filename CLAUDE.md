@@ -22,6 +22,7 @@ make -C examples/freertos        # freertos.elf
 make -C examples/m0plus          # demo.elf Cortex-M0+ (QEMU -M microbit), tampon MTB réservé ; freertos.elf (port ARM_CM0)
 make -C examples/nucleo-n6       # firmware de test STM32N6 (M55, en RAM, boucles v8.1-M, tampon ETR)
 make -C examples/nucleo-g070     # firmware de test STM32G070RB (M0+, flash, sans ITM)
+make -C examples/nucleo-f072     # firmware de test STM32F072RB (M0, 8 MHz ; démarrage et config de nucleo-g070)
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf               # GUI sur QEMU
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf --etm-sim     # + trace ETM simulée
 .venv/bin/python -m gdbtrace fw.elf --batch --script s.py             # sans GUI
@@ -43,7 +44,8 @@ Aucun linter n'est configuré.
 
 Tests sur carte (`tests/test_board_f746.py`, Nucleo-F746ZG, firmware `examples/nucleo-f746`
 flashé ; `tests/test_board_n6.py`, Nucleo-N657X0-Q, `examples/nucleo-n6` chargé en RAM par
-ST-LINK_gdbserver ; `tests/test_board_g070.py`, Nucleo-G070RB, `examples/nucleo-g070` flashé,
+ST-LINK_gdbserver ; `tests/test_board_m0.py`, Nucleo-G070RB et Nucleo-F072RB, fixture
+paramétrée par carte (`-k g070`, `-k f072`), `examples/nucleo-g070` / `nucleo-f072` flashés,
 sans trace, run-control éprouvé dans `extra`) : `--boards=auto|require|skip` (`tests/boards.py` trouve la sonde par
 `/sys` puis l'IDCODE, lu par OpenOCD ou ST-LINK_gdbserver). Le GUI tourne par le vrai
 `main()`, `App.mainloop` remplacé par le scénario commun `boards.run_gui` ; le contenu de
@@ -244,8 +246,9 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
   trace de données du DWT, profil par SWO, vue RTOS, temps des tâches. Validé sur
   Nucleo-N657X0-Q (`tests/test_board_n6.py`) : ST-LINK_gdbserver et son relais (mémoire en
   direct, reset), ITM par le SWO de la sonde, ETMv4.5 par l'ETR (boucles LE comprises), DWT
-  de l'ARMv8-M. Prêt, pas encore passé : Nucleo-G070RB (`tests/test_board_g070.py`, DEV_ID
-  0x460 et `STM32G070.svd` à confirmer). Non validé sur sonde
+  de l'ARMv8-M. Prêts, pas encore passés : Nucleo-G070RB et Nucleo-F072RB
+  (`tests/test_board_m0.py` ; DEV_ID 0x460 / 0x448, `STM32G070.svd` / `STM32F072.svd`, et
+  `DWT_PCSR` du Cortex-M0 à confirmer). Non validé sur sonde
   réelle : `--rtos`, `DWT_PCSR` via OpenOCD, port de trace parallèle, ETMv3 matériel (M3/M4,
   y compris par SWO), MTB (dont le sens de l'adresse source d'une entrée d'exception : prise
   comme adresse de retour). ETMv4 : M7 (ETMv4.0, par SWO) et M55 (ETMv4.5, par l'ETR d'un

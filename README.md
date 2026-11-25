@@ -21,7 +21,7 @@ Interface en **tkinter**.
 | 11. Trace ciblée et débogage avancé | Filtres de l'ETM (plages, start/stop) ; trace de données du DWT ; temps par tâche RTOS par ITM ; breakpoints à action et à compteur, Go.Till, Step.Change | ✅ |
 | 12. Programmes natifs | Un ELF de l'hôte (x86-64, AArch64…) débogué sous gdb : arrêt au début de `main`, vue Threads (pthreads nommés, thread courant, changement de thread), mémoire lue en marche dans `/proc/<pid>/mem`, fin et relance du programme | ✅ |
 | 13. ST-LINK_gdbserver et STM32N6 (Cortex-M55) | ST-LINK_gdbserver piloté derrière un relais RSP (mémoire en direct, reset système), image exécutée en RAM ; ITM par le SWO de la sonde ; ETMv4.5 écrit en RAM par l'ETR, lu à chaque arrêt ; décodage ARMv8.1-M (boucles à faible coût, Helium) ; DWT de l'ARMv8-M ; validé sur Nucleo-N657X0-Q | ✅ |
-| 14. STM32G0 (Cortex-M0+) | Nucleo-G070RB par OpenOCD : cœur ARMv6-M reconnu (CPUID), traces ITM, SWO et ETM refusées en le disant (console, vues de trace) ; profil par `DWT_PCSR` ; FreeRTOS port ARM_CM0 V11.3 (son cadre de pile), validé sous QEMU `microbit` ; test sur carte | 🚧 (à valider sur carte) |
+| 14. Cortex-M0 et M0+ (STM32G0, STM32F0) | Nucleo-G070RB (M0+) et Nucleo-F072RB (M0) par OpenOCD : cœur ARMv6-M reconnu (CPUID), traces ITM, SWO et ETM refusées en le disant (console, vues de trace) ; profil par `DWT_PCSR` ; FreeRTOS port ARM_CM0 V11.3 (son cadre de pile), validé sous QEMU `microbit` ; test sur carte | 🚧 (à valider sur carte) |
 
 ## Installation
 
@@ -34,7 +34,7 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'     # dev inclut caps
 
 **Notice d'utilisation complète : [`docs/utilisation.md`](docs/utilisation.md)** — installation,
 lancement et cibles, interface, breakpoints, données, RTOS et threads, trace, Nucleo-F746ZG,
-Nucleo-N657X0-Q (STM32N6), Nucleo-G070RB (STM32G0), options, dépannage. Le pilotage en Python a la sienne : [`docs/scripting.md`](docs/scripting.md).
+Nucleo-N657X0-Q (STM32N6), Nucleo-G070RB et Nucleo-F072RB (Cortex-M0+, M0), options, dépannage. Le pilotage en Python a la sienne : [`docs/scripting.md`](docs/scripting.md).
 
 ```bash
 make -C examples/firmware                                        # firmware de démo Cortex-M3
@@ -45,6 +45,8 @@ make -C examples/nucleo-n6 && .venv/bin/python -m gdbtrace examples/nucleo-n6/nu
     --stlink-ap 1 --ram-boot --program --cpu-hz 64000000 --swo-config --etm-config --etm-port etr  # STM32N6
 make -C examples/nucleo-g070 && .venv/bin/python -m gdbtrace examples/nucleo-g070/nucleo-g070.elf \
     --openocd configs/nucleo-g070rb.cfg --program --cpu-hz 16000000 --svd STM32G070.svd  # STM32G0 (M0+)
+make -C examples/nucleo-f072 && .venv/bin/python -m gdbtrace examples/nucleo-f072/nucleo-f072.elf \
+    --openocd configs/nucleo-f072rb.cfg --program --cpu-hz 8000000 --svd STM32F072.svd   # STM32F0 (M0)
 .venv/bin/python -m gdbtrace fw.elf --remote 127.0.0.1:2331      # J-Link GDB Server, pyOCD...
 .venv/bin/python -m gdbtrace fw.elf --remote 127.0.0.1:3333 --tcl 127.0.0.1:6666  # OpenOCD lancé à part
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf --svd examples/svd/mps2-an385.svd  # périphériques
@@ -748,6 +750,7 @@ examples/
   m0plus/               la démo compilée pour Cortex-M0+ (QEMU microbit), tampon MTB réservé ;
                         freertos.elf : la démo FreeRTOS de nucleo-g070 sur la même machine
   nucleo-g070/          firmware de test sur carte : la démo FreeRTOS, port ARM_CM0 (V11.3), 16 MHz
+  nucleo-f072/          la même démo pour Nucleo-F072RB (Cortex-M0, 8 MHz, 16 Ko de RAM)
   nucleo-f746/          firmware de test sur carte : la démo FreeRTOS, port ARM_CM7 r0p1
   nucleo-n6/            firmware de test sur carte : la démo FreeRTOS, port ARM_CM55_NTZ, en RAM,
                         boucles ARMv8.1-M (lob.c), tampon de l'ETR réservé
@@ -797,17 +800,19 @@ ETM écrit en RAM par l'ETR, variable tracée par le DWT de l'ARMv8-M, vues en d
 relais ; en plus, le nombre de tours des boucles LE relevé dans la trace doit suivre le
 firmware (`tests/artifacts/board-n6.json`).
 
-`tests/test_board_g070.py` fait de même sur une **Nucleo-G070RB** (STM32G070RB, Cortex-M0+),
-par OpenOCD : firmware `examples/nucleo-g070` flashé, SVD, aucune trace (le cœur n'en a pas).
+`tests/test_board_m0.py` fait de même sur les cartes ARMv6-M, chacune ses tests (`-k g070`,
+`-k f072`) : **Nucleo-G070RB** (STM32G070RB, Cortex-M0+) et **Nucleo-F072RB** (STM32F072RB,
+Cortex-M0), par OpenOCD : firmware `examples/nucleo-g070` ou `examples/nucleo-f072` flashé,
+SVD, aucune trace (le cœur n'en a pas).
 Les vues de trace (ITM, Trace, Couverture, Variables tracées, Temps des tâches) doivent dire
 pourquoi ; le profil échantillonne `DWT_PCSR` ; et le run-control éprouve les comparateurs du
 cœur : breakpoint à compteur, breakpoint à message (arrêts internes, un message par passage),
-Go.Till sur une globale (watchpoint du DWT) (`tests/artifacts/board-g070.json`).
+Go.Till sur une globale (watchpoint du DWT) (`tests/artifacts/board-g070.json`, `board-f072.json`).
 
 - La carte est trouvée seule : sonde ST-LINK lue dans `/sys`, puis identité de la puce lue
-  sans reset, par OpenOCD (F746, G070) ou par ST-LINK_gdbserver (N6, qu'OpenOCD 0.12 ne
-  connaît pas). `GDBTRACE_F746_SERIAL` / `GDBTRACE_N6_SERIAL` / `GDBTRACE_G070_SERIAL`
-  imposent la sonde ; le SVD vient de
+  sans reset, par OpenOCD (F746, G070, F072) ou par ST-LINK_gdbserver (N6, qu'OpenOCD 0.12
+  ne connaît pas). `GDBTRACE_F746_SERIAL` / `GDBTRACE_N6_SERIAL` / `GDBTRACE_G070_SERIAL` /
+  `GDBTRACE_F072_SERIAL` imposent la sonde ; le SVD vient de
   STM32CubeIDE (`GDBTRACE_SVD_DIR` sinon).
 - `pytest --boards=auto` (défaut) ignore ces tests sans la carte ; `--boards=require` les fait
   échouer ; `--boards=skip` les désactive.

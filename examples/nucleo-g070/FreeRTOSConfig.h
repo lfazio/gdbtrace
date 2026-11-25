@@ -1,13 +1,16 @@
 /* Configuration FreeRTOS du firmware de test gdbtrace sur Nucleo-G070RB (Cortex-M0+), port
- * ARM_CM0 (V11.3). Même démo que sous QEMU (../freertos/main.c). Sert aussi à la version QEMU
- * microbit (Cortex-M0, ../m0plus), qui réduit le tas (configTOTAL_HEAP_SIZE, Makefile).
+ * ARM_CM0 (V11.3). Même démo que sous QEMU (../freertos/main.c). Sert aussi à la Nucleo-F072RB
+ * (Cortex-M0, ../nucleo-f072 : HSI 8 MHz, 16 Ko de RAM) et à la version QEMU microbit
+ * (Cortex-M0, ../m0plus), qui réduisent le tas et fixent l'horloge (Makefile).
  * Horloge HSI16 du reset (16 MHz) ; le nRF51 de QEMU microbit tourne aussi à 16 MHz. */
 #ifndef FREERTOS_CONFIG_H
 #define FREERTOS_CONFIG_H
 
 #include <stdint.h>
 
+#ifndef configCPU_CLOCK_HZ
 #define configCPU_CLOCK_HZ                      16000000UL     /* HSI16 */
+#endif
 #define configTICK_RATE_HZ                      1000
 #define configUSE_PREEMPTION                    1
 #define configUSE_TIME_SLICING                  1
@@ -22,7 +25,7 @@
 #define configENABLE_MPU                        0
 #define configCHECK_HANDLER_INSTALLATION        0
 
-/* Mémoire : 36 Ko de RAM sur la G070 */
+/* Mémoire : 36 Ko de RAM sur la G070 (16 Ko sur la F072 et le microbit : tas réduit) */
 #define configSUPPORT_DYNAMIC_ALLOCATION        1
 #define configSUPPORT_STATIC_ALLOCATION         0
 #ifndef configTOTAL_HEAP_SIZE
