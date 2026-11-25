@@ -87,12 +87,68 @@ void itm_u32(unsigned port, uint32_t value)
 }
 
 /* ---- Temps par tâche (GdbTrace, vue Temps des tâches) : à chaque changement de tâche, le
- * noyau appelle traceTASK_SWITCHED_IN() (FreeRTOSConfig.h) ; l'adresse du TCB qui prend le
- * processeur part sur le port ITM GDBTRACE_TASK_PORT. GdbTrace relit le nom de la tâche dans
- * ce TCB et, avec l'horodatage ITM, en tire le temps de chaque tâche. */
-void gdbtrace_task_switched_in(void *tcb)
+ * noyau appelle traceTASK_SWITCHED_IN() (FreeRTOSConfig.h) avec le compte de ses ticks.
+ * - l'adresse du TCB qui prend le processeur part sur le port ITM GDBTRACE_TASK_PORT ; avec
+ *   l'horodatage ITM, GdbTrace en tire le temps de chaque tâche ;
+ * - sans ITM (Cortex-M0/M0+) ou sans capture SWO : l'horodatage (cycles, d'après SysTick et
+ *   le compte des ticks) et le TCB sont aussi écrits dans un anneau en RAM,
+ *   `gdbtrace_task_log`, que GdbTrace lit en marche par le canal mémoire.
+ * Dans les deux cas, GdbTrace relit le nom de la tâche dans son TCB. */
+#define GDBTRACE_TASK_LOG_SIZE   256u           /* entrées (puissance de 2) : 2 Ko */
+#define GDBTRACE_TASK_LOG_MAGIC  0x47544C31u    /* « GTL1 » */
+
+struct gdbtrace_task_entry {
+    uint32_t ts;                    /* cycles du cœur (32 bits, GdbTrace déroule les tours) */
+    uint32_t tcb;
+};
+
+struct gdbtrace_task_log {
+    uint32_t magic;                 /* écrit au premier changement de tâche */
+    uint32_t size;                  /* entrées de l'anneau */
+    volatile uint32_t head;         /* entrées écrites depuis le démarrage */
+    struct gdbtrace_task_entry e[GDBTRACE_TASK_LOG_SIZE];
+};
+
+struct gdbtrace_task_log gdbtrace_task_log;
+
+#define GT_SYST_RVR   (*(volatile uint32_t *)0xE000E014u)
+#define GT_SYST_CVR   (*(volatile uint32_t *)0xE000E018u)
+#define GT_SCB_ICSR   (*(volatile uint32_t *)0xE000ED04u)
+#define GT_PENDSTSET  (1u << 26)
+
+/* Cycles depuis le démarrage de l'ordonnanceur : ticks × période de SysTick + ce que le
+ * compteur (décroissant) a déjà fait du tick en cours. Appelée interruptions masquées
+ * (changement de contexte) : un tick en attente est compté. */
+static uint32_t gdbtrace_cycles(uint32_t ticks)
 {
+    uint32_t period = (GT_SYST_RVR & 0xFFFFFFu) + 1u;
+    uint32_t pending = GT_SCB_ICSR & GT_PENDSTSET;
+    uint32_t cvr = GT_SYST_CVR & 0xFFFFFFu;
+    if (!pending && (GT_SCB_ICSR & GT_PENDSTSET)) {      /* repassé par zéro entre-temps */
+        pending = 1u;
+        cvr = GT_SYST_CVR & 0xFFFFFFu;
+    }
+    if (pending) {
+        ticks++;
+    }
+    return ticks * period + (period - 1u - cvr);
+}
+
+void gdbtrace_task_switched_in(void *tcb, uint32_t ticks)
+{
+    struct gdbtrace_task_log *log = &gdbtrace_task_log;
+    uint32_t head = log->head;
+
     itm_u32(GDBTRACE_TASK_PORT, (uint32_t)tcb);
+    if (log->magic != GDBTRACE_TASK_LOG_MAGIC) {
+        log->size = GDBTRACE_TASK_LOG_SIZE;
+        head = 0u;
+        log->magic = GDBTRACE_TASK_LOG_MAGIC;
+    }
+    log->e[head & (GDBTRACE_TASK_LOG_SIZE - 1u)].ts = gdbtrace_cycles(ticks);
+    log->e[head & (GDBTRACE_TASK_LOG_SIZE - 1u)].tcb = (uint32_t)tcb;
+    __asm volatile ("dmb" ::: "memory");                 /* l'entrée avant l'indice */
+    log->head = head + 1u;
 }
 
 static char *u32_to_dec(uint32_t v, char *end)

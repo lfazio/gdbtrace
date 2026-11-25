@@ -71,7 +71,10 @@
 /* GdbTrace : temps par tâche par l'ITM. Le M0+ n'a pas d'ITM : main.c rend cette sortie
  * inerte en ARMv6-M ; le crochet reste, pour garder la même démo sur tous les cœurs. */
 #define GDBTRACE_TASK_PORT                      31
-void gdbtrace_task_switched_in(void *tcb);
-#define traceTASK_SWITCHED_IN()                 gdbtrace_task_switched_in((void *)pxCurrentTCB)
+void gdbtrace_task_switched_in(void *tcb, uint32_t ticks);
+/* développée dans tasks.c : xTickCount et xPendedTicks y sont visibles (horodatage du journal
+ * en RAM, à partir de SysTick) */
+#define traceTASK_SWITCHED_IN()                 gdbtrace_task_switched_in((void *)pxCurrentTCB, \
+                                                    (uint32_t)(xTickCount + xPendedTicks))
 
 #endif /* FREERTOS_CONFIG_H */

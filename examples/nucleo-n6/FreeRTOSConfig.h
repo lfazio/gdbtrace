@@ -81,7 +81,10 @@
  * du TCB entrant est écrite sur le port ITM GDBTRACE_TASK_PORT (main.c) ; inerte tant que le
  * débogueur n'a pas activé l'ITM. Pour un autre firmware : ces trois lignes, et la fonction. */
 #define GDBTRACE_TASK_PORT                      31
-void gdbtrace_task_switched_in(void *tcb);
-#define traceTASK_SWITCHED_IN()                 gdbtrace_task_switched_in((void *)pxCurrentTCB)
+void gdbtrace_task_switched_in(void *tcb, uint32_t ticks);
+/* développée dans tasks.c : xTickCount et xPendedTicks y sont visibles (horodatage du journal
+ * en RAM, à partir de SysTick) */
+#define traceTASK_SWITCHED_IN()                 gdbtrace_task_switched_in((void *)pxCurrentTCB, \
+                                                    (uint32_t)(xTickCount + xPendedTicks))
 
 #endif /* FREERTOS_CONFIG_H */

@@ -96,7 +96,30 @@ class TaskTimeView(View):
         self.after(500, self._tick)
 
     def refresh(self) -> None:
+        """Cible arrêtée : la fin du journal en RAM (s'il fait foi) est lue par gdb."""
+        tm = self.app.trace
+        if tm.task_log_active and self.session is not None:
+            self.app.safe(tm.poll_task_log, self.session.read_memory)
         self.render(force=True)
+
+    def on_running(self) -> None:
+        """Cible en marche : le journal en RAM est lu par le canal live (LivePoller)."""
+        tm, poller = self.app.trace, self.app.poller
+        if poller is None:
+            return
+        if tm.task_log_active:
+            poller.subscribe_job(self, tm.poll_task_log, lambda n: self.render() if n else None)
+        else:
+            poller.unsubscribe(self)
+
+    def on_disconnected(self) -> None:
+        if self.app.poller is not None:
+            self.app.poller.unsubscribe(self)
+
+    def destroy(self) -> None:
+        if self.app.poller is not None:
+            self.app.poller.unsubscribe(self)
+        super().destroy()
 
     def on_program_changed(self) -> None:
         self.sink.namer = None
@@ -115,8 +138,10 @@ class TaskTimeView(View):
 
     def render(self, force: bool = False) -> None:
         sink = self.sink
-        reason = self.app.trace.no_trace_reason()      # cœur sans ITM (Cortex-M0/M0+)
-        key = (sink.generation, reason, self.unit_var.get(), self.canvas.winfo_width(),
+        tm = self.app.trace
+        ram = tm.task_log_active                        # journal en RAM : pas besoin d'ITM
+        reason = None if ram else tm.no_trace_reason()  # cœur sans ITM (Cortex-M0/M0+)
+        key = (sink.generation, reason, ram, self.unit_var.get(), self.canvas.winfo_width(),
                self.canvas.winfo_height())
         if not force and key == self._gen:
             return
@@ -126,6 +151,15 @@ class TaskTimeView(View):
         conv, unit = self._conv()
         if not rows and reason:
             self.info.configure(text=f"pas de temps par tâche — {reason}")
+        elif not rows and ram:
+            self.info.configure(text="journal des tâches en RAM (gdbtrace_task_log) : aucun changement de "
+                                     "tâche lu pour l'instant (ordonnanceur pas démarré ?)")
+        elif ram:
+            lost = tm.task_log.lost
+            self.info.configure(text=(f"{sink.switches} changements de tâche sur {conv(sink.span):,.1f} {unit} — "
+                                      f"journal en RAM (SysTick) ; sans trace des exceptions, temps net = brut"
+                                      + (f" — {lost} changements perdus (anneau dépassé)" if lost else ""))
+                                .replace(",", " "))
         elif not rows:
             self.info.configure(text="aucun changement de tâche reçu : le firmware écrit le TCB entrant "
                                      "sur le port ITM 31 (traceTASK_SWITCHED_IN) ; capture SWO ou de trace")

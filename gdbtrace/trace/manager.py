@@ -111,6 +111,38 @@ class TraceManager:
         self.etm_filter = None
         self.etm_filter_specs: tuple[list[str], list[str], list[str]] | None = None
         self.etm_cfg = None
+        #: journal des changements de tâche en RAM (`gdbtrace_task_log`), si le firmware en a un
+        self.task_log = None
+        self._task_log_lock = threading.Lock()
+        self._task_from_log = False         # la mesure en cours vient du journal en RAM
+
+    # ------------------------------------------------------------------ temps des tâches en RAM
+    def setup_task_log(self, symbols) -> None:
+        """Anneau `gdbtrace_task_log` du firmware (temps des tâches sans ITM), d'après l'ELF."""
+        from .tasktrace import TASK_LOG_SYMBOL, TaskLogReader
+        obj = (getattr(symbols, "objects", None) or {}).get(TASK_LOG_SYMBOL)
+        with self._task_log_lock:
+            self.task_log = TaskLogReader(obj[0]) if obj else None
+
+    @property
+    def task_log_active(self) -> bool:
+        """Le journal en RAM fait foi : il existe et aucune capture SWO ne tourne (sinon c'est
+        l'ITM, jamais les deux)."""
+        return self.task_log is not None and self.source is None
+
+    def poll_task_log(self, read) -> int:
+        """Nouvelles entrées du journal en RAM versées au temps des tâches (cible en marche par
+        le canal live, à l'arrêt par gdb). Rend leur nombre."""
+        with self._task_log_lock:
+            log = self.task_log
+            if log is None or self.source is not None:
+                return 0
+            entries = log.poll(read)
+            if log.restarted:
+                self.tasktrace.reset()
+            self.tasktrace.feed(entries)
+            self._task_from_log = self._task_from_log or bool(entries)
+            return len(entries)
 
     # ------------------------------------------------------------------ ETM
     def setup_etm(self, elf: str, symbols, cycle_accurate: bool = False,
@@ -118,6 +150,7 @@ class TraceManager:
         """Prépare le décodage ETM pour cet ELF. `cycle_accurate` doit refléter la
         configuration de l'ETM (ETMCR bit 12) ; `version` : 3 (M3/M4) ou 4 (M7), voir
         `detect_etm`. Retourne un message si impossible."""
+        self.setup_task_log(symbols)
         try:
             from .etm.image import CodeImage
             from .etm.trace import EtmTrace
@@ -898,6 +931,9 @@ class TraceManager:
         self.session.add_sink(lambda pkts: [self.text.add(p) for p in pkts])
         self.session.add_sink(self.exceptions)
         self.session.add_sink(self.datatrace)
+        if self._task_from_log:             # l'ITM prend le relais : pas de mélange des sources
+            self.tasktrace.reset()
+            self._task_from_log = False
         self.session.add_sink(self.tasktrace)
         if self._profile is not None:
             self._attach_profile()

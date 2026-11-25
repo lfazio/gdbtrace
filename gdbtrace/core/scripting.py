@@ -454,21 +454,38 @@ class ScriptAPI:
             from ..trace.tasktrace import freertos_namer
             tt.namer = freertos_namer(self._rtos, self.mem)
 
+    def _poll_task_log(self) -> None:
+        """Journal des tâches en RAM (s'il fait foi) : nouvelles entrées lues, par gdb à
+        l'arrêt, par le canal live en marche."""
+        tm = self.trace
+        if tm is None or not tm.task_log_active:
+            return
+        if self.s.state == "stopped":
+            tm.poll_task_log(self.s.read_memory)
+        elif self.live is not None:
+            tm.poll_task_log(self.live.read)
+
     def task_times(self, top: int | None = 20, unit: str = "us"):
-        """Temps par tâche mesuré par l'ITM : le firmware écrit l'adresse du TCB entrant sur le
-        port ITM 31 à chaque changement de tâche (FreeRTOS : traceTASK_SWITCHED_IN, voir
-        examples/freertos). Activations, temps brut, net (sans les exceptions), part du temps,
-        tranches maximale et moyenne. Retourne les lignes (`TaskTime`)."""
+        """Temps par tâche : le firmware signale chaque changement de tâche (FreeRTOS :
+        traceTASK_SWITCHED_IN, voir examples/freertos), par l'ITM (port 31, horodatage ITM)
+        ou, sans ITM ni capture SWO, dans un anneau en RAM (`gdbtrace_task_log`, horodatage
+        SysTick ; temps net = brut). Activations, temps brut, net (sans les exceptions), part
+        du temps, tranches maximale et moyenne. Retourne les lignes (`TaskTime`)."""
         if self.trace is None:
             raise RuntimeError("pas de gestionnaire de trace")
         tt = self.trace.tasktrace
+        self._poll_task_log()
         self._task_namer()
         rows = tt.rows()
         conv, u = self._time_unit(unit)
         if not rows:
-            print("aucun changement de tâche reçu : traceTASK_SWITCHED_IN → port ITM 31, et une "
-                  "capture SWO ou de trace")
+            print("aucun changement de tâche reçu : traceTASK_SWITCHED_IN → port ITM 31 avec une "
+                  "capture SWO ou de trace, ou journal en RAM gdbtrace_task_log (examples/freertos)")
             return rows
+        if self.trace.task_log_active:
+            lost = self.trace.task_log.lost
+            print("journal des tâches en RAM (SysTick) : sans trace des exceptions, temps net = brut"
+                  + (f" ; {lost} changements perdus (anneau dépassé)" if lost else ""))
         if not tt.timestamps:
             print("horodatage ITM absent : durées inconnues (activer l'horodatage de l'ITM)")
         span = tt.span or 1
@@ -487,6 +504,7 @@ class ScriptAPI:
         if self.trace is None:
             raise RuntimeError("pas de gestionnaire de trace")
         tt = self.trace.tasktrace
+        self._poll_task_log()
         self._task_namer()
         conv, u = self._time_unit(unit)
         rows = tt.timeline(n)
