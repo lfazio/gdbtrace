@@ -66,7 +66,7 @@ class PeripheralsView(View):
     def _ask_svd(self) -> None:
         path = filedialog.askopenfilename(filetypes=[("CMSIS-SVD", "*.svd *.xml"), ("Tous", "*")])
         if path:
-            self.app.load_svd(path)
+            self.app.load_svd(path, background=True)
 
     def on_svd_loaded(self) -> None:
         self.open.clear()

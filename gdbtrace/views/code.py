@@ -71,10 +71,16 @@ class SourceView(View):
             t = self.text
             t.configure(state="normal")
             t.delete("1.0", "end")
+            # un seul appel Tk pour tout le fichier : un appel par ligne attend, à chaque fois,
+            # le GIL tenu par les fils de trace (des secondes pour tasks.c)
+            args: list = []
             for i, src in enumerate(lines, 1):
-                t.insert("end", f"  {i:5d}  ", "gutter")
-                t.insert("end", src + "\n")
+                args += [f"  {i:5d}  ", "gutter", src + "\n", ()]
+            if args:
+                t.insert("end", *args)
             t.configure(state="disabled")
+            self._bp_marked = []
+            self._cov_marked = []
             self.current_file = path
             self.file_var.set(path)
             self.title = f"Source: {os.path.basename(path)}"
@@ -87,17 +93,19 @@ class SourceView(View):
         t.configure(state="normal")
         t.tag_remove("current", "1.0", "end")
         t.tag_remove("bp", "1.0", "end")
-        # retirer les marques précédentes (colonne 0)
-        for i in range(1, int(t.index("end").split(".")[0])):
+        # retirer les marques précédentes (colonne 0) : seulement les lignes marquées
+        for i in getattr(self, "_bp_marked", []):
             if t.get(f"{i}.0") == BP_MARK:
                 t.delete(f"{i}.0")
                 t.insert(f"{i}.0", " ", "gutter")
+        self._bp_marked: list[int] = []
         if self.current_file and self.connected:
             for bp in self.app.cached_breakpoints:
                 if bp.line and bp.file and self._same(bp.file):
                     t.delete(f"{bp.line}.0")
                     t.insert(f"{bp.line}.0", BP_MARK, "bp")
                     t.tag_add("bp", f"{bp.line}.0", f"{bp.line}.end")
+                    self._bp_marked.append(bp.line)
         if self.pc_line and self.pc_line[0] == self.current_file:
             n = self.pc_line[1]
             t.tag_add("current", f"{n}.0", f"{n + 1}.0")

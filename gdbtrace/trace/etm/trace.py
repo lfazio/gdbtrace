@@ -45,10 +45,12 @@ class FlowRow:
 
 class EtmTrace:
     def __init__(self, image: CodeImage, symbols=None, history: int = 200_000,
-                 cycle_accurate: bool = False, version: int = 3):
+                 cycle_accurate: bool = False, version: int = 3, max_spec: int = 1):
         self.image = image
         self.symbols = symbols
         self.version = 4 if version == 4 else 3
+        #: ETMv4 : profondeur de spéculation de l'ETM (TRCIDR8.MAXSPEC ; M7 : 1, M55 : 0)
+        self.max_spec = max_spec
         self.cycle_accurate = cycle_accurate and self.version == 3   # ETMv4 : pas encore
         #: trace produite par l'ETM simulé : ses cycles viennent du modèle, pas du matériel
         self.simulated = False
@@ -72,8 +74,16 @@ class EtmTrace:
         if self.version == 4:
             from .etm4 import Etm4Decoder
             from .flow4 import Etm4Flow
-            return Etm4Decoder(), Etm4Flow(self.image)
+            return Etm4Decoder(max_spec=self.max_spec), Etm4Flow(self.image, max_spec=self.max_spec)
         return Etm3Decoder(cycle_accurate=self.cycle_accurate), FlowDecoder(self.image, self.cycle_accurate)
+
+    def set_max_spec(self, max_spec: int) -> None:
+        """ETMv4 : profondeur de spéculation de la cible ; décodeurs refaits si elle change
+        (avant toute trace : ce qui serait en cours de décodage est abandonné)."""
+        with self._lock:
+            if max_spec != self.max_spec:
+                self.max_spec = max_spec
+                self.packets, self.flow = self._decoders()
 
     def resumed(self) -> None:
         """La cible repart après un arrêt (appelé avant chaque reprise)."""

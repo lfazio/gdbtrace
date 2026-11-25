@@ -10,6 +10,16 @@ inconditionnelle. Chaque fonction est donc balayée d'un seul tenant (capstone s
 IT), une fois, à la première demande d'une de ses adresses, d'après la table des symboles
 (fonctions, zones de données `$d`) ; les instructions couvertes par un IT gardent leur vraie
 condition.
+
+ARMv8-M / ARMv8.1-M (Cortex-M33, M55, M85) : capstone 5 ne connaît ni les boucles à faible coût
+(WLS, DLS, LE, LETP, LCTP), ni les « branch future » (BF*), ni CLRM, ni une partie de Helium
+(MVE : VLDRW, VSTRW…). Elles sont décodées ici (`decode_v8m`) : LE est un branchement
+conditionnel arrière (atome E : un tour de plus) et WLS un branchement conditionnel avant,
+donc des points de passage de l'ETMv4 ; DLS, LCTP et BF* n'en sont pas. Une instruction que
+capstone ne lit pas dans une image v8-M est une instruction ordinaire de la taille de son
+encodage (16 ou 32 bits), au lieu d'un trou dans le flot. Limite : la branche d'un BF* (prise
+au point de branchement, sans instruction de branchement) n'est pas suivie ; les compilateurs
+n'en émettent pas.
 """
 from __future__ import annotations
 
@@ -27,7 +37,6 @@ except ImportError:  # pragma: no cover - dépendance optionnelle (pip install c
 
 
 NORMAL, DIRECT, INDIRECT = "normal", "direct", "indirect"
-
 
 @dataclass(frozen=True)
 class Instr:
@@ -49,6 +58,81 @@ class Instr:
         return self.kind != NORMAL or self.isb
 
 
+#: Tag_CPU_arch (attributs ARM de l'ELF) des architectures ARMv8-M
+ARCH_V8M_BASE, ARCH_V8M_MAIN, ARCH_V81M_MAIN = 16, 17, 21
+
+
+def elf_cpu_arch(elf) -> int | None:
+    """Tag_CPU_arch de la section .ARM.attributes (10 : v7, 13 : v7E-M, 17 : v8-M, 21 :
+    v8.1-M), None sans attributs."""
+    sec = elf.get_section_by_name(".ARM.attributes")
+    if sec is None:
+        return None
+    try:
+        for sub in sec.iter_subsections():
+            for ss in sub.iter_subsubsections():
+                for a in ss.iter_attributes():
+                    if a.tag == "TAG_CPU_ARCH":
+                        return int(a.value)
+    except Exception:  # noqa: BLE001 - attributs illisibles : architecture inconnue
+        return None
+    return None
+
+
+def is_thumb32(hw1: int) -> bool:
+    """Premier demi-mot d'une instruction Thumb de 32 bits (0b11101, 0b11110, 0b11111)."""
+    return (hw1 >> 11) in (0x1D, 0x1E, 0x1F)
+
+
+def _reg(n: int) -> str:
+    return ("sp", "lr", "pc")[n - 13] if n >= 13 else f"r{n}"
+
+
+def decode_v8m(addr: int, code: bytes) -> "Instr | None":
+    """Instructions ARMv8-M / v8.1-M que capstone 5 ne décode pas (ou mal) ; None sinon."""
+    if len(code) < 2:
+        return None
+    hw1 = int.from_bytes(code[:2], "little")
+    if not is_thumb32(hw1):
+        if hw1 & 0xFF87 == 0x4704:                      # BXNS Rm
+            rm = (hw1 >> 3) & 0xF
+            return Instr(addr, 2, INDIRECT, None, False, False, rm == 14, f"bxns {_reg(rm)}", "bxns")
+        if hw1 & 0xFF87 == 0x4784:                      # BLXNS Rm
+            rm = (hw1 >> 3) & 0xF
+            return Instr(addr, 2, INDIRECT, None, False, True, False, f"blxns {_reg(rm)}", "blxns")
+        return None
+    if len(code) < 4:
+        return None
+    hw2 = int.from_bytes(code[2:4], "little")
+    if hw1 == 0xE89F:                                   # CLRM {registres}
+        return Instr(addr, 4, NORMAL, None, False, False, False, f"clrm #{hw2:#06x}", "clrm")
+    if hw1 & 0xF800 != 0xF000 or hw2 & 0xD000 != 0xC000:
+        return None                                     # pas l'espace de BLX (imm) : LOB / BF
+    if hw1 & 0x0780:                                    # boff ≠ 0 : BF, BFX, BFL, BFLX, BFCSEL
+        return Instr(addr, 4, NORMAL, None, False, False, False,
+                     f".inst.w {hw1:#06x}{hw2:04x} (branch future)", "bf")
+    rn = hw1 & 0xF
+    imm = ((hw2 >> 1) & 0x3FF) << 2 | ((hw2 >> 11) & 1) << 1
+    if hw2 & 0xF001 == 0xC001:
+        if rn == 0xF:                                   # LE, LETP, LE sans LR (inconditionnel)
+            kind = (hw1 >> 4) & 0x3
+            op = ("le", "letp", "le", "le")[kind]
+            target = (addr + 4 - imm) & 0xFFFFFFFF
+            return Instr(addr, 4, DIRECT, target, kind != 2, False, False,
+                         f"{op} {'lr, ' if kind != 2 else ''}#{target:#x}", op)
+        tp = not hw1 & 0x40                             # WLSTP.<taille> / WLS
+        op = "wlstp" if tp else "wls"
+        target = (addr + 4 + imm) & 0xFFFFFFFF
+        return Instr(addr, 4, DIRECT, target, True, False, False, f"{op} lr, {_reg(rn)}, #{target:#x}", op)
+    if hw2 & 0xF001 == 0xE001:
+        if hw1 == 0xF00F:
+            return Instr(addr, 4, NORMAL, None, False, False, False, "lctp", "lctp")
+        op = "dls" if hw1 & 0x40 else "dlstp"
+        return Instr(addr, 4, NORMAL, None, False, False, False, f"{op} lr, {_reg(rn)}", op)
+    return Instr(addr, 4, NORMAL, None, False, False, False, f".inst.w {hw1:#06x}{hw2:04x}", "")
+
+
+
 class CodeImage:
     """Mémoire en lecture seule des segments PT_LOAD exécutables (et données) de l'ELF."""
 
@@ -57,10 +141,12 @@ class CodeImage:
             raise RuntimeError("le module capstone est requis : pip install capstone")
         self.path = elf_path
         self.segments: list[tuple[int, bytes]] = []
+        self.arch: int | None = None              # Tag_CPU_arch (v8-M : décodage complété)
         ends: dict[int, int] = {}                 # fonctions : début → fin (alias fusionnés)
         marks: list[tuple[int, str]] = []         # symboles de correspondance : t, a ou d
         with open(elf_path, "rb") as fh:
             elf = ELFFile(fh)
+            self.arch = elf_cpu_arch(elf)
             for seg in elf.iter_segments():
                 if seg["p_type"] == "PT_LOAD" and seg["p_filesz"]:
                     self.segments.append((seg["p_vaddr"], seg.data()))
@@ -75,7 +161,8 @@ class CodeImage:
         self._init_disasm(ends, marks)
 
     @classmethod
-    def from_segments(cls, segments: list[tuple[int, bytes]], name: str = "mémoire") -> "CodeImage":
+    def from_segments(cls, segments: list[tuple[int, bytes]], name: str = "mémoire",
+                      arch: int | None = None) -> "CodeImage":
         """Image faite de copies de la mémoire de la cible [(adresse, octets)] : décoder une
         trace quand l'ELF ne correspond pas au code exécuté (autre build flashé, code généré
         à l'exécution). Sans table des symboles, pas de balayage des blocs IT : chaque
@@ -85,12 +172,22 @@ class CodeImage:
             raise RuntimeError("le module capstone est requis : pip install capstone")
         img = cls.__new__(cls)
         img.path = name
+        img.arch = arch
         img.segments = sorted((base, bytes(data)) for base, data in segments)
         img._init_disasm({}, [])
         return img
 
+    @property
+    def v8m(self) -> bool:
+        """Image ARMv8-M (M23, M33, M55, M85) : SG, BXNS… (mode V8 de capstone) et décodage
+        complété (`decode_v8m`)."""
+        return self.arch is not None and self.arch >= ARCH_V8M_BASE
+
     def _init_disasm(self, ends: dict[int, int], marks: list[tuple[int, str]]) -> None:
-        self.cs = capstone.Cs(capstone.CS_ARCH_ARM, capstone.CS_MODE_THUMB | capstone.CS_MODE_MCLASS)
+        mode = capstone.CS_MODE_THUMB | capstone.CS_MODE_MCLASS
+        if self.v8m:
+            mode |= capstone.CS_MODE_V8
+        self.cs = capstone.Cs(capstone.CS_ARCH_ARM, mode)
         self.cs.detail = True
         self._cache: dict[int, Instr | None] = {}
         self._funcs = sorted(ends.items())
@@ -128,10 +225,27 @@ class CodeImage:
             if info is None:
                 code = self.read(addr, 4) or self.read(addr, 2)
                 if code is not None:
-                    for ins in self.cs.disasm(code, addr, 1):
-                        info = _classify(ins)
+                    info = self._decode(addr, code)
             self._cache[addr] = info
             return info
+
+    def _decode(self, addr: int, code: bytes) -> Instr | None:
+        """Une instruction hors bloc IT : en v8-M, `decode_v8m` d'abord (capstone 5 lit BXNS
+        comme BX et ignore les boucles à faible coût), puis capstone, puis la taille d'après
+        l'encodage ; en v7-M / v6-M, capstone seul (rien de changé)."""
+        if self.v8m:
+            info = decode_v8m(addr, code)
+            if info is not None:
+                return info
+        for ins in self.cs.disasm(code, addr, 1):
+            return _classify(ins)
+        if self.v8m:                     # Helium, CSEL… : instruction ordinaire
+            hw1 = int.from_bytes(code[:2], "little")
+            if is_thumb32(hw1) and len(code) >= 4:
+                text = f".inst.w {hw1:#06x}{int.from_bytes(code[2:4], 'little'):04x}"
+                return Instr(addr, 4, NORMAL, None, False, False, False, text, "")
+            return Instr(addr, 2, NORMAL, None, False, False, False, f".inst.n {hw1:#06x}", "")
+        return None
 
     def _sweep_function(self, addr: int) -> None:
         """Balaie une fois la fonction qui contient `addr` : condition réelle des
@@ -148,10 +262,19 @@ class CodeImage:
             if not code:
                 continue
             left = 0
-            for ins in self.cs.disasm(code, a):
-                if left:
-                    self._it[ins.address] = _classify(ins)
-                left = len(ins.mnemonic) - 1 if ins.id == cs_arm.ARM_INS_IT else max(0, left - 1)
+            off = 0
+            while off < len(code):
+                for ins in self.cs.disasm(code[off:], a + off):
+                    if left:
+                        self._it[ins.address] = _classify(ins)
+                    left = len(ins.mnemonic) - 1 if ins.id == cs_arm.ARM_INS_IT else max(0, left - 1)
+                    off = ins.address + ins.size - a
+                if off + 2 > len(code):
+                    break
+                # capstone s'arrête à la première instruction qu'il ne lit pas (v8.1-M, Helium)
+                hw1 = int.from_bytes(code[off:off + 2], "little")
+                off += 4 if is_thumb32(hw1) else 2
+                left = 0
 
     def _code_runs(self, start: int, end: int) -> list[tuple[int, int]]:
         """Plages de code de [start, end) : sans les zones de données (`$d` … `$t`)."""

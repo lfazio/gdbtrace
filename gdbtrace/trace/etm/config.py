@@ -75,6 +75,7 @@ BITS_PER_INSTRUCTION_V4 = 0.5        # ETMv4 : 0,24 à 0,48 mesuré sur les dém
 
 # filtre : ETMv4 (comparateurs d'adresse) et ETMv3 (comparateurs du DWT)
 TRCIDR4 = ETM_BASE + 0x1F0                # NUMACPAIRS [3:0]
+TRCIDR8 = ETM_BASE + 0x180                # MAXSPEC : profondeur de spéculation
 TRCACVR0 = ETM_BASE + 0x400               # TRCACVRn : 0x400 + 8n (64 bits)
 TRCACATR0 = ETM_BASE + 0x480              # TRCACATRn : 0x480 + 8n (0 : adresse d'instruction)
 VICTLR_SSSTATUS = 1 << 9
@@ -120,7 +121,8 @@ class EtmConfig:
     cycle_accurate: bool = False # cycles par instruction (analyse temporelle) ; ~8× plus de trace
     timestamps: bool = False
     stm32: bool = False          # activer les broches de trace via DBGMCU_CR
-    port: str = "parallel"       # "parallel" : port de trace ; "swo" : broche SWO, formatée
+    port: str = "parallel"       # "parallel" : port de trace ; "swo" : broche SWO, formatée ;
+                                 # "tmc" : TMC de la puce (ETR en RAM, STM32N6), sans TPIU
     cpu_hz: int = 0              # SWO : horloge du cœur (TRACECLKIN)
     swo_hz: int = 2_000_000      # SWO : débit visé
     manchester: bool = False     # SWO : codage Manchester au lieu de NRZ (UART)
@@ -151,8 +153,12 @@ class EtmConfig:
         return v
 
     def register_writes(self) -> list[RegWrite]:
-        if self.port not in ("parallel", "swo"):
-            raise ValueError("port de trace : parallel ou swo")
+        if self.port not in ("parallel", "swo", "tmc"):
+            raise ValueError("port de trace : parallel, swo ou tmc")
+        if self.port == "tmc":          # vers un TMC de la puce (ETR) : ni TPIU ni broches
+            if self.version != 4:
+                raise ValueError("trace vers l'ETR : ETMv4 seulement (Cortex-M55, M85…)")
+            return [RegWrite("DEMCR.TRCENA", DEMCR, 1 << 24, mask=1 << 24)] + self._etm4_writes()
         swo = self.port == "swo"
         if swo and self.cpu_hz <= 0:
             raise ValueError("ETM par SWO : préciser la fréquence du cœur (--cpu-hz)")
@@ -359,6 +365,8 @@ class EtmConfig:
 
     def _summary(self) -> str:
         arch = f"ETMv{self.version}"
+        if self.port == "tmc":
+            return f"ETM ({arch}) vers l'ETR : ID {self.trace_id}" + (", stall" if self.stall else "")
         if self.port == "swo":
             limit = swo_core_limit_hz(self.actual_swo_hz, self.version)
             warn = (f" ; cœur à {self.cpu_hz / 1e6:.0f} MHz > {limit / 1e6:.1f} MHz : la trace "

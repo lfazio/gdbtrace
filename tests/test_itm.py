@@ -40,6 +40,24 @@ STREAM = (
 )
 
 
+def test_page_change_beyond_implemented_ports_is_a_lost_byte():
+    """32 ports (Cortex-M3 à M55) : un octet perdu sur le SWO (horodatage tronqué) fait lire
+    ses octets suivants comme des en-têtes, parfois d'extension de page ; ignorés, sinon tous
+    les ports suivants seraient décalés de 32 (vu sur une Nucleo-N6 : « [63] » pour le 31)."""
+    lost = SYNC + b"\xc0\xa7" + b"\x17\xb0\x2c\x18\x34" + b"\x01A" + b"\xfb\x88\x89\x18\x34"
+    d = ItmDecoder()
+    ports = [p.port for p in d.feed(lost) if isinstance(p, Instrumentation)]
+    assert ports == [0, 31] and d.page == 0 and d.errors
+
+
+def test_sync_resets_the_port_page():
+    d = ItmDecoder(max_page=1)
+    d.feed(SYNC + b"\x18")
+    assert d.page == 1
+    pkts = d.feed(SYNC + b"\x01A")
+    assert pkts[-1] == Instrumentation(port=0, value=0x41, size=1, ts=0)
+
+
 def check_reference(pkts):
     assert isinstance(pkts[0], Sync)
     assert pkts[1] == Instrumentation(port=0, value=0x41, size=1, ts=0)
@@ -61,13 +79,13 @@ def check_reference(pkts):
 
 
 def test_reference_stream():
-    d = ItmDecoder()
+    d = ItmDecoder(max_page=1)          # un ITM à 64 ports (2 pages)
     check_reference(d.feed(STREAM))
     assert d.errors == 0 and d.synced and not d.buf
 
 
 def test_byte_by_byte_feeding():
-    d = ItmDecoder()
+    d = ItmDecoder(max_page=1)
     pkts = []
     for b in STREAM:
         pkts += d.feed(bytes([b]))
@@ -77,7 +95,7 @@ def test_byte_by_byte_feeding():
 def test_random_chunks():
     rnd = random.Random(1)
     for _ in range(50):
-        d, pkts, i = ItmDecoder(), [], 0
+        d, pkts, i = ItmDecoder(max_page=1), [], 0
         while i < len(STREAM):
             n = rnd.randint(1, 7)
             pkts += d.feed(STREAM[i:i + n])
@@ -147,7 +165,7 @@ def test_tpiu_roundtrip_streams_and_padding():
 
 
 def test_itm_through_tpiu():
-    d, itm = TpiuDeformatter(), ItmDecoder()
+    d, itm = TpiuDeformatter(), ItmDecoder(max_page=1)
     pkts = []
     for sid, chunk in d.feed(frame_bytes(1, STREAM)):
         assert sid == 1

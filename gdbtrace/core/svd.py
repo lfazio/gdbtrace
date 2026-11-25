@@ -225,7 +225,7 @@ def _parse_register(el: ET.Element, props: _Props, base_offset: int,
     for rname, i in _dim_names(el, name):
         regs.append(Register(rname, base_offset + offset + i * inc, p.size, p.access, p.reset,
                              _text(el, "description", ""), _text(el, "readAction"),
-                             copy.deepcopy(fields)))
+                             list(fields)))      # champs partagés : jamais modifiés après analyse
     return regs
 
 
@@ -256,6 +256,11 @@ def _parse_block(block: ET.Element, props: _Props, base_offset: int, prefix: str
     return regs
 
 
+#: éléments d'un périphérique dérivé qui ne touchent pas à ses registres
+_IDENTITY = {"name", "baseAddress", "description", "groupName", "interrupt", "addressBlock",
+             "alternatePeripheral", "prependToName", "appendToName", "headerStructName", "version"}
+
+
 def parse(source: str | bytes) -> Device:
     """`source` : chemin de fichier, ou contenu XML (str/bytes commençant par '<')."""
     if isinstance(source, bytes) or source.lstrip().startswith("<"):
@@ -268,24 +273,43 @@ def parse(source: str | bytes) -> Device:
     if periph_els is None:
         return dev
     by_name = {(_text(p, "name") or ""): p for p in periph_els.findall("peripheral")}
+    parsed: dict[str, list[Register]] = {}      # registres analysés, par périphérique source
+
+    def registers_of(el: ET.Element) -> list[Register]:
+        regs_el = el.find("registers")
+        regs = _parse_block(regs_el, dev_props.child(el), 0, "") if regs_el is not None else []
+        regs.sort(key=lambda r: r.offset)
+        return regs
+
     for pel in periph_els.findall("peripheral"):
         el = pel
-        if pel.get("derivedFrom") and pel.get("derivedFrom") in by_name:
-            el = copy.deepcopy(by_name[pel.get("derivedFrom")])
+        src_name = pel.get("derivedFrom")
+        src = by_name.get(src_name) if src_name else None
+        regs = None
+        if src is not None and src.find("dim") is None and all(c.tag in _IDENTITY for c in pel):
+            # dérivé qui ne change que son identité (doubles sécurisé / non sécurisé du N6…) :
+            # registres de la source, analysés une seule fois et partagés (jamais modifiés)
+            if src_name not in parsed:
+                parsed[src_name] = registers_of(src)
+            regs = parsed[src_name]
+            el = copy.copy(src)                 # copie de surface : enfants de pel en tête
+            el[:] = list(pel) + [c for c in src if pel.find(c.tag) is None]
+        elif src is not None:
+            el = copy.deepcopy(src)
             for child in pel:
                 old = el.find(child.tag)
                 if old is not None:
                     el.remove(old)
                 el.append(child)
-        props = dev_props.child(el)
+        if regs is None:
+            regs = registers_of(el)
+            if src_name is None:
+                parsed[_text(pel, "name") or ""] = regs
         base = parse_int(_text(el, "baseAddress"), 0)
-        regs_el = el.find("registers")
-        regs = _parse_block(regs_el, props, 0, "") if regs_el is not None else []
-        regs.sort(key=lambda r: r.offset)
         for pname, i in _dim_names(el, _text(el, "name", "?")):
             inc = parse_int(_text(el, "dimIncrement"), 0)
             dev.peripherals.append(Peripheral(pname, base + i * inc, _text(el, "description", ""),
-                                              _text(el, "groupName", ""), copy.deepcopy(regs)))
+                                              _text(el, "groupName", ""), list(regs)))
     dev.peripherals.sort(key=lambda p: p.base)
     return dev
 

@@ -386,6 +386,7 @@ class Session:
             self._stopped.set()
             if load if load is not None else target.needs_load:
                 self.load()
+                target.after_load(self)          # image en RAM : sp / pc à ses vecteurs
         self._reg_names = self.gdb.command("-data-list-register-names").get("register-names", [])
         self._emit("stopped", {"reason": "connected"})
 
@@ -433,7 +434,13 @@ class Session:
                 self.target.reset(self)
         res = self.gdb.command("-target-download", timeout=300)
         result = ProgramResult(elf, int(res.get("load-size", 0) or 0))
-        if verify:
+        if verify and getattr(self.target, "verify_by_read", False):
+            try:
+                result.mismatched = self.verify_by_read(elf)
+                result.verified = not result.mismatched
+            except GdbError as exc:
+                result.verify_error = str(exc)
+        elif verify:
             try:
                 out = self.cli("compare-sections")
             except GdbError as exc:              # serveur sans lecture/CRC : non vérifié
@@ -450,6 +457,27 @@ class Session:
         result.seconds = time.monotonic() - t0
         self._emit("stopped", {"reason": "programmed"})
         return result
+
+    def verify_by_read(self, elf: str) -> list[str]:
+        """Vérification par relecture (serveur dont le CRC de `compare-sections` n'est pas
+        fiable : ST-LINK_gdbserver sur un STM32N6) : chaque section chargée est relue à son
+        adresse de chargement et comparée à l'ELF ; retourne les sections différentes."""
+        from elftools.elf.elffile import ELFFile
+        bad = []
+        with open(elf, "rb") as fh:
+            e = ELFFile(fh)
+            segs = [g for g in e.iter_segments() if g["p_type"] == "PT_LOAD" and g["p_filesz"]]
+            for sec in e.iter_sections():
+                if sec["sh_type"] != "SHT_PROGBITS" or not sec["sh_flags"] & 0x2 or not sec["sh_size"]:
+                    continue                    # SHF_ALLOC, avec contenu
+                seg = next((g for g in segs if g["p_vaddr"] <= sec["sh_addr"]
+                            and sec["sh_addr"] + sec["sh_size"] <= g["p_vaddr"] + g["p_filesz"]), None)
+                if seg is None:
+                    continue
+                lma = seg["p_paddr"] + sec["sh_addr"] - seg["p_vaddr"]
+                if self.read_memory(lma, sec["sh_size"]) != sec.data():
+                    bad.append(sec.name)
+        return bad
 
     def monitor(self, cmd: str) -> str:
         """Commande `monitor` brute vers le serveur (OpenOCD : reset halt, flash...)."""

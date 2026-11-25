@@ -12,9 +12,10 @@ Comment installer, lancer et utiliser GdbTrace : interface, breakpoints, donnée
 6. [RTOS et threads](#6-rtos-et-threads)
 7. [Trace, profil et couverture](#7-trace-profil-et-couverture)
 8. [Sur une Nucleo-F746ZG](#8-sur-une-nucleo-f746zg)
-9. [Console et scripts Python](#9-console-et-scripts-python)
-10. [Référence des options](#10-référence-des-options)
-11. [Dépannage et limites](#11-dépannage-et-limites)
+9. [Sur une Nucleo-N657X0-Q (STM32N6)](#9-sur-une-nucleo-n657x0-q-stm32n6)
+10. [Console et scripts Python](#10-console-et-scripts-python)
+11. [Référence des options](#11-référence-des-options)
+12. [Dépannage et limites](#12-dépannage-et-limites)
 
 ---
 
@@ -34,6 +35,7 @@ Il couvre trois usages :
 | --- | --- | --- | --- |
 | Cortex-M sans matériel | QEMU (`mps2-an385` par défaut, `microbit` pour un M0+, `mps2-an500` pour un M7) | aucune (défaut) | GdbTrace lance QEMU et y charge l'ELF ; ETM ou MTB simulés possibles |
 | Carte avec sonde | OpenOCD, lancé par GdbTrace | `--openocd fichier.cfg` | flash, live, SWO, ETM réels |
+| Carte STM32 avec sonde ST-LINK | ST-LINK_gdbserver (STM32CubeIDE, STM32CubeCLT), lancé par GdbTrace | `--stlink [numéro de série]` | flash ou RAM (`--ram-boot`), live, SWO ; puces qu'OpenOCD ne connaît pas (STM32N6) |
 | Serveur déjà lancé | J-Link GDB Server, pyOCD, OpenOCD… | `--remote hôte:port` (+ `--tcl` pour OpenOCD) | GdbTrace s'y connecte |
 | Programme de l'hôte | gdb local | aucune : l'ELF est reconnu | pthreads, arguments avec `--args` |
 
@@ -51,6 +53,7 @@ L'extra `dev` installe pytest et capstone, nécessaire au décodage de la trace 
 | `gdb-multiarch` | tout : c'est le moteur de débogage |
 | `qemu-system-arm` | déboguer sans carte, ETM et MTB simulés |
 | `openocd` | sondes ST-Link, CMSIS-DAP… ; canal mémoire en marche ; capture SWO |
+| STM32CubeIDE ou STM32CubeCLT | `--stlink` : ST-LINK_gdbserver et le STM32CubeProgrammer dont il a besoin, cherchés dans le PATH puis sous `/opt/st` et `~/st` |
 | `arm-none-eabi-gcc` | compiler les firmwares d'exemple (`examples/`) |
 | `xvfb-run` | lancer les tests de l'interface sans écran |
 
@@ -68,6 +71,7 @@ GdbTrace se lance par `python -m gdbtrace`, suivi de l'ELF à déboguer puis des
 ```bash
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf                    # QEMU mps2-an385
 .venv/bin/python -m gdbtrace fw.elf --openocd board/st_nucleo_f7.cfg       # sonde, OpenOCD lancé par GdbTrace
+.venv/bin/python -m gdbtrace fw.elf --stlink                               # sonde ST-LINK, ST-LINK_gdbserver
 .venv/bin/python -m gdbtrace fw.elf --remote 127.0.0.1:2331                # serveur gdb déjà lancé
 .venv/bin/python -m gdbtrace fw.elf --remote 127.0.0.1:3333 --tcl 127.0.0.1:6666   # OpenOCD lancé à part
 .venv/bin/python -m gdbtrace examples/native/pthreads --args 100000       # programme de l'hôte
@@ -79,14 +83,17 @@ GdbTrace se lance par `python -m gdbtrace`, suivi de l'ELF à déboguer puis des
 | --- | --- | --- |
 | QEMU | `--qemu` (défaut), `--machine` pour une autre carte | lance QEMU, y charge l'ELF, ouvre le canal QMP pour lire la mémoire en marche |
 | Sonde avec OpenOCD | `--openocd f1.cfg f2.cfg…` | lance OpenOCD avec ces fichiers `-f`, flashe l'ELF (sauf `--no-load`), utilise son port TCL pour la mémoire en marche |
+| Sonde ST-LINK avec ST-LINK_gdbserver | `--stlink [SN]`, `--stlink-ap N`, `--ram-boot` | lance ST-LINK_gdbserver sur la sonde SN (à donner si plusieurs sondes sont branchées), sur le port d'accès N du cœur ; gdb passe par un relais de GdbTrace qui lit la mémoire en marche et fait le reset. `--ram-boot` : image exécutée en RAM (section 9) |
 | Serveur gdb déjà lancé | `--remote hôte:port` | s'y connecte ; ajouter `--tcl hôte:port` si c'est un OpenOCD, pour la mémoire en marche |
 | Programme de l'hôte | `--native` (implicite pour un ELF non ARM) | gdb l'exécute et l'arrête au début de `main` ; `--args` et `--cwd` règlent ses arguments et son répertoire |
 
-Les serveurs lancés par GdbTrace (QEMU, OpenOCD) s'arrêtent avec lui, même s'il est tué brutalement : aucun OpenOCD orphelin ne garde la sonde.
+Les serveurs lancés par GdbTrace (QEMU, OpenOCD, ST-LINK_gdbserver) s'arrêtent avec lui, même s'il est tué brutalement : aucun serveur orphelin ne garde la sonde.
 
 ### Programmer la cible
 
-**Fichier › Programmer un ELF…** (`Ctrl+O`) arrête la cible, la remet à zéro, écrit l'ELF (en flash avec une sonde, en RAM sous QEMU), le vérifie, puis refait un reset. La cible reste arrêtée au vecteur de reset ; symboles, vues et trace passent au nouveau programme.
+**Fichier › Programmer un ELF…** (`Ctrl+O`) arrête la cible, la remet à zéro, écrit l'ELF (en flash avec une sonde, en RAM sous QEMU ou avec `--ram-boot`), le vérifie, puis refait un reset. La cible reste arrêtée au vecteur de reset ; symboles, vues et trace passent au nouveau programme.
+
+La vérification compare les sections par CRC (`compare-sections`). Avec ST-LINK_gdbserver, elle relit les sections et les compare à l'ELF : le CRC de ce serveur est faux sur un STM32N6.
 
 - **Reprogrammer l'ELF courant** (`Ctrl+R`) : après une recompilation.
 - **ELF récents** : les 8 derniers.
@@ -129,7 +136,7 @@ La fenêtre principale range 19 vues en quatre zones à onglets, sous un menu, u
 
 - **Fichier** : Programmer un ELF… (`Ctrl+O`), Reprogrammer l'ELF courant (`Ctrl+R`), ELF récents, Exécuter un script…, Charger un SVD…, Enregistrer le layout, Déconnecter, Quitter.
 - **Run** : les commandes ci-dessus.
-- **Trace** : ETM par SWO…, Filtre de trace ETM…, Arrêter la capture.
+- **Trace** : ETM par SWO…, ETM par l'ETR (RAM, STM32N6), Filtre de trace ETM…, Arrêter la capture.
 - **Vues** : ouvre n'importe quelle vue dans une nouvelle fenêtre.
 
 ### Vues
@@ -192,7 +199,7 @@ Chaque ligne donne le numéro, le type, l'adresse, le nombre de passages (Hits),
 
 Dans le message, `{expression}` est remplacé par la valeur de l'expression C, et `{expression:hex}` par la même valeur dans un format (`hex`, `dec`, `oct`, `bin`, `ascii`). Exemple : `capteur n={counter} tick={tick:hex}` donne `capteur n=7 tick=0x7`.
 
-Un passage avec message est un arrêt interne : les vues ne se rafraîchissent pas et la bannière « Breakpoint N » de gdb est masquée. Chaque passage coûte un aller-retour avec la cible, de l'ordre de la milliseconde : sur une fonction appelée des milliers de fois par seconde, la cible ralentit d'autant. Un script peut aussi poser une action Python qui décide de l'arrêt (section 9 et [`docs/scripting.md`](scripting.md)).
+Un passage avec message est un arrêt interne : les vues ne se rafraîchissent pas et la bannière « Breakpoint N » de gdb est masquée. Chaque passage coûte un aller-retour avec la cible, de l'ordre de la milliseconde : sur une fonction appelée des milliers de fois par seconde, la cible ralentit d'autant. Un script peut aussi poser une action Python qui décide de l'arrêt (section 10 et [`docs/scripting.md`](scripting.md)).
 
 ### Go.Till
 
@@ -230,11 +237,11 @@ Cible arrêtée, toutes les données passent par gdb. Cible en marche, GdbTrace 
 ### Registres et Mémoire
 
 - **Registres** : les registres du cœur en hexadécimal et en décimal, avec le décodage de xPSR ; tous les autres sur demande. Les registres modifiés depuis l'arrêt précédent sont en rouge.
-- **Mémoire** : un dump hexadécimal et ASCII à partir d'une adresse ou d'un symbole. Pour un programme natif, la vue part de sa première variable globale.
+- **Mémoire** : un dump hexadécimal et ASCII à partir d'une adresse ou d'un symbole. Elle part de 0x20000000 (la SRAM d'un Cortex-M3/M4/M7). Pour un programme natif, ou un firmware dont la RAM est ailleurs (STM32N6), elle part de sa première variable globale.
 
 ### Périphériques
 
-La vue **Périphériques** décode les registres et leurs champs, avec leurs énumérations, d'après un fichier CMSIS-SVD (`--svd`, ou Fichier › Charger un SVD…).
+La vue **Périphériques** décode les registres et leurs champs, avec leurs énumérations, d'après un fichier CMSIS-SVD (`--svd`, ou Fichier › Charger un SVD…). Le fichier est lu en tâche de fond : celui d'un STM32N6 fait 22 Mo et demande environ une seconde, pendant laquelle l'interface reste utilisable.
 
 - Seuls les périphériques dépliés sont lus, par blocs de registres contigus ; les trous réservés ne sont jamais lus.
 - Les registres en écriture seule ou à lecture destructive (ex. le registre de données d'un UART) ne sont pas lus d'office ; clic droit › **Lire quand même**.
@@ -245,6 +252,7 @@ La vue **Périphériques** décode les registres et leurs champs, avec leurs én
 | Cible | Canal en marche |
 | --- | --- |
 | OpenOCD (`--openocd`, ou `--remote` + `--tcl`) | port TCL d'OpenOCD, lecture par l'AHB-AP sans arrêter le cœur |
+| ST-LINK_gdbserver (`--stlink`) | le relais de GdbTrace glisse ses lectures entre les paquets de gdb (environ 1 ms par lecture) |
 | QEMU | moniteur QMP |
 | Programme de l'hôte | `/proc/<pid>/mem` |
 | Autre serveur (`--remote` seul) | aucun : vues figées en marche, rafraîchies à l'arrêt |
@@ -314,10 +322,11 @@ QEMU n'émule ni l'ITM ni le SWO : sous QEMU, seuls le profil par lecture du PC,
 La capture vient de trois sources :
 
 - **OpenOCD** : `--swo-config --cpu-hz N` programme ITM, DWT et TPIU, configure le TPIU d'OpenOCD et se connecte à son port. Ajouter `--swo-hz` pour le débit et `--swo-port` pour le port TCP.
+- **ST-LINK_gdbserver** : `--stlink --swo-config --cpu-hz N` lance le serveur avec sa capture SWO, programme ITM, DWT et la sortie SWO de la puce, et se connecte au flux servi par le serveur.
 - **un serveur SWO en TCP** (Orbuculum, J-Link) : `--swo hôte:port`.
 - **un fichier** de capture brute : `--swo-file`, avec `--swo-formatter` si le formateur TPIU était actif.
 
-La vue **ITM** montre le texte UTF-8 de chaque port (port 0 par défaut), les autres ports en hexadécimal, avec filtre de ports et horodatage. Quand le décodage prend du retard sur le flux, le retard et les octets perdus sont affichés.
+La vue **ITM** montre le texte UTF-8 de chaque port (port 0 par défaut), les autres ports en hexadécimal, avec filtre de ports et horodatage. Quand le décodage prend du retard sur le flux, le retard et les octets perdus sont affichés. Un octet perdu sur le fil compte comme une erreur dans le bilan de la capture, sans décaler les ports.
 
 ### Profil
 
@@ -331,7 +340,7 @@ La vue **Variables tracées** suit la valeur d'une globale à chaque accès, cib
 
 - Lancement : dans la vue (cible arrêtée), ou `--var-trace counter`, `--var-trace offset:rw+pc`.
 - Un petit graphe par variable, chacun à sa propre échelle ; le survol donne les valeurs à un instant.
-- Limites : variables de 1, 2 ou 4 octets ; 4 comparateurs au plus sur un M3/M4/M7, partagés avec les watchpoints et le filtre ETMv3.
+- Limites : variables de 1, 2 ou 4 octets ; 4 comparateurs au plus sur un M3/M4/M7/M55, partagés avec les watchpoints et le filtre ETMv3. Sur un ARMv8-M (M33, M55), la variable doit être alignée sur sa taille ; GdbTrace reconnaît le DWT et le programme selon son format.
 
 ### Trace d'instructions ETM
 
@@ -340,11 +349,12 @@ La vue **Variables tracées** suit la valeur d'une globale à chaque accès, cib
 | ETM simulé | `--etm-sim` | QEMU : son journal d'exécution est converti en flux ETM à chaque arrêt |
 | Broche SWO | `--etm-config --etm-port swo --cpu-hz N`, ou **Trace › ETM par SWO…** | une sonde de débogage (ST-Link) avec OpenOCD ; faible débit |
 | Port de trace parallèle | `--etm-config [--etm-width 4] [--stm32]` puis `--trace hôte:port` | une sonde de trace et une carte qui sort TRACECLK et TRACED0-3 |
+| Tampon en RAM (ETR) | `--etm-config --etm-port etr`, ou **Trace › ETM par l'ETR** | STM32N6 : la puce écrit la trace en RAM, GdbTrace la lit à chaque arrêt (section 9) |
 | Fichier | `--trace-file` | rejouer une capture |
 
-GdbTrace lit la version de l'ETM sur la cible : ETMv3 pour un M3/M4, ETMv4 pour un M7. `--etm-stall` ralentit le cœur plutôt que de perdre de la trace quand la FIFO de l'ETM déborde ; il est indispensable par SWO sur un cœur rapide.
+GdbTrace lit la version de l'ETM sur la cible : ETMv3 pour un M3/M4, ETMv4 pour un M7 ou un M55. `--etm-stall` ralentit le cœur plutôt que de perdre de la trace quand la FIFO de l'ETM déborde ; il est indispensable par SWO sur un cœur rapide.
 
-**Filtre** (`--etm-filter`, `--etm-start`, `--etm-stop`, ou **Trace › Filtre de trace ETM…**) : ne tracer qu'une fonction, un fichier ou une plage d'adresses, ou démarrer et arrêter la trace sur un lieu. Le débit va alors à ce qui compte. Chaque reprise de la trace est marquée « trace interrompue ».
+**Filtre** (`--etm-filter`, `--etm-start`, `--etm-stop`, ou **Trace › Filtre de trace ETM…**) : ne tracer qu'une fonction, un fichier ou une plage d'adresses, ou démarrer et arrêter la trace sur un lieu. Le débit va alors à ce qui compte. Chaque reprise de la trace est marquée « trace interrompue ». Pas de filtre sur un Cortex-M55 : son ETM n'a pas de comparateurs d'adresse.
 
 La vue **Trace** montre :
 
@@ -415,7 +425,7 @@ Le débit du SWO limite la trace sans perte : environ 3,5 MHz de cœur tracé av
 tools/release_check.sh
 ```
 
-Ce script lance toute la suite, construit l'oracle OpenCSD s'il manque, et **exige** les cartes de test. Le test sur carte (`tests/test_board_f746.py`) :
+Ce script lance toute la suite, construit l'oracle OpenCSD s'il manque, et **exige** les cartes de test : la Nucleo-F746ZG et la Nucleo-N657X0-Q (section 9). Le test sur la F746 (`tests/test_board_f746.py`) :
 
 1. construit et flashe le firmware d'exemple ;
 2. lance GdbTrace par son vrai point d'entrée, interface comprise, avec SVD, ETM et ITM par SWO, et une variable tracée ;
@@ -426,7 +436,60 @@ La carte est trouvée seule (sonde ST-LINK dans `/sys`, puis identité de la puc
 
 Le test remplace le firmware de la carte, et la laisse sans ETM ni stall.
 
-## 9. Console et scripts Python
+## 9. Sur une Nucleo-N657X0-Q (STM32N6)
+
+La Nucleo-N657X0-Q porte un STM32N6 : un Cortex-M55 (ARMv8.1-M, Helium) sans flash interne, avec un STLINK-V3EC embarqué. OpenOCD 0.12 ne connaît pas cette puce : GdbTrace passe par ST-LINK_gdbserver. L'ETM y est tracé par l'ETR de la puce, qui l'écrit en RAM, et l'ITM par le SWO de la sonde.
+
+### Firmware d'exemple
+
+`examples/nucleo-n6` construit la même démo FreeRTOS pour cette carte :
+
+- port FreeRTOS ARM_CM55_NTZ (le cœur reste en état sécurisé) ;
+- cœur à 64 MHz, l'horloge HSI où le laisse la ROM de démarrage ;
+- image entière en AXISRAM2, à l'adresse d'un FSBL (0x34180400) ;
+- à chaque tick, des boucles à faible coût (WLS, DLS, LE) et du Helium (`lob.c`), pour que la trace en contienne ;
+- un tampon de 256 Ko pour l'ETR, réservé en AXISRAM1 (`__etr_buffer__`).
+
+```bash
+make -C examples/nucleo-n6
+```
+
+### Lancer GdbTrace sur la carte
+
+La carte doit être en démarrage de développement (cavalier JP2 en 2-3) : la ROM ne charge alors rien, et le débogueur pose l'image en RAM.
+
+```bash
+.venv/bin/python -m gdbtrace examples/nucleo-n6/nucleo-n6.elf --stlink --stlink-ap 1 --ram-boot \
+    --program --svd STM32N657.svd --cpu-hz 64000000 --swo-config \
+    --etm-config --etm-port etr --var-trace produced:write
+```
+
+- `--stlink-ap 1` : le cœur est derrière le port d'accès 1, pas le 0.
+- `--ram-boot` : chaque reset est un reset système ; la ROM tourne un instant, puis GdbTrace recharge l'image et pointe VTOR, sp et pc sur sa table des vecteurs (section `.isr_vector`, ou symbole `g_pfnVectors`, `__Vectors`, `vector_table`…). Couper l'alimentation efface l'image.
+- `--swo-config` : ITM par le SWO, capturé par la sonde et servi par ST-LINK_gdbserver. Le SWO de la N6 est cadencé par le cœur divisé par 8 : à 64 MHz, 2 Mbit/s.
+- `--etm-config --etm-port etr` : trace ETMv4.5 écrite par l'ETR dans le tampon du firmware (ou `--etr-buffer ADRESSE:TAILLE`). Dans l'interface, cible arrêtée : **Trace › ETM par l'ETR**.
+- Plusieurs sondes branchées : `--stlink <numéro de série>`.
+
+### Ce que donne la trace
+
+- À chaque arrêt, la trace de l'exécution qui vient de finir est lue puis décodée, en quelques secondes pour un tampon plein ; les vues Trace, Timing et Couverture se redessinent ensuite.
+- Le tampon est circulaire : 256 Ko gardent environ la dernière seconde et demie de la démo. Quand il a tourné, la trace commence par « trace interrompue », et les vues Trace et Couverture l'indiquent (« tampon plein : début de l'exécution perdu »).
+- Les boucles à faible coût et le Helium du M55 sont décodés.
+- Les durées de la vue Timing sont estimées : le modèle de cycles ne connaît pas les attentes de l'AXISRAM, sans cache dans la démo.
+
+### Test sur carte
+
+`tests/test_board_n6.py` fait comme sur la F746 :
+
+1. charge le firmware d'exemple en RAM ;
+2. lance l'interface, avec ITM par le SWO, ETM par l'ETR et une variable tracée ;
+3. relève et vérifie toutes les vues (`tests/artifacts/board-n6.json`).
+
+Il vérifie en plus le décodage des boucles LE : le nombre de tours relevé dans la trace doit suivre le firmware.
+
+La carte est trouvée seule : sonde ST-LINK dans `/sys`, puis identité de la puce lue par ST-LINK_gdbserver. `GDBTRACE_N6_SERIAL` impose la sonde.
+
+## 10. Console et scripts Python
 
 Tout ce que fait l'interface se pilote aussi en Python, par l'objet `gdbtrace`. La notice complète est à part : [`docs/scripting.md`](scripting.md).
 
@@ -453,7 +516,7 @@ Dans l'interface, **Fichier › Exécuter un script…** fait la même chose. Ex
 
 Un script peut ce que l'interface ne propose pas : une **action Python** sur un breakpoint, qui décide de l'arrêt (`gdbtrace.break_("animate", action=fonction)`), une campagne de tests en intégration continue, une injection de fautes, un journal CSV.
 
-## 10. Référence des options
+## 11. Référence des options
 
 `python -m gdbtrace [ELF] [options]`. L'ELF est facultatif avec l'interface : Fichier › Programmer un ELF… le choisit ensuite. `--help` liste les mêmes options.
 
@@ -464,6 +527,9 @@ Un script peut ce que l'interface ne propose pas : une **action Python** sur un 
 | `--qemu` | cible QEMU (défaut pour un ELF ARM) |
 | `--machine M` | machine QEMU (`mps2-an385` par défaut ; `microbit`, `mps2-an500`…) |
 | `--openocd CFG…` | lancer OpenOCD avec ces fichiers `-f` |
+| `--stlink [SN]` | lancer ST-LINK_gdbserver sur la sonde de numéro de série SN (à donner si plusieurs sondes sont branchées) |
+| `--stlink-ap N` | avec `--stlink` : port d'accès du cœur (STM32N6 : 1) |
+| `--ram-boot` | avec `--stlink` : image exécutée en RAM (reset système, chargement, sp et pc pris dans sa table des vecteurs) |
 | `--remote H:P` | serveur gdb déjà lancé |
 | `--tcl H:P` | avec `--remote` : port TCL d'un OpenOCD lancé à part (mémoire en marche) |
 | `--native` | programme de l'hôte (défaut pour un ELF non ARM) |
@@ -471,7 +537,7 @@ Un script peut ce que l'interface ne propose pas : une **action Python** sur un 
 | `--cwd DOSSIER` | programme de l'hôte : son répertoire de travail |
 | `--svd F` | description CMSIS-SVD des périphériques |
 | `--rtos [TYPE]` | avec `--openocd` : tâches RTOS vues comme threads gdb |
-| `--gdb GDB`, `--gdb-port P` | exécutable gdb, port du serveur gdb |
+| `--gdb GDB`, `--gdb-port P` | exécutable gdb, port du serveur gdb (avec `--stlink` : port du relais) |
 | `--no-load` | ne pas flasher l'ELF à la connexion |
 | `--layout F` | fichier de layout des fenêtres |
 
@@ -492,7 +558,7 @@ Un script peut ce que l'interface ne propose pas : une **action Python** sur un 
 | `--swo H:P` | capture SWO servie en TCP |
 | `--swo-file F` | rejouer une capture SWO brute |
 | `--swo-formatter` | flux SWO avec formateur TPIU |
-| `--swo-config` | programmer ITM, DWT et TPIU à la connexion (+ TPIU d'OpenOCD et capture) |
+| `--swo-config` | programmer ITM, DWT et TPIU (ou le SWO de la puce) à la connexion, et démarrer la capture (OpenOCD, ST-LINK_gdbserver) |
 | `--cpu-hz N`, `--swo-hz N`, `--swo-port P` | fréquence du cœur, débit SWO, port TCP du SWO d'OpenOCD |
 | `--var-trace EXPR[:ACCÈS]` | trace de données du DWT ; accès `write`, `read`, `rw`, suivi de `+pc` ; répétable |
 
@@ -502,8 +568,9 @@ Un script peut ce que l'interface ne propose pas : une **action Python** sur un 
 | --- | --- |
 | `--etm-sim` | QEMU : ETM simulé |
 | `--trace H:P`, `--trace-file F` | flux TPIU formaté en TCP, ou rejoué depuis un fichier |
-| `--etm-config` | programmer l'ETM et le TPIU à la connexion |
-| `--etm-port parallel\|swo` | sortie de l'ETM : port parallèle ou broche SWO |
+| `--etm-config` | programmer l'ETM et sa sortie (TPIU, ou ETR) à la connexion |
+| `--etm-port parallel\|swo\|etr` | sortie de l'ETM : port parallèle, broche SWO, ou tampon en RAM écrit par l'ETR (STM32N6) |
+| `--etr-buffer ADRESSE:TAILLE` | avec `--etm-port etr` : tampon de l'ETR (défaut : le symbole `__etr_buffer__` du firmware) |
 | `--etm-width 1\|2\|4` | largeur du port parallèle |
 | `--etm-stall` | ralentir le cœur plutôt que perdre de la trace |
 | `--etm-cycle-accurate` | durées mesurées (environ 8 fois plus de trace) |
@@ -523,7 +590,7 @@ Un script peut ce que l'interface ne propose pas : une **action Python** sur un 
 | `--coverage F` | en batch : écrire la couverture à la fin (`.html`, `.info`, `.json`) ; répétable |
 | `--coverage-merge F.json` | ajouter une couverture enregistrée ; répétable |
 
-## 11. Dépannage et limites
+## 12. Dépannage et limites
 
 Quand une capture ne démarre pas, GdbTrace le dit : le journal de mise en route s'affiche dans la console, et les vues ITM, Trace et Couverture donnent la cause. Commencer par là.
 
@@ -541,13 +608,21 @@ Quand une capture ne démarre pas, GdbTrace le dit : le journal de mise en route
 | La connexion échoue sur un firmware qui ne dort jamais | connexion à chaud difficile | connexion sous reset (défaut de `configs/nucleo-f746zg.cfg`) |
 | Plusieurs sondes, la mauvaise est prise | OpenOCD prend la première | `STLINK_SERIAL=<numéro>` |
 | Breakpoint refusé en flash | le serveur ne sait pas écrire en flash | cocher **Matériel** |
+| « ST-LINK_gdbserver introuvable » | ni STM32CubeIDE ni STM32CubeCLT sous `/opt/st` ou `~/st` | installer l'un des deux, ou mettre `ST-LINK_gdbserver` dans le PATH |
+| STM32N6 : le programme ne démarre pas, ou la connexion échoue | cavalier de démarrage, ou mauvais port d'accès | JP2 en 2-3 (démarrage de développement), `--stlink-ap 1 --ram-boot` |
+| « tampon de l'ETR » refusé | le firmware ne réserve pas de tampon | un tableau `__etr_buffer__` aligné sur 4 Ko, ou `--etr-buffer ADRESSE:TAILLE` |
+| « ST-LINK_gdbserver lancé sans SWO » | `--swo-config` absent au lancement : le serveur n'a pas démarré sa capture | relancer GdbTrace avec `--swo-config` (et `--cpu-hz`) |
 | Go.Till refusé | la condition porte sur un registre ou une valeur sans adresse | Step.Till |
 
 ### Limites connues
 
-- **Validé sur carte** : Nucleo-F746ZG (Cortex-M7) — ETMv4 et ITM par SWO, trace de données du DWT, profil par SWO, vues RTOS et temps des tâches.
+- **Validé sur carte** :
+  - Nucleo-F746ZG (Cortex-M7, OpenOCD) : ETMv4 et ITM par SWO, trace de données du DWT, profil par SWO, vues RTOS et temps des tâches ;
+  - Nucleo-N657X0-Q (Cortex-M55, ST-LINK_gdbserver) : vues en marche par le relais, image en RAM, ITM par le SWO de la sonde, ETMv4.5 par l'ETR (boucles à faible coût comprises), trace de données du DWT de l'ARMv8-M, vues RTOS et temps des tâches.
 - **Pas encore validé sur carte** : port de trace parallèle, ETMv3 matériel (M3/M4), MTB d'un vrai M0+, `--rtos` d'OpenOCD, lecture de `DWT_PCSR` par OpenOCD.
-- **ETMv4** : Cortex-M7 seulement, sans cycle-accurate ni horodatage ; les ARMv8-M (M33, M55) ne sont pas pris en charge.
+- **ETMv4** : Cortex-M7 (par SWO) et Cortex-M55 (par l'ETR d'un STM32N6), sans cycle-accurate ni horodatage. Sur le M55, pas de filtre ETM, et la branche d'une instruction « branch future » (BF, BFL…) n'est pas suivie ; les compilateurs n'en émettent pas.
+- **ETR** : lu seulement à l'arrêt ; un tampon plein ne garde que la fin de l'exécution.
+- **SWO d'un STLINK-V3EC (N6)** : un octet perdu de temps en temps à 2 Mbit/s, compté comme une erreur ITM.
 - **Filtre ETMv3** : deux plages au plus, chacune agrandie en bloc aligné de 2^n octets.
 - **ETM simulé** : QEMU ne dit pas si une instruction conditionnelle d'un bloc IT (hors branchement) a été exécutée ; elle est comptée exécutée. Les branchements conditionnels sont exacts.
 - **Durées** : sans cycle-accurate, ce sont des estimations par un modèle de cycles, sans attentes mémoire.

@@ -7,7 +7,10 @@ l'instruction qui a fait l'accès), horodaté si l'horodatage ITM est actif. Ces
 voyagent par le SWO ou le port de trace, avec le reste de l'ITM.
 
 DWT_FUNCTIONn (ARMv7-M) : 0xD données en écriture, 0xC en lecture, 0x2 les deux ; 0xF, 0xE,
-0x3 ajoutent le PC. DWT_MASKn couvre la variable (2^MASK octets alignés). Il faut
+0x3 ajoutent le PC. DWT_MASKn couvre la variable (2^MASK octets alignés). ARMv8-M (M33, M55 ;
+DWT_DEVARCH = 0x1A02) : plus de MASK, FUNCTION = MATCH (13 « adresse avec valeur » en
+écriture, 14 en lecture, 12 les deux) | ACTION (2 : valeur ; 3 : valeur et PC) << 4 |
+DATAVSIZE (taille de la variable) << 10 ; mêmes paquets ITM. Il faut
 DEMCR.TRCENA et ITM_TCR.DWTENA (programmés par la configuration SWO), et que la variable soit
 globale ou statique (une adresse fixe). Les comparateurs sont partagés avec le filtre de
 l'ETMv3 et les watchpoints de gdb : `TraceManager` les répartit.
@@ -27,7 +30,18 @@ DWT_CTRL = 0xE0001000
 DWT_COMP0 = 0xE0001020              # DWT_COMPn : 0x20 + 16n ; MASK +4 ; FUNCTION +8
 FUNCTION = {("write", False): 0xD, ("read", False): 0xC, ("rw", False): 0x2,
             ("write", True): 0xF, ("read", True): 0xE, ("rw", True): 0x3}
+#: ARMv8-M : MATCH « adresse de donnée avec valeur » selon l'accès
+MATCH_V8 = {"write": 13, "read": 14, "rw": 12}
+DWT_DEVARCH = 0xE0001FBC
 MAX_SAMPLES = 100_000
+
+
+def dwt_is_v8m(read_u32) -> bool:
+    """DWT de l'ARMv8-M (DWT_DEVARCH.ARCHID = 0x1A02 ; absent, lu à 0, en ARMv7-M)."""
+    try:
+        return read_u32(DWT_DEVARCH) & 0xFFFF == 0x1A02
+    except Exception:  # noqa: BLE001
+        return False
 
 
 @dataclass
@@ -165,10 +179,19 @@ def variable_layout(session, expr: str) -> tuple[int, int, LeafLayout]:
     return addr, size, layout
 
 
-def comparator_writes(var: TracedVar) -> list[tuple[str, int, int]]:
-    """[(nom, adresse, valeur)] : programmation du comparateur de `var`."""
+def comparator_writes(var: TracedVar, v8m: bool = False) -> list[tuple[str, int, int]]:
+    """[(nom, adresse, valeur)] : programmation du comparateur de `var` (`v8m` : DWT de
+    l'ARMv8-M)."""
     base = DWT_COMP0 + 16 * var.comparator
     n = var.comparator
+    if v8m:
+        if var.addr % var.size:
+            raise ValueError(f"« {var.expr} » : adresse {var.addr:#x} non alignée sur sa taille, "
+                             "le DWT de l'ARMv8-M ne la couvre pas")
+        function = MATCH_V8[var.access] | (3 if var.pc else 2) << 4 | {1: 0, 2: 1, 4: 2}[var.size] << 10
+        return [(f"DWT_FUNCTION{n}.off", base + 8, 0),
+                (f"DWT_COMP{n} ({var.expr})", base, var.addr),
+                (f"DWT_FUNCTION{n}", base + 8, function)]
     return [(f"DWT_FUNCTION{n}.off", base + 8, 0),
             (f"DWT_COMP{n} ({var.expr})", base, var.addr),
             (f"DWT_MASK{n}", base + 4, mask_for(var.addr, var.size)),

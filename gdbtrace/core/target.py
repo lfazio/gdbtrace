@@ -116,6 +116,10 @@ class TargetServer:
         """Canal mémoire utilisable cible en marche, ou None si le serveur n'en offre pas."""
         return None
 
+    def after_load(self, session) -> None:
+        """Après l'écriture de l'ELF à la connexion (`load`) : rien par défaut (flash : le
+        reset suivant démarre l'image ; QEMU l'a chargée lui-même)."""
+
     @property
     def remote(self) -> str:
         return f"{self.host}:{self.gdb_port}"
@@ -276,6 +280,197 @@ class OpenOcdTarget(TargetServer):
 
     def live_memory(self) -> LiveMemory | None:
         return OpenOcdTcl(self.host, self.tcl_port)
+
+
+def _latest(patterns: list[str]) -> str | None:
+    """Chemin le plus récent (ordre des noms de version) parmi les motifs glob."""
+    import glob
+    found = sorted({p for pat in patterns for p in glob.glob(os.path.expanduser(pat))})
+    return found[-1] if found else None
+
+
+def find_stlink_gdbserver() -> str | None:
+    """ST-LINK_gdbserver : PATH, puis STM32CubeIDE et STM32CubeCLT (installations Linux)."""
+    return shutil.which("ST-LINK_gdbserver") or _latest([
+        f"{root}/stm32cubeide*/plugins/*stlink-gdb-server*/tools/bin/ST-LINK_gdbserver"
+        for root in ("/opt/st", "~/st")] + [
+        f"{root}/stm32cubeclt*/STLink-gdb-server/bin/ST-LINK_gdbserver"
+        for root in ("/opt/st", "~/st")])
+
+
+def find_cubeprogrammer() -> str | None:
+    """Dossier `bin` de STM32CubeProgrammer, dont ST-LINK_gdbserver se sert (-cp)."""
+    found = _latest([
+        f"{root}/stm32cubeide*/plugins/*cubeprogrammer*/tools/bin/STM32_Programmer_CLI"
+        for root in ("/opt/st", "~/st")] + [
+        f"{root}/stm32cubeclt*/STM32CubeProgrammer/bin/STM32_Programmer_CLI"
+        for root in ("/opt/st", "~/st")] + [
+        "~/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin/STM32_Programmer_CLI"])
+    if found:
+        return os.path.dirname(found)
+    cli = shutil.which("STM32_Programmer_CLI")
+    return os.path.dirname(os.path.realpath(cli)) if cli else None
+
+
+#: sections et symboles usuels de la table des vecteurs (CMSIS, STM32Cube, exemples GdbTrace)
+VECTOR_SECTIONS = (".isr_vector", ".vectors", ".intvec", ".vector_table")
+VECTOR_SYMBOLS = ("g_pfnVectors", "__Vectors", "__isr_vector", "__vector_table", "vector_table",
+                  "_vectors")
+
+
+def vector_table_address(elf: str) -> int | None:
+    """Adresse de la table des vecteurs de l'ELF (section, sinon symbole), None si inconnue."""
+    from elftools.elf.elffile import ELFFile
+    with open(elf, "rb") as fh:
+        e = ELFFile(fh)
+        for name in VECTOR_SECTIONS:
+            sec = e.get_section_by_name(name)
+            if sec is not None and sec["sh_size"]:
+                return sec["sh_addr"]
+        symtab = e.get_section_by_name(".symtab")
+        if symtab is not None:
+            for name in VECTOR_SYMBOLS:
+                syms = symtab.get_symbol_by_name(name)
+                if syms:
+                    return syms[0]["st_value"]
+    return None
+
+
+@dataclass
+class StLinkTarget(TargetServer):
+    """ST-LINK_gdbserver (STM32CubeIDE, STM32CubeCLT), derrière un relais RSP
+    (`core/rsp_relay.py`) : gdb se connecte au relais (`gdb_port`), qui parle au serveur
+    (`server_port`). Le relais donne la mémoire en direct (le serveur n'a pas de port TCL) et
+    le reset système.
+
+    `apid` : port d'accès du cœur (-m ; STM32N6 : 1, le cœur n'est pas sur l'AP 0).
+    `ram_boot` : l'image s'exécute en RAM, chargée par le débogueur (STM32N6 en démarrage de
+    développement, sans flash interne) : reset système, la ROM de démarrage tourne un instant,
+    puis chargement, et sp / pc / VTOR pris dans la table des vecteurs de l'ELF — ce que fait
+    l'IDE, et que la ROM ne fait pas. Sinon (flash), le reset arrête le cœur au vecteur de
+    reset (DEMCR.VC_CORERESET)."""
+    server: str = ""
+    programmer: str = ""
+    serial: str | None = None
+    apid: int = 0
+    ram_boot: bool = False
+    server_port: int = 0
+    #: SWO capturé par la sonde et servi en TCP par le serveur (-z ; 0 : pas de SWO)
+    swo_port: int = 0
+    cpu_hz: int = 0
+    swo_hz: int = 2_000_000
+    relay: "object | None" = field(default=None, repr=False)
+    #: le CRC du serveur (`compare-sections`, qCRC) est faux sur un STM32N6 alors que la
+    #: mémoire est juste : la programmation se vérifie en relisant les sections
+    verify_by_read = True
+
+    def ports(self) -> list[int]:
+        return [self.gdb_port, self.server_port, self.swo_port]
+
+    @property
+    def swo_div(self) -> int:
+        """Diviseur donné au serveur (-b) : la sonde attend cpu_hz / swo_div bit/s."""
+        return max(1, round(self.cpu_hz / self.swo_hz)) if self.cpu_hz else 1
+
+    @property
+    def swo_baud(self) -> int:
+        return round(self.cpu_hz / self.swo_div) if self.cpu_hz else 0
+
+    def command_line(self) -> list[str]:
+        server = self.server or find_stlink_gdbserver()
+        if not server:
+            raise FileNotFoundError("ST-LINK_gdbserver introuvable (PATH, STM32CubeIDE ou "
+                                    "STM32CubeCLT sous /opt/st ou ~/st)")
+        programmer = self.programmer or find_cubeprogrammer()
+        if not programmer:
+            raise FileNotFoundError("STM32CubeProgrammer introuvable : ST-LINK_gdbserver en a "
+                                    "besoin (-cp)")
+        # -e : persistant (le relais se reconnecte après un reset système) ; -g : sans reset
+        # à la connexion (gdb arrête le cœur, la ROM d'une N6 refuse un arrêt au démarrage)
+        cmd = [server, "-p", str(self.server_port), "-l", "1", "-d", "-e", "-g",
+               "-m", str(self.apid), "-cp", programmer]
+        if self.serial:
+            cmd += ["-i", self.serial]
+        if self.swo_port:
+            cmd += ["-z", str(self.swo_port), "-a", str(self.cpu_hz), "-b", str(self.swo_div)]
+        return cmd
+
+    def start(self, timeout: float = 15.0) -> None:
+        from .rsp_relay import RspRelay
+        if not self.server_port:
+            self.server_port = free_port()
+        cmd = self.command_line()
+        self._check_ports()
+        self.log.clear()
+        ready = threading.Event()
+        self.proc = _spawn(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           preexec_fn=_die_with_parent)
+
+        def drain() -> None:
+            for line in self.proc.stdout:
+                text = line.decode(errors="replace").rstrip()
+                self.log.append(text)
+                if "Waiting for debugger connection" in text:
+                    ready.set()
+            ready.set()
+        threading.Thread(target=drain, name="stlink-stdout", daemon=True).start()
+        # pas de sondage du port : une connexion arrête le cœur (le serveur la prend pour gdb)
+        deadline = time.monotonic() + timeout
+        while not ready.wait(0.1):
+            if time.monotonic() > deadline:
+                break
+        if self.proc.poll() is not None or not any("Waiting for debugger" in ln for ln in self.log):
+            err = "\n".join(list(self.log)[-30:])
+            self.stop()
+            raise RuntimeError(f"échec du démarrage de ST-LINK_gdbserver : {err}")
+        self.relay = RspRelay((self.host, self.server_port), self.host, self.gdb_port,
+                              log=self.log.append)
+        self.gdb_port = self.relay.port
+        self.relay.start()
+
+    def stop(self) -> None:
+        if self.relay is not None:
+            self.relay.close()
+            self.relay = None
+        super().stop()
+
+    def live_memory(self) -> LiveMemory | None:
+        from .rsp_relay import RelayMemory
+        return RelayMemory(self.relay) if self.relay is not None else None
+
+    def reset(self, session) -> None:
+        relay = self.relay
+        catch = not self.ram_boot
+        if catch:                               # flash : arrêt au vecteur de reset
+            demcr = session.read_u32(DEMCR_ADDR)
+            session.write_u32(DEMCR_ADDR, demcr | DEMCR_VC_CORERESET)
+        relay.reset_system(settle=0.4 if self.ram_boot else 0.05)
+        session.cli("flushregs")
+        if catch:
+            session.write_u32(DEMCR_ADDR, session.read_u32(DEMCR_ADDR) & ~DEMCR_VC_CORERESET)
+        elif session.elf:
+            session.load()
+            self.after_load(session)
+
+    def after_load(self, session) -> None:
+        """Image en RAM : la démarrer à sa table des vecteurs (VTOR, sp, pc, xPSR mode
+        Thread) ; le cœur reste arrêté."""
+        if not self.ram_boot or not session.elf:
+            return
+        vt = vector_table_address(session.elf)
+        if vt is None:
+            raise RuntimeError("image en RAM : table des vecteurs introuvable dans l'ELF "
+                               f"(sections {', '.join(VECTOR_SECTIONS)} ou symboles "
+                               f"{', '.join(VECTOR_SYMBOLS[:3])}…)")
+        session.write_u32(0xE000ED08, vt)
+        session.write_register("sp", session.read_u32(vt))
+        session.write_register("pc", session.read_u32(vt + 4) & ~1)
+        session.write_register("xpsr", 0x01000000)
+        session.cli("flushregs")
+
+
+DEMCR_ADDR = 0xE000EDFC
+DEMCR_VC_CORERESET = 1 << 0
 
 
 @dataclass

@@ -12,3 +12,4 @@ gdbtrace-layout.json
 examples/native/pthreads
 tests/artifacts/
 examples/nucleo-f746/nucleo-f746.elf
+examples/nucleo-n6/nucleo-n6.elf

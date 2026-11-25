@@ -1,5 +1,5 @@
-"""Point d'entrée : python -m gdbtrace firmware.elf [--qemu | --openocd CFG... | --remote HOST:PORT
-| --native].
+"""Point d'entrée : python -m gdbtrace firmware.elf [--qemu | --openocd CFG... | --stlink [SN]
+| --remote HOST:PORT | --native].
 
 Programme natif (`--native`, ou automatiquement pour un ELF qui n'est pas ARM) : exécuté sous
 gdb lui-même, arrêté au début de `main` ; `--args` lui passe ses arguments.
@@ -15,7 +15,7 @@ import os
 import shlex
 import sys
 
-from .core.target import NativeTarget, OpenOcdTarget, QemuTarget, RemoteTarget, free_port
+from .core.target import NativeTarget, OpenOcdTarget, QemuTarget, RemoteTarget, StLinkTarget, free_port
 
 
 def is_native_elf(elf: str) -> bool:
@@ -29,7 +29,7 @@ def is_native_elf(elf: str) -> bool:
 
 
 def build_target(args, elf: str) -> object:
-    explicit = args.qemu or args.openocd is not None or args.remote
+    explicit = args.qemu or args.openocd is not None or args.remote or args.stlink is not None
     if args.native or (not explicit and is_native_elf(elf)):
         return NativeTarget(args=shlex.split(args.args or ""),
                             cwd=os.path.abspath(args.cwd) if args.cwd else None)
@@ -40,6 +40,11 @@ def build_target(args, elf: str) -> object:
             thost, _, tport = args.tcl.rpartition(":")
             t.tcl_host, t.tcl_port = thost or t.host, int(tport)
         return t
+    if args.stlink is not None:
+        swo = bool(args.swo_config or args.var_trace)       # SWO servi par la sonde (-z)
+        return StLinkTarget(serial=args.stlink or None, apid=args.stlink_ap, ram_boot=args.ram_boot,
+                            gdb_port=args.gdb_port or 0, swo_port=free_port() if swo else 0,
+                            cpu_hz=args.cpu_hz, swo_hz=args.swo_hz)
     if args.openocd is not None:
         return OpenOcdTarget(configs=args.openocd or ["board/st_nucleo_f4.cfg"],
                              gdb_port=args.gdb_port or 3333, rtos=args.rtos)
@@ -104,7 +109,10 @@ def setup_trace(args, trace, session, target, log=print) -> None:
         elif args.swo_file:
             trace.start_file(args.swo_file, args.swo_formatter)
             log(f"capture SWO rejouée : {args.swo_file}")
-        if args.etm_config:
+        if args.etm_config and args.etm_port == "etr":    # ETM écrit en RAM par l'ETR (STM32N6)
+            for line in trace.start_etm_tmc(session, etr_buffer(args), stall=args.etm_stall):
+                log(line)
+        elif args.etm_config:
             from .trace.etm.config import EtmConfig
             cfg = EtmConfig(port_width=args.etm_width, stm32=args.stm32, stall=args.etm_stall,
                             cycle_accurate=args.etm_cycle_accurate)
@@ -126,6 +134,14 @@ def setup_trace(args, trace, session, target, log=print) -> None:
         trace.start_file(args.trace_file, formatter=True)
         log(f"capture de trace rejouée : {args.trace_file}")
 
+
+
+def etr_buffer(args) -> tuple[int, int] | None:
+    """--etr-buffer ADRESSE:TAILLE, sinon None (tampon réservé par le firmware)."""
+    if not args.etr_buffer:
+        return None
+    addr, _, size = args.etr_buffer.partition(":")
+    return int(addr, 0), int(size, 0)
 
 
 def setup_mtb(args, trace, session, log=print) -> None:
@@ -156,6 +172,10 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--qemu", action="store_true", help="cible QEMU (défaut)")
     g.add_argument("--openocd", nargs="*", metavar="CFG",
                    help="lancer OpenOCD avec ces fichiers -f (ex. board/st_nucleo_f4.cfg)")
+    g.add_argument("--stlink", nargs="?", const="", metavar="SN",
+                   help="ST-LINK_gdbserver (STM32CubeIDE / CubeCLT), sonde de numéro de série SN "
+                        "(à donner si plusieurs sondes sont branchées) ; mémoire en direct par "
+                        "un relais RSP")
     g.add_argument("--remote", metavar="HOST:PORT", help="serveur gdb déjà lancé (J-Link, pyOCD...)")
     g.add_argument("--native", action="store_true",
                    help="programme natif (hôte) exécuté sous gdb, arrêté au début de main "
@@ -164,6 +184,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cwd", metavar="DOSSIER", help="programme natif : son répertoire de travail")
     p.add_argument("--tcl", metavar="HOST:PORT",
                    help="avec --remote : port TCL d'un OpenOCD lancé à part (mémoire en direct)")
+    p.add_argument("--stlink-ap", type=int, default=0, metavar="N",
+                   help="avec --stlink : port d'accès du cœur (STM32N6 : 1)")
+    p.add_argument("--ram-boot", action="store_true",
+                   help="avec --stlink : image exécutée en RAM (STM32N6, démarrage de développement) : "
+                        "reset système, chargement, sp / pc pris dans sa table des vecteurs")
     p.add_argument("--svd", metavar="FICHIER", help="description CMSIS-SVD des périphériques")
     p.add_argument("--rtos", nargs="?", const="auto", metavar="TYPE",
                    help="avec --openocd : support RTOS d'OpenOCD (tâches vues comme threads gdb)")
@@ -191,10 +216,14 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--etm-cycle-accurate", action="store_true",
                    help="trace ETM cycle-accurate (durées mesurées pour l'analyse temporelle, ~8× plus de trace)")
     e.add_argument("--etm-width", type=int, default=4, choices=(1, 2, 4), help="largeur du port de trace")
-    e.add_argument("--etm-port", choices=("parallel", "swo"), default="parallel",
-                   help="sortie de l'ETM : port de trace parallèle (sonde de trace) ou broche SWO "
+    e.add_argument("--etm-port", choices=("parallel", "swo", "etr"), default="parallel",
+                   help="sortie de l'ETM : port de trace parallèle (sonde de trace), broche SWO "
                         "(formateur TPIU, capturée par la sonde de débogage via OpenOCD ; "
-                        "faible débit, voir --cpu-hz / --swo-hz)")
+                        "faible débit, voir --cpu-hz / --swo-hz) ou ETR (tampon en RAM écrit par "
+                        "la puce, lu à chaque arrêt ; STM32N6)")
+    e.add_argument("--etr-buffer", metavar="ADRESSE:TAILLE",
+                   help="avec --etm-port etr : tampon de l'ETR en RAM ; par défaut le symbole "
+                        "__etr_buffer__ du firmware")
     e.add_argument("--etm-stall", action="store_true",
                    help="ralentir le cœur plutôt que perdre de la trace quand la FIFO de l'ETM se "
                         "remplit (indispensable par SWO sur un cœur rapide)")
@@ -253,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
             p.error("deux ELF différents : l'ELF de la ligne de commande et celui de --program")
         args.elf = args.program
     if not args.etm_config:              # options de programmation de l'ETM : sinon ignorées
-        stray = [opt for opt, on in (("--etm-port swo", args.etm_port == "swo"),
+        stray = [opt for opt, on in ((f"--etm-port {args.etm_port}", args.etm_port != "parallel"),
                                      ("--etm-stall", args.etm_stall), ("--stm32", args.stm32),
                                      ("--etm-width", args.etm_width != 4)) if on]
         if stray:
@@ -267,12 +296,16 @@ def main(argv: list[str] | None = None) -> int:
                                or args.trace_file or (args.etm_config and args.etm_port == "swo")):
         p.error("--var-trace : avec une capture SWO ou de trace (--swo-config, --swo, --swo-file, "
                 "--etm-config --etm-port swo, --trace)")
-    etm_swo = args.etm_config and args.etm_port == "swo"
+    etm_swo = args.etm_config and args.etm_port in ("swo", "etr")
     swo_etm = (args.swo or args.swo_file) and args.swo_formatter     # flux formaté : ETM ID 2
     if args.coverage and not (args.etm_sim or args.trace or args.trace_file or args.coverage_merge
                               or etm_swo or swo_etm or args.mtb is not None or args.mtb_sim is not None):
         p.error("--coverage : pas de trace d'instructions (--etm-sim / --mtb-sim sous QEMU ; "
-                "--etm-config --etm-port swo, --trace / --trace-file ou --mtb sur matériel)")
+                "--etm-config --etm-port swo ou etr, --trace / --trace-file ou --mtb sur matériel)")
+    if args.etr_buffer and not (args.etm_config and args.etm_port == "etr"):
+        p.error("--etr-buffer : avec --etm-config --etm-port etr")
+    if (args.stlink_ap or args.ram_boot) and args.stlink is None:
+        p.error("--stlink-ap / --ram-boot : avec --stlink")
     if args.mtb_autohalt and args.mtb is None and args.mtb_sim is None:
         p.error("--mtb-autohalt : avec --mtb (cible) ou --mtb-sim (QEMU)")
     program = args.program is not None
@@ -356,7 +389,7 @@ def main(argv: list[str] | None = None) -> int:
     # valeurs initiales de Trace › ETM par SWO…
     app.swo_hz, app.swo_port, app.etm_stall, app.stm32 = args.swo_hz, args.swo_port, args.etm_stall, args.stm32
     if args.svd:
-        app.safe(app.load_svd, args.svd)
+        app.safe(lambda: app.load_svd(args.svd, background=True))
 
     def after_connect(_res=None) -> None:
         # journal de la mise en route de la trace dans la console (pas sur le terminal)

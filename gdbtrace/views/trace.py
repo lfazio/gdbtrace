@@ -166,7 +166,7 @@ class TraceView(View):
                 continue
             if isinstance(e, TraceGap):
                 tv.insert("", "end", text=idx, tags=("exc",),
-                          values=("", "── trace interrompue (filtre) ──", "", ""))
+                          values=("", "── trace interrompue ──", "", ""))
                 prev_func = None
                 continue
             ins = self.etm.image.instr(e.addr)
@@ -188,7 +188,7 @@ class TraceView(View):
         tv.delete(*tv.get_children())
         for r in rows:
             icon = FLOW_ICONS.get(r.kind, "")
-            label = {"exc-return": "retour d'exception", "gap": "trace interrompue (filtre)"}.get(r.kind, r.func)
+            label = {"exc-return": "retour d'exception", "gap": "trace interrompue"}.get(r.kind, r.func)
             iid = tv.insert("", "end", text=str(r.index), values=(
                 "    " * r.depth + f"{icon} {label}", f"{r.addr:08x}" if r.addr else ""),
                 tags=("exception",) if r.kind.startswith("exc") else ())

@@ -10,13 +10,8 @@ variable. Trois phases : arrêt sur `worker_step`, marche (profil démarré), ar
 phase, le contenu de toutes les vues est relevé (tests/artifacts/board-f746.json) ; chaque
 test vérifie ensuite une vue : un échec dit ce qui ne s'affiche pas.
 """
-import json
 import os
 import subprocess
-import sys
-import threading
-import time
-import traceback
 
 import pytest
 from conftest import ROOT, board_serial
@@ -25,7 +20,6 @@ import boards
 
 FW_DIR = os.path.join(ROOT, "examples", "nucleo-f746")
 FW = os.path.join(FW_DIR, "nucleo-f746.elf")
-ARTIFACTS = os.path.join(ROOT, "tests", "artifacts")
 TASKS = {"producer", "consumer", "worker", "sleeper", "hog", "IDLE", "Tmr Svc"}
 
 pytestmark = pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="pas de DISPLAY (xvfb-run)")
@@ -37,107 +31,11 @@ def run(request, tmp_path_factory):
     serial = board_serial(request, boards.NUCLEO_F746)
     svd = boards.find_svd(boards.NUCLEO_F746.svd)
     subprocess.run(["make", "-s", "-C", FW_DIR], check=True)
-    from gdbtrace.gui import app as appmod
-    from gdbtrace.__main__ import main
-    result: dict = {"phases": {}, "errors": [], "events": {}}
 
-    def scenario(app):
-        result["app"] = app
-        root = app.root
-        report = app.report_error
-
-        def on_error(msg):
-            result["errors"].append(msg.strip())
-            report(msg)
-        app.report_error = on_error
-
-        lag = result["max_update_s"] = {}       # plus longue itération de la boucle Tk, par phase
-        stalls = result["stalls"] = []          # où le thread GUI était bloqué (> 1 s)
-        phase = ["connexion"]
-        busy = {"since": None, "seen": False}
-        main_id = threading.get_ident()
-        done = threading.Event()
-
-        def watchdog():
-            while not done.wait(0.1):
-                since = busy["since"]
-                if since is not None and not busy["seen"] and time.monotonic() - since > 1.0:
-                    busy["seen"] = True
-                    frame = sys._current_frames().get(main_id)
-                    stalls.append({"phase": phase[0], "pile": [ln.strip() for ln in
-                                   traceback.format_stack(frame)[-14:]] if frame else []})
-        threading.Thread(target=watchdog, daemon=True).start()
-
-        def pump(seconds=0.0, until=None, timeout=30.0):
-            end = time.monotonic() + (timeout if until else seconds)
-            while time.monotonic() < end:
-                t = time.monotonic()
-                busy["since"], busy["seen"] = t, False
-                root.update()
-                busy["since"] = None
-                lag[phase[0]] = round(max(lag.get(phase[0], 0.0), time.monotonic() - t), 3)
-                if until is not None and until():
-                    return True
-                time.sleep(0.02)
-            return until is None
-
-        def snapshot(phase):
-            # chaque onglet affiché une fois : certaines vues ne se remplissent que visibles
-            for nb in app.views.notebooks.values():
-                for tab in nb.tabs():
-                    nb.select(tab)
-                    pump(0.3)
-            result["phases"][phase] = boards.dump_views(app)
-
-        from gdbtrace.views.data import WatchView
-        from gdbtrace.views.profile import ProfileView
-        s = None
-        try:
-            result["events"]["connecté"] = pump(
-                until=lambda: app.session is not None and app.session.state == "stopped"
-                and app.current_frame is not None, timeout=60)
-            s = app.session
-            # flashage puis mise en route de la trace (Go est refusé pendant la programmation)
-            result["events"]["mise en route"] = pump(
-                until=lambda: app.busy is None and app.trace.etm_swo and s.state == "stopped", timeout=60)
-            pump(1.0)
-            wv = app.views.find(WatchView)
-            for expr in ("produced", "consumed", "worked"):
-                app.safe(wv.add, expr)
-            bp = s.break_("worker_step")
-            app.go()
-            phase[0] = "arret"
-            result["events"]["arrêt"] = pump(until=lambda: s.state == "stopped" and app.current_frame
-                                             is not None and app.current_frame.func == "worker_step")
-            pump(1.0)
-            snapshot("arret")
-            s.delete_break(bp.number)
-            app.breakpoints_changed()
-            pv = app.views.find(ProfileView)
-            phase[0] = "marche"
-            app.go()
-            pump(0.5)
-            app.safe(pv.start)
-            pump(4.0)
-            snapshot("marche")
-            app.safe(pv.stop)
-            app.halt()
-            phase[0] = "apres"
-            result["events"]["arrêt final"] = pump(until=lambda: s.state == "stopped", timeout=10)
-            # la trace ETM se décode moins vite qu'elle n'arrive : on attend la fin, GUI vivant
-            t0 = time.monotonic()
-            result["events"]["trace décodée"] = pump(until=lambda: not app.trace.etm_pending()
-                                                     and app.trace.etm_backlog == 0, timeout=300)
-            result["etm_wait_s"] = round(time.monotonic() - t0, 1)
-            pump(1.5)
-            snapshot("apres")
-        finally:
-            if s is not None and s.state == "stopped":  # la carte sans ETM ni stall après le test
-                from gdbtrace.trace.etm.config import TRCPRGCTLR, TRCSTALLCTLR
-                for addr in (TRCPRGCTLR, TRCSTALLCTLR):
-                    app.safe(s.write_u32, addr, 0)
-            done.set()
-            app.quit()
+    def cleanup(app, s):                    # la carte sans ETM ni stall après le test
+        from gdbtrace.trace.etm.config import TRCPRGCTLR, TRCSTALLCTLR
+        for addr in (TRCPRGCTLR, TRCSTALLCTLR):
+            s.write_u32(addr, 0)
 
     argv = [FW, "--openocd", boards.NUCLEO_F746.openocd_cfg, "--program", "--cpu-hz", "16000000",
             "--etm-config", "--etm-port", "swo", "--etm-stall", "--var-trace", "produced:write",
@@ -146,20 +44,13 @@ def run(request, tmp_path_factory):
         argv += ["--svd", svd]
     old = os.environ.get("STLINK_SERIAL")
     os.environ["STLINK_SERIAL"] = serial
-    mainloop, appmod.App.mainloop = appmod.App.mainloop, scenario
     try:
-        main(argv)
+        return boards.run_gui(argv, "f746", ready=lambda app: app.trace.etm_swo, cleanup=cleanup)
     finally:
-        appmod.App.mainloop = mainloop
         if old is None:
             os.environ.pop("STLINK_SERIAL", None)
         else:
             os.environ["STLINK_SERIAL"] = old
-    result.pop("app", None)
-    os.makedirs(ARTIFACTS, exist_ok=True)
-    with open(os.path.join(ARTIFACTS, "board-f746.json"), "w") as fh:
-        json.dump(result, fh, indent=1, ensure_ascii=False)
-    return result
 
 
 def view(run, phase, kind):

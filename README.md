@@ -20,6 +20,7 @@ Interface en **tkinter**.
 | 10. ETMv4 (Cortex-M7) | Trace d'instructions de l'ETM-M7 (ETMv4.0) : décodage validé contre QEMU, OpenCSD et une vraie capture par SWO sur Nucleo-F746ZG ; version de l'ETM détectée ; ETM simulé v4 sous QEMU (`mps2-an500`) | 🚧 (cycle-accurate et horodatage à venir) |
 | 11. Trace ciblée et débogage avancé | Filtres de l'ETM (plages, start/stop) ; trace de données du DWT ; temps par tâche RTOS par ITM ; breakpoints à action et à compteur, Go.Till, Step.Change | ✅ |
 | 12. Programmes natifs | Un ELF de l'hôte (x86-64, AArch64…) débogué sous gdb : arrêt au début de `main`, vue Threads (pthreads nommés, thread courant, changement de thread), mémoire lue en marche dans `/proc/<pid>/mem`, fin et relance du programme | ✅ |
+| 13. ST-LINK_gdbserver et STM32N6 (Cortex-M55) | ST-LINK_gdbserver piloté derrière un relais RSP (mémoire en direct, reset système), image exécutée en RAM ; ITM par le SWO de la sonde ; ETMv4.5 écrit en RAM par l'ETR, lu à chaque arrêt ; décodage ARMv8.1-M (boucles à faible coût, Helium) ; DWT de l'ARMv8-M ; validé sur Nucleo-N657X0-Q | ✅ |
 
 ## Installation
 
@@ -32,12 +33,15 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'     # dev inclut caps
 
 **Notice d'utilisation complète : [`docs/utilisation.md`](docs/utilisation.md)** — installation,
 lancement et cibles, interface, breakpoints, données, RTOS et threads, trace, Nucleo-F746ZG,
-options, dépannage. Le pilotage en Python a la sienne : [`docs/scripting.md`](docs/scripting.md).
+Nucleo-N657X0-Q (STM32N6), options, dépannage. Le pilotage en Python a la sienne : [`docs/scripting.md`](docs/scripting.md).
 
 ```bash
 make -C examples/firmware                                        # firmware de démo Cortex-M3
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf          # QEMU mps2-an385, sans matériel
 .venv/bin/python -m gdbtrace fw.elf --openocd configs/nucleo-f429zi.cfg   # sonde ST-Link
+.venv/bin/python -m gdbtrace fw.elf --stlink                      # ST-LINK_gdbserver (STM32CubeIDE / CubeCLT)
+make -C examples/nucleo-n6 && .venv/bin/python -m gdbtrace examples/nucleo-n6/nucleo-n6.elf --stlink \
+    --stlink-ap 1 --ram-boot --program --cpu-hz 64000000 --swo-config --etm-config --etm-port etr  # STM32N6
 .venv/bin/python -m gdbtrace fw.elf --remote 127.0.0.1:2331      # J-Link GDB Server, pyOCD...
 .venv/bin/python -m gdbtrace fw.elf --remote 127.0.0.1:3333 --tcl 127.0.0.1:6666  # OpenOCD lancé à part
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf --svd examples/svd/mps2-an385.svd  # périphériques
@@ -58,7 +62,8 @@ make -C examples/native && .venv/bin/python -m gdbtrace examples/native/pthreads
 
 **Fichier › Programmer un ELF…** (`Ctrl+O`) écrit un ELF dans la cible, sans relancer le
 débogueur. La séquence : arrêt, reset, écriture (`load` : en flash avec OpenOCD, J-Link ou
-pyOCD, en RAM sous QEMU), vérification (`compare-sections`), puis reset. La cible reste
+pyOCD, en RAM sous QEMU ou sur un STM32N6), vérification (`compare-sections` ; avec
+ST-LINK_gdbserver, relecture des sections, son CRC étant faux sur un STM32N6), puis reset. La cible reste
 arrêtée au vecteur de reset. Symboles, vues, Watch et trace ETM passent au nouveau programme.
 **Reprogrammer l'ELF courant** (`Ctrl+R`) sert après une recompilation. **ELF récents**
 garde les 8 derniers, enregistrés avec le layout. Sans ELF sur la ligne de commande, la GUI
@@ -295,7 +300,8 @@ code.
 | Script | `gdbtrace.var_trace("counter", "rw", pc=True)`, `gdbtrace.var_samples("counter")`, `gdbtrace.var_trace_stop()` |
 
 Limites : variables scalaires de 1, 2 ou 4 octets (un champ ou un élément d'une structure),
-4 comparateurs au plus sur un Cortex-M3/M4/M7. Ces comparateurs sont partagés avec le filtre
+4 comparateurs au plus sur un Cortex-M3/M4/M7/M55 (le DWT de l'ARMv8-M a son propre format,
+programmé par GdbTrace ; la variable doit y être alignée sur sa taille). Ces comparateurs sont partagés avec le filtre
 ETMv3 et les watchpoints de gdb ; GdbTrace les prend par le haut et refuse quand il n'en reste
 plus. Un accès plus court que la variable est montré en hexadécimal brut. Validé sur des flux
 ITM synthétiques et sur Nucleo-F746ZG (test sur carte).
@@ -379,8 +385,8 @@ Nucleo-F746ZG à 216 MHz (`--etm-stall`), 1 961 SysTick et 1 962 retours, 0 déb
 GdbTrace et OpenCSD identiques sur 194 127 événements. Deux constats sur cette carte : les
 premiers octets sortent avant que le formateur TPIU ne démarre (GdbTrace les ignore), et
 OpenCSD 1.4.1 ne compte pas l'élément spéculatif annoncé par Trace Info (SPEC=1) : il déborde
-à chaque synchronisation, GdbTrace non. Pas encore pris en charge : cycle-accurate et
-horodatage en ETMv4, ETMv4 des ARMv8-M (M33, M55).
+à chaque synchronisation, GdbTrace non. L'ETMv4.5 d'un Cortex-M55 (STM32N6) est décodé aussi
+(section suivante). Pas encore pris en charge : cycle-accurate et horodatage en ETMv4.
 
 ### Analyse temporelle (vue Timing)
 
@@ -521,6 +527,59 @@ L'ETMv4 d'un Cortex-M7 est plus compact (un atome par branchement), mais un M7 e
 plus d'instructions par seconde : sur une F746 à 216 MHz, le SWO d'un ST-LINK/V2-1 ne suit
 que du code qui dort souvent. Sinon `--etm-stall` ralentit le cœur au débit de la trace.
 
+### ST-LINK_gdbserver et STM32N6 (Cortex-M55)
+
+`--stlink [SN]` lance **ST-LINK_gdbserver** (trouvé dans le PATH, STM32CubeIDE ou
+STM32CubeCLT sous `/opt/st` ou `~/st`, avec le STM32CubeProgrammer dont il a besoin). gdb ne
+s'y connecte pas directement mais à un **relais RSP** de GdbTrace (`core/rsp_relay.py`) :
+
+- **mémoire en direct** : ce serveur n'a pas de port TCL, mais il répond aux lectures cible
+  en marche ; le relais glisse les siennes entre les paquets de gdb (Watch, RTOS,
+  Périphériques, Mémoire, échantillonnage du PC). Mesuré sur une Nucleo-N657X0-Q : 1 ms par
+  lecture, 16 Ko en 27 ms ;
+- **reset système** : après un reset par AIRCR, le serveur perd la cible et refuse toute
+  reprise. Le relais se détache, se reconnecte et rejoue la poignée de main de gdb, qui ne voit
+  rien ;
+- le texte que le serveur envoie hors d'une marche (« Target is not responding ») est retiré :
+  gdb le prendrait pour la réponse à sa requête.
+
+Le **STM32N6** n'a pas de flash interne. En démarrage de développement (JP2 en 2-3), la ROM ne
+charge rien. `--ram-boot` fait ce que fait l'IDE : reset système, la ROM tourne un instant,
+chargement de l'image en RAM, puis VTOR, sp et pc pris dans sa table des vecteurs (section
+`.isr_vector` ou symbole `g_pfnVectors`, `__Vectors`, `vector_table`…). Le cœur est derrière
+le port d'accès 1 (`--stlink-ap 1`). `examples/nucleo-n6` est le firmware de test : la démo
+FreeRTOS à 64 MHz (HSI, port ARM_CM55_NTZ), en AXISRAM2, avec des boucles à faible coût et
+Helium appelées à chaque tick (`lob.c`).
+
+**Trace** :
+
+- **ITM par le SWO** : sur la N6, le SWO est un composant CoreSight à part (0xE008A000),
+  cadencé par le cœur divisé par 8, qui ne porte que l'ITM. `--swo-config` le programme
+  (`trace/chips.py` : puce reconnue par DBGMCU_IDCODE), et ST-LINK_gdbserver sert le flux
+  capturé par la sonde (`-z`). La trace de données du DWT suit l'ARMv8-M (MATCH « adresse avec
+  valeur », ACTION, DATAVSIZE ; plus de DWT_MASK).
+- **ETM par l'ETR** (`--etm-config --etm-port etr`, Trace › ETM par l'ETR,
+  `gdbtrace.etm_etr()`) : l'ETM n'a pas d'autre sortie que le port parallèle. Le chemin
+  funnel → ETF (FIFO) → ETR écrit les trames du formateur dans un tampon circulaire en RAM.
+  Le firmware le réserve (`__etr_buffer__`, aligné sur 4 Ko ; 256 Ko dans la démo), ou
+  `--etr-buffer ADRESSE:TAILLE`. À chaque arrêt, l'ETM est coupé, l'ETF et l'ETR vidés et le
+  tampon lu ; à la reprise, ils repartent. Un tampon plein ne garde que la fin de l'exécution,
+  dont le début est un trou. Deux pièges : le réplicateur doit filtrer la sortie TPIU, sinon
+  elle bloque le flux ; et le maître AXI de l'ETR sort du reset non sécurisé (RIFSC), si bien
+  que la RAM refuse ses écritures sans rien signaler.
+- **Décodage ARMv8.1-M** : capstone 5 ne connaît ni WLS / DLS / LE / LETP, ni BF*, ni CLRM,
+  ni une partie de Helium. GdbTrace les décode lui-même : LE est un branchement conditionnel
+  arrière, WLS avant, des points de passage de l'ETMv4. Une instruction Helium illisible est
+  une instruction ordinaire de 32 bits. Validé sur la carte : sur une vraie trace, aucun atome
+  perdu ni erreur, et le nombre de tours de la boucle LE de `lob_count` relevé dans la trace
+  suit le firmware (40, 41… 64, 1, 2…). L'ETM du M55 ne spécule pas (MAXSPEC 0, lu dans
+  TRCIDR8).
+
+Limites : l'ETM du M55 n'a pas de comparateurs d'adresse (filtrage par plages pas encore pris
+en charge ; il passerait par le DWT). La branche d'un BF* n'est pas suivie (les compilateurs
+n'en émettent pas). Le SWO capturé par l'ST-LINK intégré perd parfois un octet à 2 Mbit/s :
+le décodeur ITM le compte comme une erreur, sans décaler les ports.
+
 ### Trace MTB (Cortex-M0+)
 
 Le Cortex-M0+ n'a ni ETM ni ITM/SWO. Sa trace d'instructions optionnelle, la **MTB** (Micro
@@ -639,7 +698,8 @@ gdbtrace/
   core/gdb_backend.py   pilote GDB/MI asynchrone (thread lecteur, jetons, événements)
   core/session.py       API haut niveau (run-control, mémoire, registres, varobjs ; breakpoints
                         à action et à compteur, Go.Till, Step.Till / Step.Change)
-  core/target.py        serveurs gdb : QEMU, OpenOCD, distant ; programme natif (sous gdb)
+  core/target.py        serveurs gdb : QEMU, OpenOCD, ST-LINK_gdbserver, distant ; programme natif
+  core/rsp_relay.py     relais RSP gdb ↔ serveur : mémoire en direct, reset avec reconnexion
   core/symbols.py       ELF/DWARF direct (pyelftools) : fonctions, table des lignes
   core/live.py          canal mémoire latéral (OpenOCD TCL, QEMU QMP) + LivePoller
   core/live_vars.py     disposition et décodage des variables sans gdb (Watch en marche)
@@ -652,7 +712,9 @@ gdbtrace/
   trace/itm.py          décodeur ITM/DWT (instrumentation, PC, exceptions, data trace...)
   trace/tpiu.py         déformateur de trames TPIU
   trace/swo.py          sources SWO (TCP, fichier), session de trace, stats d'exceptions
-  trace/config.py       programmation ITM/DWT/TPIU, commandes TPIU d'OpenOCD
+  trace/config.py       programmation ITM/DWT/TPIU (ou SWO CoreSight), commandes TPIU d'OpenOCD
+  trace/chips.py        ce qui dépend de la puce : SWO, horloges de trace, funnel/ETF/ETR (STM32N6)
+  trace/tmc.py          ETM écrit en RAM par l'ETR, lu à chaque arrêt
   trace/profile.py      profil statistique et échantillonneur de PC
   trace/manager.py      capture SWO/ETM d'une session (GUI et batch)
   trace/etm/etm3.py     décodeur de paquets ETMv3 (Cortex-M)
@@ -680,6 +742,9 @@ examples/
   freertos/             firmware de démo FreeRTOS V11.3.3 (noyau MIT inclus) : 7 tâches,
                         queue, mutex, sémaphore, timer logiciel
   m0plus/               la démo compilée pour Cortex-M0+ (QEMU microbit), tampon MTB réservé
+  nucleo-f746/          firmware de test sur carte : la démo FreeRTOS, port ARM_CM7 r0p1
+  nucleo-n6/            firmware de test sur carte : la démo FreeRTOS, port ARM_CM55_NTZ, en RAM,
+                        boucles ARMv8.1-M (lob.c), tampon de l'ETR réservé
   svd/mps2-an385.svd    SVD de démo (SysTick, SCB, TIMER0/1, UART0)
   scripts/demo.py       exemple de script
   scripts/rtos.py       exemple de script FreeRTOS
@@ -720,8 +785,15 @@ s'y afficher : source, registres, pile (fichier:ligne), Watch (et en direct), RT
 tick en direct), périphériques du SVD, mémoire, threads, texte ITM, profil par SWO, variable
 tracée, temps par tâche, liste de trace ETM, Timing, couverture.
 
+`tests/test_board_n6.py` fait de même sur une **Nucleo-N657X0-Q** (STM32N6, Cortex-M55), par
+ST-LINK_gdbserver et son relais : firmware `examples/nucleo-n6` chargé en RAM, ITM par le SWO,
+ETM écrit en RAM par l'ETR, variable tracée par le DWT de l'ARMv8-M, vues en direct par le
+relais ; en plus, le nombre de tours des boucles LE relevé dans la trace doit suivre le
+firmware (`tests/artifacts/board-n6.json`).
+
 - La carte est trouvée seule : sonde ST-LINK lue dans `/sys`, puis identité de la puce lue
-  par OpenOCD sans reset. `GDBTRACE_F746_SERIAL` impose la sonde ; le SVD vient de
+  sans reset, par OpenOCD (F746) ou par ST-LINK_gdbserver (N6, qu'OpenOCD 0.12 ne connaît
+  pas). `GDBTRACE_F746_SERIAL` / `GDBTRACE_N6_SERIAL` imposent la sonde ; le SVD vient de
   STM32CubeIDE (`GDBTRACE_SVD_DIR` sinon).
 - `pytest --boards=auto` (défaut) ignore ces tests sans la carte ; `--boards=require` les fait
   échouer ; `--boards=skip` les désactive.

@@ -65,6 +65,8 @@ class TraceManager:
         # trace MTB des Cortex-M0+ (sonde réelle, ou simulée sous QEMU), même EtmTrace
         self.mtb = None                     # MtbCapture
         self.mtb_sim = None                 # QemuMtbSim
+        # ETM écrit en RAM par l'ETR de la puce (STM32N6), lu à chaque arrêt
+        self.tmc = None                     # EtrCapture
         self.etm_listeners: list[Callable[[], None]] = []
         self._notify_lock = threading.Lock()
         self._notify_pending = False
@@ -170,6 +172,14 @@ class TraceManager:
             v = 4 if part == CORTEX_M7 else 3
         v = 4 if v == 4 else 3
         self.set_etm_version(v)
+        if v == 4 and self.etm is not None:
+            from .etm.config import TRCIDR8
+            try:                                 # profondeur de spéculation (M7 : 1, M55 : 0)
+                spec = session.read_u32(TRCIDR8)
+            except Exception:  # noqa: BLE001 - ETM simulé (QEMU) : celle du M7
+                spec = None
+            if spec is not None and spec < 32:
+                self.etm.set_max_spec(spec)
         return v
 
     def set_etm_version(self, version: int) -> None:
@@ -179,7 +189,7 @@ class TraceManager:
         from .etm.trace import EtmTrace
         old = self.etm
         self.etm = EtmTrace(old.image, old.symbols, cycle_accurate=old.cycle_accurate,
-                            version=version)
+                            version=version, max_spec=old.max_spec)
         self.etm.simulated, self.etm.timing_label = old.simulated, old.timing_label
         if self.etm_sim is not None:
             self.etm_sim.etm = self.etm
@@ -287,15 +297,21 @@ class TraceManager:
                                           else ", tampon illimité)")
         if self.mtb is not None:
             return f"MTB (AUTOHALT, {self.mtb.autohalts} arrêts)" if self.mtb.autohalt else "MTB"
+        if self.tmc is not None:
+            full = ", tampon plein : début de l'exécution perdu" if self.tmc.last_wrapped else ""
+            return f"ETM par l'ETR ({self.tmc.size >> 10} Ko en RAM{full})"
         if self.etm_sim is not None:
             return "ETM simulé (QEMU)"
         return "capture ETM" if self.active else "trace ETM"
 
     # ------------------------------------------------------------------ cycle des exécutions
-    def _etm_feed(self, data: bytes) -> None:
-        """Octets ETM du déformateur TPIU (fil SWO) : mis en file pour le fil de décodage."""
+    def _etm_feed(self, data: bytes, flush: bool = False) -> None:
+        """Octets ETM du déformateur TPIU (fil SWO) : mis en file pour le fil de décodage.
+        `flush` : fin d'une exécution (ETR lu à l'arrêt), valider ses derniers éléments."""
         with self._etm_cv:
             self._etm_q.append(data)
+            if flush:
+                self._etm_flush_pending = True
             self.etm_backlog += len(data)
             while self.etm_backlog > ETM_MAX_BACKLOG and len(self._etm_q) > 1:
                 old = self._etm_q.popleft()
@@ -419,6 +435,11 @@ class TraceManager:
             self.wait_etm()
         if self.etm is not None:
             self.etm.resumed()                  # la resynchronisation qui suit n'est pas un trou
+        if self.tmc is not None:                # tampon vidé, ETM rallumé
+            try:
+                self.tmc.restart()
+            except Exception as exc:  # noqa: BLE001
+                self.on_error(f"ETR : relance impossible : {exc}")
         for sim in self._sims():
             if sim.path is None:
                 try:
@@ -433,8 +454,8 @@ class TraceManager:
         if self.mtb_sim is not None and self.mtb_sim.autohalt:
             self.mtb_sim.clear_halt()
         jobs = [s for s in self._sims() if s.path is not None]
-        mtb = self.mtb
-        if not jobs and mtb is None:
+        mtb, tmc = self.mtb, self.tmc
+        if not jobs and mtb is None and tmc is None:
             if self.etm is not None and self.etm.version == 4:
                 with self._etm_cv:          # trace encore en file : validé après son décodage
                     if self._etm_q or self._etm_decoding:
@@ -454,6 +475,16 @@ class TraceManager:
                 if mtb is not None:
                     errors = mtb.decoder.stats.errors
                     self.etm.feed_events(mtb.collect(), errors=mtb.decoder.stats.errors - errors)
+                if tmc is not None and session is not None and self.etm is not None:
+                    # décodé par le fil ETM, par tranches qui laissent la main au GUI (d'un
+                    # bloc, le verrou de la trace serait tenu des secondes : vues figées)
+                    data = tmc.collect()
+                    if tmc.last_wrapped:         # tampon plein : son début est perdu
+                        self._etm_feed(_ETM_GAP)
+                    if data:
+                        self._etm_feed(data, flush=True)
+                    elif self.etm.flush():
+                        self._etm_changed()
             except Exception as exc:  # noqa: BLE001
                 self.post(self.on_error, f"trace d'instructions : {exc}")
             finally:
@@ -517,7 +548,7 @@ class TraceManager:
         """Var.TRACE (cible arrêtée) : un comparateur du DWT émet la valeur de `expr` à chaque
         accès (`access` : write, read, rw ; `pc` : avec le PC de l'instruction). Les échantillons
         arrivent par la capture SWO ou de trace (ITM). Retourne le journal."""
-        from .datatrace import DEMCR, DWT_CTRL, TracedVar, comparator_writes, variable_layout
+        from .datatrace import DEMCR, DWT_CTRL, TracedVar, comparator_writes, dwt_is_v8m, variable_layout
         if access not in ("write", "read", "rw"):
             raise ValueError("accès : write, read ou rw")
         if session is None or session.state != "stopped":
@@ -537,7 +568,7 @@ class TraceManager:
                                "filtre de l'ETM) ; arrêter la trace d'une variable")
         var = TracedVar(expr, addr, size, free[0], access, pc, layout)
         log = []
-        for name, reg, value in comparator_writes(var):
+        for name, reg, value in comparator_writes(var, v8m=dwt_is_v8m(session.read_u32)):
             session.write_u32(reg, value)
             log.append(f"{name} = {value:#010x}")
         self.datatrace.add(var)
@@ -605,6 +636,43 @@ class TraceManager:
         self.setup_log = log
         return log
 
+    def start_etm_tmc(self, session, buffer: tuple[int, int] | None = None, stall: bool = False,
+                      chip=None) -> list[str]:
+        """ETM écrit en RAM par l'ETR de la puce (cible arrêtée ; STM32N6) : funnel, ETF, ETR
+        et ETM programmés, tampon lu à chaque arrêt. `buffer` : (adresse, taille), sinon le
+        tampon réservé par le firmware (`__etr_buffer__`). Retourne le journal ; en cas
+        d'échec, la cause reste dans `setup_error`."""
+        from .chips import detect_chip
+        from .etm.config import EtmConfig
+        from .tmc import EtrCapture, buffer_from_symbols
+        self.setup_error = None
+        try:
+            if self.etm is None:
+                raise RuntimeError("trace ETM indisponible (capstone requis, ou pas d'ELF)")
+            chip = chip or detect_chip(session.read_u32)
+            if chip is None or chip.etr is None:
+                raise RuntimeError("pas d'ETR connu sur cette puce (STM32N6 seulement pour "
+                                   "l'instant) : --etm-port swo ou parallel")
+            if buffer is None:
+                buffer = buffer_from_symbols(self.etm.symbols)
+                if buffer is None:
+                    raise RuntimeError("tampon de l'ETR : réserver un tableau `__etr_buffer__` "
+                                       "(aligné sur 4 Ko) dans le firmware, ou --etr-buffer "
+                                       "ADRESSE:TAILLE")
+            if self.detect_etm(session) != 4:
+                raise RuntimeError("l'ETR n'est géré qu'avec un ETMv4")
+            tmc = EtrCapture(session, chip, *buffer)
+            log = tmc.setup()
+            log += self.configure_etm(EtmConfig(port="tmc", version=4, stall=stall), session)
+        except Exception as exc:
+            self.setup_error = f"ETM par l'ETR : {exc}"
+            raise
+        self.tmc = tmc
+        self.etm.timing_label = None
+        self.setup_log = log
+        self.attach_session(session)
+        return log
+
     def trace_status(self) -> str:
         """Où en est la trace d'instructions, en une ligne (vues Couverture et Trace) : d'où
         elle vient, ou pourquoi rien n'arrive et quoi faire."""
@@ -612,6 +680,10 @@ class TraceManager:
             return "trace ETM indisponible (capstone requis, ou pas d'ELF)"
         if self.etm_sim is not None or self.mtb_sim is not None or self.mtb is not None:
             return self.source_label()
+        if self.tmc is not None:
+            st = self.etm.stats
+            return (f"{self.tmc.describe()} ; {st['instructions']} instructions, "
+                    f"{st['erreurs']} erreurs")
         src, sess = self.source, self.session
         if src is None:
             hint = ("aucune capture de trace d'instructions : Trace › ETM par SWO… (ou --etm-config "
@@ -647,6 +719,7 @@ class TraceManager:
                     pass
                 setattr(self, name, None)
         self.mtb = None
+        self.tmc = None
 
     # ------------------------------------------------------------------ sources
     @property
@@ -741,9 +814,21 @@ class TraceManager:
                          host: str = "127.0.0.1") -> list[str]:
         """Programme ITM/DWT/TPIU (cible arrêtée). Avec OpenOCD, configure aussi son TPIU
         pour servir le SWO en TCP sur `port`, et démarre la capture. Retourne un journal."""
+        if cfg.chip is None:
+            from .chips import detect_chip
+            cfg.chip = detect_chip(session.read_u32)
         log = [f"{name} = {val:#010x} (relu {back:#010x})" for name, val, back in cfg.apply(session)]
-        from ..core.target import OpenOcdTarget, RemoteTarget
-        if isinstance(target, OpenOcdTarget) or (isinstance(target, RemoteTarget) and target.tcl_port):
+        from ..core.target import OpenOcdTarget, RemoteTarget, StLinkTarget
+        if isinstance(target, StLinkTarget):
+            if not target.swo_port:
+                raise RuntimeError("ST-LINK_gdbserver lancé sans SWO : relancer avec --swo-config "
+                                   "(ou --cpu-hz) pour qu'il serve la broche SWO")
+            if target.swo_baud != round(cfg.actual_swo_hz):
+                log.append(f"attention : la sonde attend {target.swo_baud} bit/s, la cible émet à "
+                           f"{cfg.actual_swo_hz:.0f} bit/s")
+            self.start_tcp("127.0.0.1", target.swo_port, formatter=cfg.formatter)
+            log.append(f"capture SWO de ST-LINK_gdbserver (port {target.swo_port}) démarrée")
+        elif isinstance(target, OpenOcdTarget) or (isinstance(target, RemoteTarget) and target.tcl_port):
             tpiu = openocd_tpiu_name(session)
             for cmd in openocd_tpiu_commands(cfg, tpiu, port):
                 out = session.monitor(cmd).strip()

@@ -164,6 +164,7 @@ class App:
 
         t = tk.Menu(mb, tearoff=False)
         t.add_command(label="ETM par SWO…", command=self._ask_etm_swo)
+        t.add_command(label="ETM par l'ETR (RAM, STM32N6)", command=lambda: self.start_etm_etr())
         t.add_command(label="Filtre de trace ETM…", command=self._ask_etm_filter)
         t.add_command(label="Arrêter la capture", command=lambda: self.trace.stop())
         mb.add_cascade(label="Trace", menu=t)
@@ -434,8 +435,17 @@ class App:
             self._rtos_layout = fr.FreeRtosLayout.from_session(self.session, self.symbols)
         return self._rtos_layout
 
-    def load_svd(self, path: str) -> None:
-        self.device = svd.parse(path)
+    def load_svd(self, path: str, background: bool = False) -> None:
+        """Charge un SVD ; `background` : analysé hors du thread GUI (celui d'un STM32N6 fait
+        22 Mo, plus d'une seconde), les vues suivent à la fin."""
+        if background:
+            self.status.set(f"lecture du SVD {os.path.basename(path)}…")
+            self.pump.background(svd.parse, path, then=lambda dev: self._svd_loaded(dev, path))
+            return
+        self._svd_loaded(svd.parse(path), path)
+
+    def _svd_loaded(self, device, path: str) -> None:
+        self.device = device
         self.svd_path = os.path.abspath(path)
         if self.api:
             self.api.device = self.device
@@ -447,7 +457,7 @@ class App:
     def _ask_svd(self) -> None:
         path = filedialog.askopenfilename(filetypes=[("CMSIS-SVD", "*.svd *.xml"), ("Tous", "*")])
         if path:
-            self.safe(self.load_svd, path)
+            self.safe(lambda: self.load_svd(path, background=True))
 
     def set_current_task(self, name: str | None) -> None:
         """Appelé par la vue RTOS : tâche courante affichée dans la barre d'état."""
@@ -642,6 +652,20 @@ class App:
         log = self.safe(lambda: self.trace.start_etm_swo(
             self.session, self.session.target, self.cpu_hz, self.swo_hz, stall=self.etm_stall,
             stm32=self.stm32, port=self.swo_port, cycle_accurate=self.etm_cycle_accurate))
+        if log:
+            self.write_console("\n".join(log) + "\n", "gdb")
+            self.status.set(log[-1][:200])
+        self.views.refresh_all()
+        return log
+
+    def start_etm_etr(self, buffer: tuple[int, int] | None = None) -> list[str] | None:
+        """Trace › ETM par l'ETR (cible arrêtée) : la puce écrit la trace en RAM (STM32N6),
+        lue à chaque arrêt ; tampon réservé par le firmware (`__etr_buffer__`) ou `buffer`.
+        Journal dans la console ; None si impossible (cause aussi dans Couverture et Trace)."""
+        if not self._need("stopped"):
+            self.status.set("Arrêter la cible pour configurer la trace (Break)")
+            return None
+        log = self.safe(lambda: self.trace.start_etm_tmc(self.session, buffer, stall=self.etm_stall))
         if log:
             self.write_console("\n".join(log) + "\n", "gdb")
             self.status.set(log[-1][:200])

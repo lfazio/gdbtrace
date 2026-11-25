@@ -8,7 +8,8 @@ les données sont emballées en trames de 16 octets :
 - octet 15 : bits auxiliaires ; pour un changement d'ID, le bit indique si le nouvel ID
   s'applique **après** l'octet de données suivant.
 Les trames sont alignées par la synchro complète FF FF FF 7F ; la demi-synchro FF 7F
-peut s'intercaler entre deux trames (bourrage).
+peut s'intercaler entre deux trames (bourrage). Un tampon de TMC (ETB, ETF, ETR) ne contient
+que des trames, alignées sur 16 octets depuis son début : `aligned=True`.
 """
 from __future__ import annotations
 
@@ -18,9 +19,10 @@ FRAME = 16
 
 
 class TpiuDeformatter:
-    def __init__(self):
+    def __init__(self, aligned: bool = False):
         self.buf = bytearray()
-        self.synced = False
+        self.aligned = aligned        # trames alignées, sans synchro (mémoire d'un TMC)
+        self.synced = aligned
         self.stream = 0             # ID de flux courant (0 = aucun)
         self.frames = 0
 
@@ -36,10 +38,10 @@ class TpiuDeformatter:
             del self.buf[:k + 4]
             self.synced = True
         while True:
-            if self.buf[:4] == FULL_SYNC:
+            if not self.aligned and self.buf[:4] == FULL_SYNC:
                 del self.buf[:4]
                 continue
-            if self.buf[:2] == HALF_SYNC:
+            if not self.aligned and self.buf[:2] == HALF_SYNC:
                 del self.buf[:2]
                 continue
             if len(self.buf) < FRAME:

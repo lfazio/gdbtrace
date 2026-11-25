@@ -46,16 +46,23 @@ class SwoConfig:
     trace_bus_id: int = 1
     #: formateur TPIU actif : obligatoire pour transporter l'ETM (ID 2) avec l'ITM (ID 1)
     formatter: bool = False
+    #: puce dont le SWO n'est pas le TPIU du cœur (trace/chips.py : STM32N6) ; None : TPIU
+    chip: object = None
     notes: list[str] = field(default_factory=list, repr=False)
 
     # ------------------------------------------------------------------ calculs
     @property
+    def traceclk_hz(self) -> float:
+        """Horloge du SWO : celle du cœur, divisée sur certaines puces (STM32N6 : /8)."""
+        return self.cpu_hz / (self.chip.traceclk_div if self.chip is not None else 1)
+
+    @property
     def prescaler(self) -> int:
-        return max(0, round(self.cpu_hz / self.swo_hz) - 1)
+        return max(0, round(self.traceclk_hz / self.swo_hz) - 1)
 
     @property
     def actual_swo_hz(self) -> float:
-        return self.cpu_hz / (self.prescaler + 1)
+        return self.traceclk_hz / (self.prescaler + 1)
 
     def pc_sampling(self) -> tuple[int, int, float]:
         """(CYCTAP, POSTPRESET, fréquence réelle) au plus près de `pc_sampling_hz`.
@@ -81,15 +88,34 @@ class SwoConfig:
             dwt |= 1 << 16                                  # EXCTRCENA
         return [
             RegWrite("DEMCR.TRCENA", DEMCR, 1 << 24, mask=1 << 24),
-            RegWrite("TPIU_CSPSR", TPIU_CSPSR, 1),
-            RegWrite("TPIU_ACPR", TPIU_ACPR, self.prescaler),
-            RegWrite("TPIU_SPPR", TPIU_SPPR, 1 if self.manchester else 2),
-            RegWrite("TPIU_FFCR", TPIU_FFCR, 0x102 if self.formatter else 0x100),  # formateur
+            *self._swo_writes(),
             RegWrite("ITM_LAR", ITM_LAR, UNLOCK),
             RegWrite("ITM_TCR", ITM_TCR, tcr),
             RegWrite("ITM_TER", ITM_TER, self.ports & 0xFFFFFFFF),
             RegWrite("ITM_TPR", ITM_TPR, 0),                   # ports accessibles hors mode privilégié
             RegWrite("DWT_CTRL", DWT_CTRL, dwt, mask=DWT_MASK),
+        ]
+
+    def _swo_writes(self) -> list[RegWrite]:
+        chip = self.chip
+        if chip is None or chip.swo_kind == "tpiu":
+            base = chip.swo_base if chip is not None else 0xE0040000
+            return [
+                RegWrite("TPIU_CSPSR", base + 0x004, 1),
+                RegWrite("TPIU_ACPR", base + 0x010, self.prescaler),
+                RegWrite("TPIU_SPPR", base + 0x0F0, 1 if self.manchester else 2),
+                RegWrite("TPIU_FFCR", base + 0x304, 0x102 if self.formatter else 0x100),  # formateur
+            ]
+        if self.formatter:
+            raise ValueError(f"{chip.name} : le SWO ne porte que l'ITM (pas de formateur, l'ETM "
+                             "passe par l'ETR : --etm-port etr)")
+        writes = []
+        if chip.dbgmcu_cr is not None:                      # horloges de trace
+            writes.append(RegWrite("DBGMCU_CR", chip.dbgmcu_cr, chip.dbgmcu_bits, mask=chip.dbgmcu_bits))
+        return writes + [
+            RegWrite("SWO_LAR", chip.swo_base + 0xFB0, UNLOCK),
+            RegWrite("SWO_SPPR", chip.swo_base + 0x0F0, 1 if self.manchester else 2),
+            RegWrite("SWO_CODR", chip.swo_base + 0x010, self.prescaler),
         ]
 
     def apply(self, session) -> list[tuple[str, int, int]]:
@@ -101,11 +127,12 @@ class SwoConfig:
                 cur = session.read_u32(w.addr)
                 value = (cur & ~w.mask) | (w.value & w.mask)
             session.write_u32(w.addr, value)
-            done.append((w.name, value, session.read_u32(w.addr) if w.name != "ITM_LAR" else value))
+            done.append((w.name, value, value if w.name.endswith("_LAR") else session.read_u32(w.addr)))
         return done
 
     def summary(self) -> str:
-        parts = [f"SWO {self.actual_swo_hz / 1e6:.3f} MHz (ACPR={self.prescaler})",
+        reg = "CODR" if self.chip is not None and self.chip.swo_kind != "tpiu" else "ACPR"
+        parts = [f"SWO {self.actual_swo_hz / 1e6:.3f} MHz ({reg}={self.prescaler})",
                  f"ports 0x{self.ports:08x}"]
         if self.pc_sampling_hz:
             tap, preset, hz = self.pc_sampling()

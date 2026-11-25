@@ -290,7 +290,7 @@ class ScriptAPI:
             elif isinstance(e, ExcReturn):
                 print(f"{idx:>6}  ── retour d'exception")
             elif isinstance(e, TraceGap):
-                print(f"{idx:>6}  ── trace interrompue (filtre)")
+                print(f"{idx:>6}  ── trace interrompue")
             else:
                 ins = etm.image.instr(e.addr)
                 f = sym.function_at(e.addr) if sym else None
@@ -308,7 +308,7 @@ class ScriptAPI:
         rows = self._etm().call_flow()[-n:]
         icons = {"call": "→", "return": "←", "exception": "⚡", "exc-return": "↩", "start": "•", "branch": "↷",
                  "gap": "┄"}
-        labels = {"exc-return": "retour d'exception", "gap": "trace interrompue (filtre)"}
+        labels = {"exc-return": "retour d'exception", "gap": "trace interrompue"}
         for r in rows:
             label = labels.get(r.kind, r.func)
             print(f"{r.index:>8}  {'  ' * r.depth}{icons.get(r.kind, '')} {label}")
@@ -477,6 +477,15 @@ class ScriptAPI:
             raise RuntimeError("pas de gestionnaire de trace")
         for line in self.trace.start_etm_swo(self.s, self.s.target, cpu_hz or self.cpu_hz, swo_hz,
                                              stall=stall, stm32=stm32, port=port):
+            print(line)
+
+    def etm_etr(self, buffer: tuple[int, int] | None = None, stall: bool = False) -> None:
+        """ETM écrit en RAM par l'ETR de la puce (cible arrêtée ; STM32N6), lu à chaque arrêt ;
+        comme --etm-config --etm-port etr. `buffer` : (adresse, taille), sinon le tampon
+        réservé par le firmware (`__etr_buffer__`)."""
+        if self.trace is None:
+            raise RuntimeError("pas de gestionnaire de trace")
+        for line in self.trace.start_etm_tmc(self.s, buffer, stall=stall):
             print(line)
 
     def itm(self, port: int = 0) -> str:

@@ -92,6 +92,7 @@ variables et lectures cible en marche.
 |---|---|
 | *(aucune)* ou `--qemu` | QEMU, sans matériel ; `--machine` pour une autre carte (`mps2-an500` : Cortex-M7, `microbit` : Cortex-M0) |
 | `--openocd CFG…` | sonde réelle via OpenOCD, par ex. `--openocd configs/nucleo-f746zg.cfg` |
+| `--stlink [SN] [--stlink-ap N] [--ram-boot]` | sonde ST-LINK via ST-LINK_gdbserver, par ex. une Nucleo-N657X0-Q : `--stlink --stlink-ap 1 --ram-boot` |
 | `--remote HOST:PORT [--tcl HOST:PORT]` | serveur gdb déjà lancé (J-Link, pyOCD, OpenOCD) |
 
 ### Options utiles
@@ -426,7 +427,8 @@ gdbtrace.var_watch("sensors", "hex")                    # GUI : vue Watch ; --ba
 
 En mode all-stop, gdb ne lit rien pendant que la cible tourne. GdbTrace ouvre donc un
 **canal mémoire latéral** qui lit sans arrêter le cœur : le port TCL avec OpenOCD, QMP sous
-QEMU. `gdbtrace.live` vaut `None` si la cible n'en offre pas (J-Link ou pyOCD par
+QEMU, et avec ST-LINK_gdbserver le relais de GdbTrace, qui glisse ses lectures entre les
+paquets de gdb. `gdbtrace.live` vaut `None` si la cible n'en offre pas (J-Link ou pyOCD par
 `--remote`, sans `--tcl`).
 
 | Appel | Cible en marche |
@@ -543,6 +545,7 @@ gdbtrace.thread("consumer")
 | `swo_config(cpu_hz, …)` puis `itm(port)` | programme ITM/DWT/TPIU ; texte reçu sur un port ITM | broche SWO, sonde |
 | `var_trace(expr, access="write", pc=False)`, `var_samples(expr, n=20)`, `var_trace_stop(expr=None)` | trace de données du DWT : valeur d'une globale à chaque accès, cible en marche | capture SWO ou de trace |
 | `etm_swo(cpu_hz, stall=…)` | ETM par la broche SWO (comme `--etm-config --etm-port swo`) | OpenOCD, cible arrêtée |
+| `etm_etr(buffer=None, stall=False)` | ETM écrit en RAM par l'ETR de la puce, lu à chaque arrêt (comme `--etm-config --etm-port etr`) | STM32N6, cible arrêtée |
 | `etm_filter("fib", start=…, stop=…)` | ne tracer qu'une plage, ou entre deux lieux ; sans argument : tout le code | trace ETM (cible arrêtée si ETM réel) |
 | `trace_list(n)` | Trace.List : les dernières instructions exécutées | trace ETM ou MTB |
 | `calls(n)` | flot des appels, retours et exceptions | idem |
@@ -858,6 +861,7 @@ gdbtrace.cov.export("couverture.html")
 | `swo_config(cpu_hz, …)`, `itm(port=0)` | SWO, texte ITM |
 | `var_trace(expr, access="write", pc=False)`, `var_samples(expr, n=20, fmt="natural")`, `var_trace_stop(expr=None)` | trace de données du DWT (Var.TRACE) |
 | `etm_swo(cpu_hz, swo_hz=2_000_000, stall=False, stm32=False, port=3443)` | ETM par SWO |
+| `etm_etr(buffer=None, stall=False)` | ETM par l'ETR (tampon en RAM, `(adresse, taille)` ou `__etr_buffer__`) |
 | `etm_config(**options)` | ETM et TPIU parallèle |
 | `etm_filter(*plages, start=(), stop=())` | filtre de la trace ETM ; sans argument : tout le code |
 | `trace_list(n=30)`, `calls(n=40)` | Trace.List, flot d'appels |

@@ -83,11 +83,15 @@ class MemoryView(View):
         self._update_subscription()
 
     def on_program_changed(self) -> None:
-        """Programme natif : 0x20000000 (SRAM d'un Cortex-M) n'y est pas lisible ; la vue part
-        de la première variable globale du programme, désignée par son nom."""
+        """0x20000000 (SRAM d'un Cortex-M3/M4/M7) n'est pas lisible partout : programme natif,
+        puce dont la RAM est ailleurs (STM32N6 : AXISRAM en 0x34000000). La vue part alors de
+        la première variable globale du programme, désignée par son nom."""
         sym = self.app.symbols
-        if not (self.app.native and sym and self.addr_var.get().strip() == DEFAULT_ADDR):
+        if not (sym and self.addr_var.get().strip() == DEFAULT_ADDR):
             return
+        sram = int(DEFAULT_ADDR, 16)
+        if not self.app.native and any(sram <= a < sram + (1 << 24) for a, _n in sym.objects.values()):
+            return                              # la RAM du programme est bien là
         names = [n for n, (_a, size) in sym.objects.items() if size and n.isidentifier()
                  and not n.startswith("_")]
         if names:

@@ -109,10 +109,15 @@ _SIZES = {1: 1, 2: 2, 3: 4}
 class ItmDecoder:
     MAX_ZEROS = 64
 
-    def __init__(self):
+    def __init__(self, max_page: int = 0):
         self.buf = bytearray()
         self.ts = 0                 # horodatage local cumulé
         self.page = 0               # page de ports (paquet d'extension)
+        #: dernière page de ports implémentée : 0 sur les Cortex-M3/M4/M7/M33/M55 (32 ports).
+        #: Un changement de page au-delà est un octet perdu sur le SWO (un horodatage tronqué
+        #: fait lire ses octets suivants comme des en-têtes) : ignoré, sinon tous les ports
+        #: suivants seraient décalés de 32 jusqu'à la prochaine synchronisation.
+        self.max_page = max_page
         self.errors = 0
         self.synced = False
         self.packets = 0
@@ -166,6 +171,7 @@ class ItmDecoder:
         zeros = j - i
         if b[j] == 0x80 and zeros >= 5:     # ≥ 47 bits à 0 puis un 1
             self.synced = True
+            self.page = 0                   # la page est réémise après une synchronisation
             return Sync(ts=self.ts), zeros + 1
         return self._error(zeros)
 
@@ -224,6 +230,8 @@ class ItmDecoder:
             page |= more << 3
         hardware = bool(h & 0x04)
         if not hardware:
+            if page > self.max_page:
+                return self._error(1 + n)
             self.page = page
         return Extension(page=page, hardware=hardware, ts=self.ts), 1 + n
 

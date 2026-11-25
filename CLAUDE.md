@@ -20,6 +20,7 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'   # dev = pytest + ca
 make -C examples/firmware        # demo.elf (Cortex-M3, QEMU mps2-an385)
 make -C examples/freertos        # freertos.elf
 make -C examples/m0plus          # demo.elf Cortex-M0+ (QEMU -M microbit), tampon MTB réservé
+make -C examples/nucleo-n6       # firmware de test STM32N6 (M55, en RAM, boucles v8.1-M, tampon ETR)
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf               # GUI sur QEMU
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf --etm-sim     # + trace ETM simulée
 .venv/bin/python -m gdbtrace fw.elf --batch --script s.py             # sans GUI
@@ -40,11 +41,13 @@ QEMU sur un port libre. `pythonpath` inclut `tests/`, d'où `from conftest impor
 Aucun linter n'est configuré.
 
 Tests sur carte (`tests/test_board_f746.py`, Nucleo-F746ZG, firmware `examples/nucleo-f746`
-flashé par le test) : `--boards=auto|require|skip` (`tests/boards.py` trouve la sonde par
-`/sys` puis l'IDCODE). Le GUI tourne par le vrai `main()`, `App.mainloop` remplacé par un
-scénario ; le contenu de chaque vue est relevé (`boards.dump_views`, dans
-`tests/artifacts/board-f746.json`) puis vérifié vue par vue, avec la latence de la boucle Tk.
-Le test laisse la carte sans ETM ni stall, mais avec son firmware de test.
+flashé ; `tests/test_board_n6.py`, Nucleo-N657X0-Q, `examples/nucleo-n6` chargé en RAM par
+ST-LINK_gdbserver) : `--boards=auto|require|skip` (`tests/boards.py` trouve la sonde par
+`/sys` puis l'IDCODE, lu par OpenOCD ou ST-LINK_gdbserver). Le GUI tourne par le vrai
+`main()`, `App.mainloop` remplacé par le scénario commun `boards.run_gui` ; le contenu de
+chaque vue est relevé (`boards.dump_views`, dans `tests/artifacts/board-<carte>.json`) puis
+vérifié vue par vue, avec la latence de la boucle Tk. Les tests laissent la carte sans ETM,
+mais avec son firmware de test.
 
 ## Architecture
 
@@ -76,11 +79,20 @@ Le test laisse la carte sans ETM ni stall, mais avec son firmware de test.
   - `step_till` / `step_change` (`_step_loop`) font une seule reprise : arrêts intermédiaires
     silencieux (`_looping`, `state` reste « running »), un `running` et un `stopped`.
 - `TargetServer` (`core/target.py`) : `QemuTarget` (défaut, charge l'ELF lui-même,
-  `needs_load=False`), `OpenOcdTarget`, `RemoteTarget` (+ `--tcl` optionnel), et
+  `needs_load=False`), `OpenOcdTarget`, `StLinkTarget`, `RemoteTarget` (+ `--tcl` optionnel), et
   `NativeTarget` (`target.native`) : programme de l'hôte exécuté par gdb lui-même
   (`-exec-run --start`, arrêt à `main`), dans son propre pseudo-terminal (sinon il partage
   les tubes MI de gdb), état `exited` à sa fin, `restart()`. `live_memory()` fournit le canal
   mémoire latéral (natif : `/proc/<pid>/mem`), ou `None`.
+- `StLinkTarget` : ST-LINK_gdbserver (lancé `-e -g`, prêt quand il écrit « Waiting for
+  debugger connection » : ne jamais sonder son port, une connexion arrête le cœur) derrière
+  `RspRelay` (`core/rsp_relay.py`), auquel gdb se connecte. Le relais glisse ses propres
+  paquets `m`/`M` (`RelayMemory`, le canal en direct) quand gdb n'attend rien ou que la cible
+  tourne, retient gdb pendant ce temps, retire les paquets « O » hors d'une marche, et fait le
+  reset système (AIRCR, détachement, reconnexion, poignée de main de gdb rejouée : après
+  SYSRESETREQ le serveur refuse toute reprise). `ram_boot` (STM32N6) : reset, puis `load` et
+  VTOR/sp/pc pris dans la table des vecteurs (`after_load`, aussi après le `load` de la
+  connexion). `verify_by_read` : le CRC de `compare-sections` est faux sur un N6.
 - Programme natif PIE : les adresses de `SymbolTable` (ELF) ne sont pas celles de l'exécution
   (relocation) ; demander l'adresse à gdb (`address_of_expr`). La trace ETM et le Cortex-M
   (SVD, RTOS, reset par vecteurs) ne s'appliquent pas (`App.native`).
@@ -152,8 +164,22 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
   appels). Les événements `Step` / `ExcEntry` / `ExcReturn` portent des cycles mesurés
   (cycle-accurate) ou estimés par `cycles.py` ; `trace/timing.py` en tire le temps brut/net
   par fonction et par exception (vue Timing).
-- ETMv4 (Cortex-M7) : `etm4.py` (paquets) → `flow4.py` (file de spéculation, parcours du
-  code entre points de passage) ; `encoder4.py` pour les tests et l'ETM simulé.
+- ETMv4 (Cortex-M7, Cortex-M55) : `etm4.py` (paquets) → `flow4.py` (file de spéculation,
+  parcours du code entre points de passage) ; `encoder4.py` pour les tests et l'ETM simulé.
+  MAXSPEC (TRCIDR8 : M7 1, M55 0) passe au décodeur (`EtmTrace.set_max_spec`). Image
+  ARMv8-M (`CodeImage.arch`, Tag_CPU_arch de l'ELF) : capstone en mode V8, et `decode_v8m`
+  avant capstone pour les boucles à faible coût (LE = branchement conditionnel arrière, WLS
+  avant ; DLS/LCTP/BF* ordinaires), BXNS/BLXNS, CLRM ; une instruction illisible (Helium) y
+  est ordinaire, de la taille de son encodage. Le balayage des blocs IT continue après une
+  instruction que capstone ne lit pas.
+- Puce (`trace/chips.py`, reconnue par DBGMCU_IDCODE) : SWO hors du TPIU du cœur (N6 :
+  composant SWO CoreSight, horloge cœur/8, `SwoConfig.chip`), horloges de trace, chaîne
+  funnel/ETF/ETR. `trace/tmc.py` (`EtrCapture`, `TraceManager.start_etm_tmc`) : ETM écrit en
+  RAM par l'ETR, lu à chaque arrêt (ETM coupé, ETF/ETR vidés), relancé à chaque reprise
+  (attributs RIF du maître AXI et horloges réécrits : un reset système les efface) ; décodé
+  par le fil ETM, un tampon plein = un `_GAP` dans la file. Trace de données sur un DWT
+  ARMv8-M (`dwt_is_v8m`) : MATCH/ACTION/DATAVSIZE, pas de MASK. ITM : une page de ports
+  au-delà de `ItmDecoder.max_page` (0 : 32 ports) est un octet perdu, ignorée.
   `EtmTrace(version=…)` choisit v3 ou v4 ; `TraceManager.detect_etm()` lit TRCIDR1 (sous
   QEMU : CPUID, M7 → v4) après la connexion, et `configure_etm()` suit `EtmConfig.version`.
 - Filtre (`etm/filter.py`, `EtmConfig.filter`, `TraceManager.set_etm_filter`) : plages et
@@ -184,7 +210,8 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
 
 Une fonctionnalité complète touche en général : le module métier (`core/` ou `trace/`), une
 vue (`views/`), une méthode de `ScriptAPI` (`core/scripting.py`), une option CLI dans
-`__main__.py`, la section du README et les tests. `__main__.py` câble la trace **deux fois**
+`__main__.py`, la section du README, la notice d'utilisation (`docs/utilisation.md` : cibles,
+menus, options, dépannage, limites) et les tests. `__main__.py` câble la trace **deux fois**
 (chemin `--batch` et chemin GUI via `App._setup_live` / `App.attach`) : garder les deux
 synchronisés. Les options de capture passent par `setup_trace(args, trace, session, target,
 log)` (fonction du module, commune aux deux chemins ; `log` = console dans le GUI), et l'ETM
@@ -205,11 +232,17 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
   tests qui comptent des passages exacts sous QEMU le tolèrent (`collapse`,
   `tests/test_breakactions.py`).
 - Validé sur Nucleo-F746ZG (`tests/test_board_f746.py`) : capture SWO et ITM, ETMv4 par SWO,
-  trace de données du DWT, profil par SWO, vue RTOS, temps des tâches. Non validé sur sonde
+  trace de données du DWT, profil par SWO, vue RTOS, temps des tâches. Validé sur
+  Nucleo-N657X0-Q (`tests/test_board_n6.py`) : ST-LINK_gdbserver et son relais (mémoire en
+  direct, reset), ITM par le SWO de la sonde, ETMv4.5 par l'ETR (boucles LE comprises), DWT
+  de l'ARMv8-M. Non validé sur sonde
   réelle : `--rtos`, `DWT_PCSR` via OpenOCD, port de trace parallèle, ETMv3 matériel (M3/M4,
   y compris par SWO), MTB (dont le sens de l'adresse source d'une entrée d'exception : prise
-  comme adresse de retour). ETMv4 : M7 (ETMv4.0) seulement, sans cycle-accurate ni
-  horodatage ; pas les ARMv8-M (M33, M55).
+  comme adresse de retour). ETMv4 : M7 (ETMv4.0, par SWO) et M55 (ETMv4.5, par l'ETR d'un
+  STM32N6), sans cycle-accurate ni horodatage ; pas de filtre sur le M55 (aucun comparateur
+  d'adresse dans son ETM) ; la branche d'un BF* (v8.1-M) n'est pas suivie.
+- ST-LINK_gdbserver : SWV servi en octets ITM bruts (`-z`, débit = `-a` / `-b`) ; l'ST-LINK
+  intégré d'une N6 perd parfois un octet de SWO à 2 Mbit/s.
 - ETMv4 : un atome = un point de passage (`Instr.waypoint` : branchement ou ISB), pas une
   instruction ; en profondeur de spéculation 1, le dernier élément n'est validé qu'au
   suivant ou par `EtmTrace.flush()` (fait à l'arrêt de la cible). OpenCSD 1.4.1 déborde sur

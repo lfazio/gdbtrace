@@ -851,7 +851,7 @@ def test_etm_filter_in_gui(etm_app):
     steps = [e for e in app.trace.etm.last(10**6) if isinstance(e, Step)]
     assert all(lo <= e.addr < hi for e in steps)
     labels = [tv.listing.set(i, "func") for i in tv.listing.get_children()]
-    assert "── trace interrompue (filtre) ──" in labels
+    assert "── trace interrompue ──" in labels
     files = {cv.tree.item(i, "text") for i in cv.tree.get_children()}
     funcs = {cv.tree.item(f, "text") for i in cv.tree.get_children() for f in cv.tree.get_children(i)}
     assert funcs == {"fib"} and len(files) == 1
