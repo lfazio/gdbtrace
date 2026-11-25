@@ -168,7 +168,7 @@ class ViewManager:
     # ---- diffusion d'événements
     def refresh_all(self) -> None:
         for v in list(self.views):
-            self.app.safe(v.refresh)
+            self.app.safe_refresh(v.refresh)
 
     def running_all(self) -> None:
         for v in list(self.views):

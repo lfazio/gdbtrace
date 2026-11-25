@@ -319,7 +319,7 @@ def test_trace_view_with_simulated_etm(etm_app):
     app.go()
     assert pump(app, lambda: app.current_frame is not None and app.current_frame.func == "fib")
     assert pump(app, lambda: app.trace.etm.stats["instructions"] > 100 and not app.trace.etm_busy)
-    pump(app, lambda: False, timeout=0.3)
+    assert pump(app, lambda: trace_drawn(tv))               # rendu à la notification suivante
     rows = tv.listing.get_children()
     last = tv.listing.item(rows[-1], "values")
     # dernière instruction tracée : dans fib, juste avant l'adresse du point d'arrêt
@@ -341,6 +341,21 @@ def test_trace_view_with_simulated_etm(etm_app):
     app.go()
     assert pump(app, lambda: app.trace.etm.stats["instructions"] > n and not app.trace.etm_busy), \
         etm_diagnostics(app)
+
+
+def trace_drawn(tv) -> bool:
+    """La liste de la vue Trace est dessinée pour la trace actuelle. Ce rendu suit la
+    notification qui suit la fin du décodage (au plus ETM_NOTIFY_PERIOD plus tard), pas
+    l'arrêt : une attente fixe après l'arrêt ne suffit pas toujours."""
+    return (tv.etm is not None and tv._generation == tv.etm.generation
+            and bool(tv.listing.get_children()))
+
+
+def coverage_drawn(cv) -> bool:
+    """L'arbre de la vue Couverture reflète la base actuelle (pas un rendu d'avant le Go)."""
+    db = cv.db
+    return (db is not None and cv._gen == (id(db), db.generation, cv.hide_var.get())
+            and bool(cv.tree.get_children()))
 
 
 def etm_diagnostics(app) -> str:
@@ -583,8 +598,8 @@ def test_coverage_view(etm_app, tmp_path):
     app.halt()
     assert pump(app, lambda: app.session.state == "stopped" and not app.trace.etm_busy
                 and app.trace.etm.stats["instructions"] > 10_000), etm_diagnostics(app)
-    pump(app, lambda: False, timeout=0.3)
-    assert "instructions" in cv.info.cget("text") and "ETM simulé" in cv.info.cget("text")
+    assert pump(app, lambda: coverage_drawn(cv) and "instructions" in cv.info.cget("text"))
+    assert "ETM simulé" in cv.info.cget("text")
     files = {cv.tree.item(i, "text"): i for i in cv.tree.get_children()}
     assert list(files)[:2] == ["main.c", "startup.c"]     # projet d'abord (racine de la vue Fichiers)
     funcs = {cv.tree.item(i, "text"): cv.tree.item(i, "values")
@@ -648,7 +663,7 @@ def test_mtb_simulated_views(mtb_app):
     run_to(app, "animate")
     assert pump(app, lambda: app.trace.etm.stats["instructions"] > 50 and not app.trace.etm_busy), \
         etm_diagnostics(app)
-    pump(app, lambda: False, timeout=0.3)
+    assert pump(app, lambda: trace_drawn(tv))               # rendu à la notification suivante
     assert "MTB simulée (QEMU, 1024 octets)" in tv.info.cget("text")
     rows = tv.listing.get_children()
     last = tv.listing.item(rows[-1], "values")
@@ -733,8 +748,8 @@ def test_etm_over_swo_in_gui(app, qemu_paths, tmp_path):
     assert "ETM par SWO (ETMv3)" in text and app.trace.etm_swo
     assert app.trace.status() != "pas de capture SWO"
     assert pump(app, lambda: app.trace.etm.stats["instructions"] >= n), app.trace.trace_status()
-    pump(app, lambda: False, timeout=0.3)
-    assert "instructions" in cv.info.cget("text") and "aucune capture" not in cv.info.cget("text")
+    assert pump(app, lambda: "instructions" in cv.info.cget("text") and coverage_drawn(cv))
+    assert "aucune capture" not in cv.info.cget("text")
     t, _, _ = app.trace.etm.cov.total()
     assert t.covered > 100 and cv.tree.get_children()
     assert "instructions décodées" in tv.info.cget("text")
@@ -846,12 +861,12 @@ def test_etm_filter_in_gui(etm_app):
     run_to(app, "animate")
     assert pump(app, lambda: not app.trace.etm_busy and app.trace.etm.stats["instructions"] > 50), \
         etm_diagnostics(app)
-    pump(app, lambda: False, timeout=0.3)
-    assert "filtre : plages fib" in tv.info.cget("text") and "filtre" in cv.info.cget("text")
+    assert pump(app, lambda: trace_drawn(tv) and coverage_drawn(cv))
+    labels = [tv.listing.set(i, "func") for i in tv.listing.get_children()]
+    assert "── trace interrompue ──" in labels and "filtre" in cv.info.cget("text")
+    assert "filtre : plages fib" in tv.info.cget("text")
     steps = [e for e in app.trace.etm.last(10**6) if isinstance(e, Step)]
     assert all(lo <= e.addr < hi for e in steps)
-    labels = [tv.listing.set(i, "func") for i in tv.listing.get_children()]
-    assert "── trace interrompue ──" in labels
     files = {cv.tree.item(i, "text") for i in cv.tree.get_children()}
     funcs = {cv.tree.item(f, "text") for i in cv.tree.get_children() for f in cv.tree.get_children(i)}
     assert funcs == {"fib"} and len(files) == 1
@@ -1016,3 +1031,30 @@ def test_go_after_a_target_reports_its_end(app):
     assert s.state == "exited" and app.state_label.cget("text") == "TERMINÉ"
     app.go()
     assert "Programme terminé sur la cible" in app.status.get()
+
+
+def test_refresh_after_a_resume_is_not_an_error(app):
+    """Un script relance la cible juste après un arrêt : le rafraîchissement des vues, encore en
+    cours, voit gdb refuser (« Selected thread is running »). Vue périmée, pas une erreur ; une
+    erreur de rafraîchissement cible arrêtée reste affichée."""
+    from gdbtrace.core.gdb_backend import GdbError
+    from gdbtrace.views.console import ConsoleView
+    from gdbtrace.views.registers import RegistersView
+    con = app.views.find(ConsoleView)
+    v = app.views.find(RegistersView)
+    s = app.session
+
+    def resumed():
+        s.state = "running"                     # la relance est arrivée pendant le rafraîchissement
+        raise GdbError("-data-list-register-values x: Selected thread is running.")
+    v.refresh = resumed
+    app.views.refresh_all()
+    pump(app, lambda: False, timeout=0.1)
+    assert "Selected thread is running" not in con.out.get("1.0", "end")
+    s.state = "stopped"
+
+    def broken():
+        raise GdbError("lecture impossible")
+    v.refresh = broken
+    app.views.refresh_all()
+    assert pump(app, lambda: "lecture impossible" in con.out.get("1.0", "end"))

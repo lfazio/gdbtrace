@@ -819,6 +819,19 @@ class App:
             self.report_error(f"{type(exc).__name__}: {exc}")
             return None
 
+    def safe_refresh(self, fn: Callable[[], Any]) -> Any:
+        """Rafraîchissement d'une vue après un arrêt : comme safe(), sauf quand la cible a
+        repris entre-temps (un script ou la console relance juste après l'arrêt) ; gdb refuse
+        alors de lire (« Selected thread is running »). La vue est périmée, pas en erreur : le
+        prochain arrêt la rafraîchira."""
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001
+            if self.session is not None and self.session.state != "stopped":
+                return None
+            self.report_error(f"{type(exc).__name__}: {exc}")
+            return None
+
     def report_error(self, msg: str) -> None:
         self.write_console(msg.rstrip() + "\n", "err")
         self.status.set(msg.splitlines()[-1][:200] if msg else "")
