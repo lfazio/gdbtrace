@@ -562,7 +562,7 @@ gdbtrace.thread("consumer")
 | `swo_config(cpu_hz, …)` puis `itm(port)` | programme ITM/DWT/TPIU ; texte reçu sur un port ITM | broche SWO, sonde |
 | `var_trace(expr, access="write", pc=False)`, `var_samples(expr, n=20)`, `var_trace_stop(expr=None)` | trace de données du DWT : valeur d'une globale à chaque accès, cible en marche | capture SWO ou de trace |
 | `etm_swo(cpu_hz, stall=…)` | ETM par la broche SWO (comme `--etm-config --etm-port swo`) | OpenOCD, cible arrêtée |
-| `etm_etr(buffer=None, stall=False)` | ETM écrit en RAM par l'ETR de la puce, lu à chaque arrêt (comme `--etm-config --etm-port etr`) | STM32N6, cible arrêtée |
+| `etm_etr(buffer=None, stall=False)` | ETM écrit en RAM par l'ETR de la puce, lu en continu (comme `--etm-config --etm-port etr`) | STM32N6, cible arrêtée |
 | `etm_filter("fib", start=…, stop=…)` | ne tracer qu'une plage, ou entre deux lieux ; sans argument : tout le code | trace ETM (cible arrêtée si ETM réel) |
 | `trace_list(n)` | Trace.List : les dernières instructions exécutées | trace ETM ou MTB |
 | `calls(n)` | flot des appels, retours et exceptions | idem |

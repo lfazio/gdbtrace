@@ -20,7 +20,7 @@ Interface en **tkinter**.
 | 10. ETMv4 (Cortex-M7) | Trace d'instructions de l'ETM-M7 (ETMv4.0) : décodage validé contre QEMU, OpenCSD et une vraie capture par SWO sur Nucleo-F746ZG ; version de l'ETM détectée ; ETM simulé v4 sous QEMU (`mps2-an500`) ; cycle-accurate (durées mesurées, validées contre DWT_CYCCNT sur F746 et N6) et horodatage | ✅ |
 | 11. Trace ciblée et débogage avancé | Filtres de l'ETM (plages, start/stop) ; trace de données du DWT ; temps par tâche RTOS par ITM ; breakpoints à action et à compteur, Go.Till, Step.Change | ✅ |
 | 12. Programmes natifs | Un ELF de l'hôte (x86-64, AArch64…) débogué sous gdb : arrêt au début de `main`, vue Threads (pthreads nommés, thread courant, changement de thread), mémoire lue en marche dans `/proc/<pid>/mem`, fin et relance du programme | ✅ |
-| 13. ST-LINK_gdbserver et STM32N6 (Cortex-M55) | ST-LINK_gdbserver piloté derrière un relais RSP (mémoire en direct, reset système), image exécutée en RAM ; ITM par le SWO de la sonde ; ETMv4.5 écrit en RAM par l'ETR, lu à chaque arrêt ; décodage ARMv8.1-M (boucles à faible coût, Helium) ; DWT de l'ARMv8-M ; validé sur Nucleo-N657X0-Q | ✅ |
+| 13. ST-LINK_gdbserver et STM32N6 (Cortex-M55) | ST-LINK_gdbserver piloté derrière un relais RSP (mémoire en direct, reset système), image exécutée en RAM ; ITM par le SWO de la sonde ; ETMv4.5 écrit en RAM par l'ETR, lu en continu par le relais ; décodage ARMv8.1-M (boucles à faible coût, Helium) ; DWT de l'ARMv8-M ; validé sur Nucleo-N657X0-Q | ✅ |
 | 14. Cortex-M0 et M0+ (STM32G0, STM32F0) | Nucleo-G070RB (M0+) et Nucleo-F072RB (M0) par OpenOCD : cœur ARMv6-M reconnu (CPUID), traces ITM, SWO et ETM refusées en le disant (console, vues de trace) ; profil par `DWT_PCSR` ; FreeRTOS port ARM_CM0 V11.3 (son cadre de pile), validé sous QEMU `microbit` ; test sur carte | 🚧 (à valider sur carte) |
 | 15. Configurations de session | Menu Configuration et `--config FICHIER.yaml` : cible (chemin de l'ELF, SVD), serveur (QEMU, OpenOCD, ST-LINK_gdbserver, gdb pour un programme de l'hôte, serveur déjà lancé), OS (vues RTOS, Temps des tâches ou Threads selon l'OS), script et couverture, trace ; une configuration = une ligne de commande ; exemples dans `configs/`, sessions des tests sur carte | ✅ |
 
@@ -622,9 +622,15 @@ Helium appelées à chaque tick (`lob.c`).
   `gdbtrace.etm_etr()`) : l'ETM n'a pas d'autre sortie que le port parallèle. Le chemin
   funnel → ETF (FIFO) → ETR écrit les trames du formateur dans un tampon circulaire en RAM.
   Le firmware le réserve (`__etr_buffer__`, aligné sur 4 Ko ; 256 Ko dans la démo), ou
-  `--etr-buffer ADRESSE:TAILLE`. À chaque arrêt, l'ETM est coupé, l'ETF et l'ETR vidés et le
-  tampon lu ; à la reprise, ils repartent. Un tampon plein ne garde que la fin de l'exécution,
-  dont le début est un trou. Deux pièges : le réplicateur doit filtrer la sortie TPIU, sinon
+  `--etr-buffer ADRESSE:TAILLE`. **Lu en continu** : cible en marche, le relais lit le
+  pointeur d'écriture et les trames nouvelles toutes les 50 ms, décodées au fil de l'eau ;
+  la trace n'est plus bornée par le tampon. Validé sur la carte : 3 s d'exécution (deux fois
+  le tampon), et pas un tick perdu (la boucle LE de `lob_count`, appelée à chaque tick, fait
+  un tour de plus à chaque appel : 2 993 appels, aucune suite rompue). La sonde lit ~550 Ko/s ;
+  si l'ETR rattrape la lecture, la zone est jetée et la trace a un trou. En cycle-accurate
+  (~3 fois plus de trace) et avec `--etr-at-stop`, le tampon est lu à l'arrêt : l'ETM coupé,
+  l'ETF et l'ETR vidés, puis tout le tampon ; un tampon plein ne garde que la fin de
+  l'exécution. Deux pièges : le réplicateur doit filtrer la sortie TPIU, sinon
   elle bloque le flux ; et le maître AXI de l'ETR sort du reset non sécurisé (RIFSC), si bien
   que la RAM refuse ses écritures sans rien signaler.
 - **Décodage ARMv8.1-M** : capstone 5 ne connaît ni WLS / DLS / LE / LETP, ni BF*, ni CLRM,
@@ -781,7 +787,7 @@ gdbtrace/
   trace/swo.py          sources SWO (TCP, fichier), session de trace, stats d'exceptions
   trace/config.py       programmation ITM/DWT/TPIU (ou SWO CoreSight), commandes TPIU d'OpenOCD
   trace/chips.py        ce qui dépend de la puce : SWO, horloges de trace, funnel/ETF/ETR (STM32N6)
-  trace/tmc.py          ETM écrit en RAM par l'ETR, lu à chaque arrêt
+  trace/tmc.py          ETM écrit en RAM par l'ETR, lu en continu ou à l'arrêt
   trace/profile.py      profil statistique et échantillonneur de PC
   trace/manager.py      capture SWO/ETM d'une session (GUI et batch)
   trace/etm/etm3.py     décodeur de paquets ETMv3 (Cortex-M)

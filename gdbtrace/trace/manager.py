@@ -7,6 +7,7 @@ PC du DWT. `post(fn, *args)` sert à rappeler les abonnés dans le bon thread (G
 from __future__ import annotations
 
 import collections
+import sys
 import threading
 import time
 from typing import Callable
@@ -29,6 +30,7 @@ ARMV6M = {0xC20, 0xC60}
 ETM_MAX_BACKLOG = 256 << 20
 ETM_CHUNK = 4096                        # décodage par morceaux : le retard baisse au fil de l'eau
 ETM_YIELD_MAX = 0.5                     # attente maximale du décodage derrière le GUI, par morceau
+ETR_POLL = 0.05                         # lecture de l'ETR en continu : période (s)
 
 
 class _Gap(bytes):
@@ -73,6 +75,9 @@ class TraceManager:
         self.mtb_sim = None                 # QemuMtbSim
         # ETM écrit en RAM par l'ETR de la puce (STM32N6), lu à chaque arrêt
         self.tmc = None                     # EtrCapture
+        self._etr_live = None               # canal mémoire en marche : ETR lu en continu
+        self._etr_thread: threading.Thread | None = None
+        self._etr_halt = threading.Event()
         self.etm_listeners: list[Callable[[], None]] = []
         self._notify_lock = threading.Lock()
         self._notify_pending = False
@@ -478,6 +483,8 @@ class TraceManager:
                 self.tmc.restart()
             except Exception as exc:  # noqa: BLE001
                 self.on_error(f"ETR : relance impossible : {exc}")
+            else:
+                self._start_etr_stream()
         for sim in self._sims():
             if sim.path is None:
                 try:
@@ -514,6 +521,7 @@ class TraceManager:
                     errors = mtb.decoder.stats.errors
                     self.etm.feed_events(mtb.collect(), errors=mtb.decoder.stats.errors - errors)
                 if tmc is not None and session is not None and self.etm is not None:
+                    self._stop_etr_stream()         # avant la lecture du reste, par gdb
                     # décodé par le fil ETM, par tranches qui laissent la main au GUI (d'un
                     # bloc, le verrou de la trace serait tenu des secondes : vues figées)
                     data = tmc.collect()
@@ -687,11 +695,13 @@ class TraceManager:
         return log
 
     def start_etm_tmc(self, session, buffer: tuple[int, int] | None = None, stall: bool = False,
-                      chip=None, cycle_accurate: bool = False, timestamps: bool = False) -> list[str]:
+                      chip=None, cycle_accurate: bool = False, timestamps: bool = False,
+                      live=None) -> list[str]:
         """ETM écrit en RAM par l'ETR de la puce (cible arrêtée ; STM32N6) : funnel, ETF, ETR
         et ETM programmés, tampon lu à chaque arrêt. `buffer` : (adresse, taille), sinon le
         tampon réservé par le firmware (`__etr_buffer__`). Retourne le journal ; en cas
-        d'échec, la cause reste dans `setup_error`."""
+        d'échec, la cause reste dans `setup_error`. `live` : canal mémoire en marche (relais de
+        ST-LINK_gdbserver) ; le tampon est alors lu en continu, pas seulement à l'arrêt."""
         from .chips import detect_chip
         from .etm.config import EtmConfig
         from .tmc import EtrCapture, buffer_from_symbols
@@ -712,8 +722,19 @@ class TraceManager:
                                        "ADRESSE:TAILLE")
             if self.detect_etm(session) != 4:
                 raise RuntimeError("l'ETR n'est géré qu'avec un ETMv4")
-            tmc = EtrCapture(session, chip, *buffer, timestamps=timestamps)
+            note = None
+            if live is not None and cycle_accurate:
+                # ~3 fois plus de trace : plus que la sonde ne lit en marche (STLINK-V3 :
+                # ~550 Ko/s, un M55 à 64 MHz en écrit ~700 Ko/s) ; des tours complets de
+                # l'écriture entre deux lectures passeraient inaperçus
+                live, note = None, ("ETR lu à l'arrêt : en cycle-accurate, la trace dépasse ce que "
+                                    "la sonde lit en marche (fin de l'exécution, exacte)")
+            tmc = EtrCapture(session, chip, *buffer, timestamps=timestamps, stream=live is not None)
             log = tmc.setup()
+            if note:
+                log.append(note)
+            if live is not None:
+                log.append(f"ETR lu en continu, cible en marche ({getattr(live, 'name', 'canal live')})")
             log += self.configure_etm(EtmConfig(port="tmc", version=4, stall=stall,
                                                 cycle_accurate=cycle_accurate,
                                                 timestamps=timestamps), session)
@@ -721,10 +742,50 @@ class TraceManager:
             self.setup_error = f"ETM par l'ETR : {exc}"
             raise
         self.tmc = tmc
+        self._etr_live = live
+        if live is not None and sys.getswitchinterval() > 0.0005:
+            # le fil de lecture attend la sonde ; derrière le décodage (calcul pur), il
+            # attendrait aussi le GIL 5 ms à chaque paquet : la lecture ne suivrait plus
+            sys.setswitchinterval(0.0005)
         self.etm.timing_label = None
         self.setup_log = log
         self.attach_session(session)
         return log
+
+    # ------------------------------------------------------------------ ETR en continu
+    def _start_etr_stream(self) -> None:
+        if self._etr_live is None or self.tmc is None or not self.tmc.stream:
+            return
+        self._stop_etr_stream()
+        self._etr_halt.clear()
+        self._etr_thread = threading.Thread(target=self._etr_stream_loop, name="etr-stream",
+                                            daemon=True)
+        self._etr_thread.start()
+
+    def _stop_etr_stream(self) -> None:
+        self._etr_halt.set()
+        t, self._etr_thread = self._etr_thread, None
+        if t is not None and t is not threading.current_thread():
+            t.join(timeout=5)
+
+    def _etr_stream_loop(self) -> None:
+        """Cible en marche : l'ETR lu toutes les 50 ms par le canal live, décodé au fil de
+        l'eau par le fil ETM. Une erreur arrête la lecture en continu de cette exécution : son
+        reste sera lu à l'arrêt."""
+        tmc, live = self.tmc, self._etr_live
+        while not self._etr_halt.wait(0 if tmc.lagging else ETR_POLL):   # en retard : aussitôt
+            try:
+                data, gap = tmc.poll(live.read)
+            except Exception as exc:  # noqa: BLE001
+                if not self._etr_halt.is_set():
+                    self.post(self.on_error, f"ETR en continu : {exc}")
+                return
+            if self.etm is None:
+                continue
+            if gap:                             # écriture plus rapide que la lecture
+                self._etm_feed(_ETM_GAP)
+            if data:
+                self._etm_feed(data)
 
     def trace_status(self) -> str:
         """Où en est la trace d'instructions, en une ligne (vues Couverture et Trace) : d'où
@@ -774,6 +835,7 @@ class TraceManager:
                     pass
                 setattr(self, name, None)
         self.mtb = None
+        self._stop_etr_stream()
         self.tmc = None
 
     # ------------------------------------------------------------------ sources

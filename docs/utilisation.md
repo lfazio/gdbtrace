@@ -386,7 +386,7 @@ La vue **Variables tracées** suit la valeur d'une globale à chaque accès, cib
 | ETM simulé | `--etm-sim` | QEMU : son journal d'exécution est converti en flux ETM à chaque arrêt |
 | Broche SWO | `--etm-config --etm-port swo --cpu-hz N`, ou **Trace › ETM par SWO…** | une sonde de débogage (ST-Link) avec OpenOCD ; faible débit |
 | Port de trace parallèle | `--etm-config [--etm-width 4] [--stm32]` puis `--trace hôte:port` | une sonde de trace et une carte qui sort TRACECLK et TRACED0-3 |
-| Tampon en RAM (ETR) | `--etm-config --etm-port etr`, ou **Trace › ETM par l'ETR** | STM32N6 : la puce écrit la trace en RAM, GdbTrace la lit à chaque arrêt (section 9) |
+| Tampon en RAM (ETR) | `--etm-config --etm-port etr`, ou **Trace › ETM par l'ETR** | STM32N6 : la puce écrit la trace en RAM, GdbTrace la lit en continu (section 9) |
 | Fichier | `--trace-file` | rejouer une capture |
 
 GdbTrace lit la version de l'ETM sur la cible : ETMv3 pour un M3/M4, ETMv4 pour un M7 ou un M55. `--etm-stall` ralentit le cœur plutôt que de perdre de la trace quand la FIFO de l'ETM déborde ; il est indispensable par SWO sur un cœur rapide.
@@ -529,10 +529,11 @@ Elle équivaut à :
 
 ### Ce que donne la trace
 
-- À chaque arrêt, la trace de l'exécution qui vient de finir est lue puis décodée, en quelques secondes pour un tampon plein ; les vues Trace, Timing et Couverture se redessinent ensuite.
-- Le tampon est circulaire : 256 Ko gardent environ la dernière seconde et demie de la démo. Quand il a tourné, la trace commence par « trace interrompue », et les vues Trace et Couverture l'indiquent (« tampon plein : début de l'exécution perdu »).
+- Cible en marche, GdbTrace lit le tampon en continu (toutes les 50 ms) et décode au fil de l'eau : la trace couvre toute l'exécution, pas seulement ce que tient le tampon, et la Couverture se met à jour en marche. À l'arrêt, il ne reste que la fin à lire ; Trace et Timing se redessinent.
+- La sonde lit environ 550 Ko/s ; la démo en écrit environ 170 Ko/s. Si l'écriture rattrape la lecture, la zone est jetée : la trace a un trou (« trace interrompue »), et l'état de la capture compte ces rattrapages.
+- En cycle-accurate (environ 3 fois plus de trace), ou avec `--etr-at-stop`, le tampon est lu seulement à l'arrêt. Il est circulaire : 256 Ko gardent environ la dernière seconde et demie de la démo, un tiers en cycle-accurate. Quand il a tourné, la trace commence par « trace interrompue », et les vues Trace et Couverture l'indiquent (« tampon plein : début de l'exécution perdu »).
 - Les boucles à faible coût et le Helium du M55 sont décodés.
-- Les durées de la vue Timing sont estimées : le modèle de cycles ne connaît pas les attentes de l'AXISRAM, sans cache dans la démo.
+- Les durées de la vue Timing sont estimées, sauf avec `--etm-cycle-accurate` : le modèle de cycles ne connaît pas les attentes de l'AXISRAM, sans cache dans la démo (les durées mesurées sont environ 25 fois les estimées).
 
 ### Test sur carte
 
@@ -717,6 +718,7 @@ Un script peut ce que l'interface ne propose pas : une **action Python** sur un 
 | `--etm-config` | programmer l'ETM et sa sortie (TPIU, ou ETR) à la connexion |
 | `--etm-port parallel\|swo\|etr` | sortie de l'ETM : port parallèle, broche SWO, ou tampon en RAM écrit par l'ETR (STM32N6) |
 | `--etr-buffer ADRESSE:TAILLE` | avec `--etm-port etr` : tampon de l'ETR (défaut : le symbole `__etr_buffer__` du firmware) |
+| `--etr-at-stop` | avec `--etm-port etr` : lire le tampon seulement à l'arrêt (par défaut : en continu, sauf en cycle-accurate) |
 | `--etm-width 1\|2\|4` | largeur du port parallèle |
 | `--etm-stall` | ralentir le cœur plutôt que perdre de la trace |
 | `--etm-cycle-accurate` | durées mesurées (environ 8 fois plus de trace en ETMv3, 3 fois en ETMv4) |
@@ -822,7 +824,7 @@ Quand une capture ne démarre pas, GdbTrace le dit : le journal de mise en route
 - **Pas encore validé sur carte** : Nucleo-G070RB (Cortex-M0+) et Nucleo-F072RB (Cortex-M0), par OpenOCD (test prêt : `tests/test_board_m0.py`), lecture de `DWT_PCSR` par OpenOCD (et sa présence sur le Cortex-M0), port de trace parallèle, ETMv3 matériel (M3/M4), MTB d'un vrai M0+, `--rtos` d'OpenOCD.
 - **Cortex-M0/M0+** : ni ITM, ni SWO, ni ETM. Sur les STM32G0 et STM32F0, 4 breakpoints matériels et 2 watchpoints, que Go.Till partage avec les watchpoints posés.
 - **ETMv4** : Cortex-M7 (par SWO) et Cortex-M55 (par l'ETR d'un STM32N6), cycle-accurate et horodatage compris. Sur le M55, le filtre ETM prend les comparateurs du DWT (4 plages au plus), et la branche d'une instruction « branch future » (BF, BFL…) n'est pas suivie ; les compilateurs n'en émettent pas.
-- **ETR** : lu seulement à l'arrêt ; un tampon plein ne garde que la fin de l'exécution.
+- **ETR** : lu en continu tant que la trace ne dépasse pas ce que lit la sonde (~550 Ko/s) ; au-delà, des trous. En cycle-accurate, lu à l'arrêt : un tampon plein ne garde que la fin de l'exécution.
 - **SWO d'un STLINK-V3EC (N6)** : un octet perdu de temps en temps à 2 Mbit/s, compté comme une erreur ITM.
 - **Filtre ETMv3** : deux plages au plus, chacune agrandie en bloc aligné de 2^n octets.
 - **ETM simulé** : QEMU ne dit pas si une instruction conditionnelle d'un bloc IT (hors branchement) a été exécutée ; elle est comptée exécutée. Les branchements conditionnels sont exacts.

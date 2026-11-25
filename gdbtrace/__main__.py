@@ -115,9 +115,10 @@ def setup_trace(args, trace, session, target, log=print) -> None:
             trace.start_file(args.swo_file, args.swo_formatter)
             log(f"capture SWO rejouée : {args.swo_file}")
         if args.etm_config and args.etm_port == "etr":    # ETM écrit en RAM par l'ETR (STM32N6)
+            live = None if args.etr_at_stop else target.live_memory()
             for line in trace.start_etm_tmc(session, etr_buffer(args), stall=args.etm_stall,
                                             cycle_accurate=args.etm_cycle_accurate,
-                                            timestamps=args.etm_timestamps):
+                                            timestamps=args.etm_timestamps, live=live):
                 log(line)
         elif args.etm_config:
             from .trace.etm.config import EtmConfig
@@ -231,6 +232,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "(formateur TPIU, capturée par la sonde de débogage via OpenOCD ; "
                         "faible débit, voir --cpu-hz / --swo-hz) ou ETR (tampon en RAM écrit par "
                         "la puce, lu à chaque arrêt ; STM32N6)")
+    e.add_argument("--etr-at-stop", action="store_true",
+                   help="avec --etm-port etr : lire le tampon seulement à l'arrêt (par défaut, il est "
+                        "lu en continu cible en marche par le canal mémoire, s'il y en a un)")
     e.add_argument("--etr-buffer", metavar="ADRESSE:TAILLE",
                    help="avec --etm-port etr : tampon de l'ETR en RAM ; par défaut le symbole "
                         "__etr_buffer__ du firmware")
@@ -316,8 +320,8 @@ def validate(args) -> list[str]:
                               or etm_swo or swo_etm or args.mtb is not None or args.mtb_sim is not None):
         errors.append("--coverage : pas de trace d'instructions (--etm-sim / --mtb-sim sous QEMU ; "
                       "--etm-config --etm-port swo ou etr, --trace / --trace-file ou --mtb sur matériel)")
-    if args.etr_buffer and not (args.etm_config and args.etm_port == "etr"):
-        errors.append("--etr-buffer : avec --etm-config --etm-port etr")
+    if (args.etr_buffer or args.etr_at_stop) and not (args.etm_config and args.etm_port == "etr"):
+        errors.append("--etr-buffer / --etr-at-stop : avec --etm-config --etm-port etr")
     if (args.stlink_ap or args.ram_boot) and args.stlink is None:
         errors.append("--stlink-ap / --ram-boot : avec --stlink")
     if args.mtb_autohalt and args.mtb is None and args.mtb_sim is None:

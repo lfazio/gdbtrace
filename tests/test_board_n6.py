@@ -252,3 +252,51 @@ def test_etm_filter_by_dwt_on_board(request, tmp_path, run):
     assert res["n"] > 0 and res["inside"] == res["n"], res
     assert res["incomplete"] == 0 and len(res["calls"]) >= 3, res
     assert all((b - a) % (24 * 23) == 23 for a, b in zip(res["calls"], res["calls"][1:])), res
+
+
+STREAM_SCRIPT = r'''
+import collections, json, time
+from gdbtrace.trace.etm import qemu_log as ql
+g = gdbtrace
+tm = g.trace
+tm.etm.history = collections.deque(maxlen=50_000_000)       # toute l'exécution
+f = g._symbols().function("lob_count")
+le = next(i for a in range(f.start, f.end, 2) if (i := tm.etm.image.instr(a)) is not None and i.op == "le")
+g.go(); time.sleep(0.2); g.halt(); tm.wait_etm(60)
+tm.etm.history.clear()
+s0 = tm.tmc.streamed
+g.go(); time.sleep(3.0); g.halt(); tm.wait_etm(180)
+counts, cur = [], None
+for e in tm.etm.history:
+    if isinstance(e, ql.Step):
+        if e.addr == f.start:
+            if cur is not None:
+                counts.append(cur)
+            cur = 0
+        elif e.addr == le.target and cur is not None:
+            cur += 1
+print("RESULT " + json.dumps({"counts": counts, "streamed": tm.tmc.streamed - s0, "size": tm.tmc.size,
+                             "gaps": tm.etm.gaps, "errors": tm.etm.stats["erreurs"],
+                             "status": tm.trace_status()}))
+'''
+
+
+def test_etr_read_while_running_is_complete(request, tmp_path, run):
+    """ETR lu en continu par le relais : 3 s d'exécution, deux fois ce que tient le tampon, et
+    pas un tick perdu (la boucle LE de lob_count fait un tour de plus à chaque tick)."""
+    import json
+    import sys
+    serial = board_serial(request, boards.NUCLEO_N6)
+    script = tmp_path / "continu.py"
+    script.write_text(STREAM_SCRIPT)
+    r = subprocess.run([sys.executable, "-m", "gdbtrace", FW, "--stlink", serial, "--stlink-ap", "1",
+                        "--ram-boot", "--program", "--cpu-hz", "64000000", "--etm-config",
+                        "--etm-port", "etr", "--batch", "--script", str(script)],
+                       capture_output=True, text=True, timeout=300, cwd=ROOT)
+    line = next((ln for ln in r.stdout.splitlines() if ln.startswith("RESULT ")), None)
+    assert line, r.stdout[-2000:] + r.stderr[-2000:]
+    res = json.loads(line[7:])
+    counts = res["counts"]
+    assert res["streamed"] > 1.5 * res["size"] and res["gaps"] == 0 and res["errors"] == 0, res["status"]
+    assert len(counts) > 2500, len(counts)                    # tick de 1 ms
+    assert all((b - a) % 64 == 1 for a, b in zip(counts, counts[1:]))

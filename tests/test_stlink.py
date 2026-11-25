@@ -446,3 +446,60 @@ def test_stlink_options_are_checked(capsys):
         with pytest.raises(SystemExit):
             main([elf, "--batch", *argv])
         assert msg in capsys.readouterr().err
+
+
+class StreamTarget(FakeTarget):
+    """ETR qui écrit pendant que la cible tourne : `write(frames)` avance le pointeur
+    d'écriture, le tampon tourne ; `read` est le canal mémoire en marche."""
+
+    def __init__(self, buffer, size):
+        super().__init__(buffer, size)
+        self.wp = buffer
+        self.during_read = b""            # trames écrites pendant la prochaine lecture
+
+    def write(self, frames):
+        from gdbtrace.trace import tmc
+        for i in range(0, len(frames), 16):
+            off = self.wp - self.buffer
+            self.mem[off:off + 16] = frames[i:i + 16]
+            self.wp = self.buffer + (off + 16) % len(self.mem)
+        self.regs[0xE0083000 + tmc.RWP] = self.wp
+
+    def read(self, addr, n):
+        from gdbtrace.trace import tmc
+        if addr == 0xE0083000 + tmc.RWP:
+            return self.wp.to_bytes(4, "little")
+        out = self.read_memory(addr, n)
+        if self.during_read:
+            late, self.during_read = self.during_read, b""
+            self.write(late)
+        return out
+
+
+def test_etr_streaming_follows_the_write_pointer_and_detects_overruns():
+    from gdbtrace.trace.chips import STM32N6
+    from gdbtrace.trace.tmc import EtrCapture
+    from gdbtrace.trace.tpiu import FULL_SYNC, frame_bytes
+    buf, size = 0x34010000, 4096
+    t = StreamTarget(buf, size)
+    cap = EtrCapture(t, STM32N6, buf, size, stream=True)
+    cap.setup()
+    cap.restart()
+    payload = bytes(range(256)) * 40                         # 10 Ko : plus de deux tours
+    frames = frame_bytes(2, payload)[len(FULL_SYNC):]
+    got = bytearray()
+    for i in range(0, len(frames), 1024):                    # écrit, lu, écrit, lu…
+        t.write(frames[i:i + 1024])
+        data, gap = cap.poll(t.read)
+        assert not gap
+        got += data
+    assert bytes(got) == payload                             # deux tours et demi, sans perte
+    # l'écriture rattrape la lecture : la zone lue est jetée, un trou est signalé
+    t.write(frames[:3072])
+    t.during_read = frames[:2048]
+    data, gap = cap.poll(t.read)
+    assert gap and data == b"" and cap.overruns == 1 and cap.stream_ptr == t.wp
+    t.write(frames[:512])
+    data, gap = cap.poll(t.read)
+    assert not gap and len(data) > 400                       # reprise au pointeur d'écriture
+    assert "lu en marche" in cap.describe() and "rattrapées" in cap.describe()

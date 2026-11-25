@@ -212,7 +212,10 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
 - Puce (`trace/chips.py`, reconnue par DBGMCU_IDCODE) : SWO hors du TPIU du cœur (N6 :
   composant SWO CoreSight, horloge cœur/8, `SwoConfig.chip`), horloges de trace, chaîne
   funnel/ETF/ETR. `trace/tmc.py` (`EtrCapture`, `TraceManager.start_etm_tmc`) : ETM écrit en
-  RAM par l'ETR, lu à chaque arrêt (ETM coupé, ETF/ETR vidés), relancé à chaque reprise
+  RAM par l'ETR ; lu en continu par le canal live (`poll`, fil `etr-stream` arrêté avant la
+  lecture du reste à l'arrêt ; écriture qui rattrape la lecture = zone jetée, `_ETM_GAP`),
+  sinon à l'arrêt (cycle-accurate, `--etr-at-stop` : ETM coupé, ETF/ETR vidés) ; relancé à
+  chaque reprise
   (attributs RIF du maître AXI et horloges réécrits : un reset système les efface) ; décodé
   par le fil ETM, un tampon plein = un `_GAP` dans la file. Trace de données sur un DWT
   ARMv8-M (`dwt_is_v8m`) : MATCH/ACTION/DATAVSIZE, pas de MASK. ITM : une page de ports

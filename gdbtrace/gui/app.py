@@ -728,9 +728,11 @@ class App:
         if not self._need("stopped"):
             self.status.set("Arrêter la cible pour configurer la trace (Break)")
             return None
+        target = self.session.target if self.session else None
         log = self.safe(lambda: self.trace.start_etm_tmc(
             self.session, buffer, stall=self.etm_stall, cycle_accurate=self.etm_cycle_accurate,
-            timestamps=self.etm_timestamps))
+            timestamps=self.etm_timestamps,
+            live=target.live_memory() if target is not None else None))
         if log:
             self.write_console("\n".join(log) + "\n", "gdb")
             self.status.set(log[-1][:200])

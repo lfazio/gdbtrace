@@ -8,6 +8,14 @@ gdb ; à la reprise suivante, les puits repartent du début du tampon et l'ETM e
 commence par une synchronisation : chaque exécution se décode seule). Un tampon plein a
 tourné (STS.Full) : seules ses dernières trames restent, et le décodage commence par un trou.
 
+En continu (`stream`, par défaut quand la cible a un canal mémoire en marche, le relais de
+ST-LINK_gdbserver) : pendant la marche, `poll()` lit le pointeur d'écriture et les trames
+écrites depuis la lecture précédente (tampon circulaire : le tour est suivi) ; l'arrêt ne lit
+plus que le reste. La trace n'est alors plus limitée à la taille du tampon, tant que la lecture
+suit l'écriture : la sonde lit ~550 Ko/s (STLINK-V3), l'ETM d'un M55 à 64 MHz en produit
+~170 Ko/s, ~3 fois plus en cycle-accurate. Le pointeur d'écriture est relu après chaque
+lecture : si l'ETR a rattrapé la zone lue, elle est jetée et la trace a un trou (`overruns`).
+
 Le tampon est réservé par le firmware (symbole `__etr_buffer__`, aligné sur 4 Ko) ou donné
 par `--etr-buffer ADRESSE:TAILLE`. Les horloges de trace et les attributs du maître AXI de
 l'ETR (`chips.py`) sont réécrits à chaque reprise : un reset système les remet à zéro.
@@ -47,7 +55,7 @@ class EtrCapture:
     """ETR d'une vraie cible, en tampon circulaire de `size` octets à `buffer`."""
 
     def __init__(self, session, chip: TraceChip, buffer: int, size: int, trace_id: int = 2,
-                 timestamps: bool = False):
+                 timestamps: bool = False, stream: bool = False):
         if chip.etr is None:
             raise ValueError(f"{chip.name} : pas d'ETR")
         if buffer % 8 or size % 16 or size < 1024:
@@ -58,6 +66,12 @@ class EtrCapture:
         self.buffer, self.size = buffer, size
         self.trace_id = trace_id
         self.timestamps = timestamps  # générateur de temps à (re)démarrer
+        self.stream = stream          # lu en marche (poll), pas seulement à l'arrêt
+        self.stream_ptr: int | None = None   # prochaine trame à lire (lecture en continu)
+        self.streamed = 0             # octets de trames lus en marche
+        self.overruns = 0             # lectures en continu rattrapées par l'écriture (jetées)
+        self.lagging = False          # la dernière lecture a trouvé plus d'un quart de tampon
+        self._deformatter = TpiuDeformatter(aligned=True)
         self.runs = 0                 # exécutions lues
         self.wraps = 0                # exécutions dont le tampon a tourné (début perdu)
         self.bytes = 0                # octets de trace ETM lus
@@ -146,7 +160,52 @@ class EtrCapture:
         """Avant une reprise : tampon vidé, puits relancés, ETM rallumé."""
         self._chip_setup()
         self._start_sinks()
+        self._deformatter = TpiuDeformatter(aligned=True)
+        self.stream_ptr = self.buffer if self.stream else None
         self._w(TRCPRGCTLR, 1)
+
+    def _etm_bytes(self, raw: bytes) -> bytes:
+        """Trames → octets ETM (ID `trace_id`), déformateur gardé d'une lecture à l'autre."""
+        return b"".join(chunk for sid, chunk in self._deformatter.feed(raw) if sid == self.trace_id)
+
+    def _span(self, read, start: int, stop: int) -> bytes:
+        """Trames de `start` à `stop` (adresses du tampon), le tour compris."""
+        if stop >= start:
+            return read(start, stop - start) if stop > start else b""
+        end = self.buffer + self.size
+        return read(start, end - start) + (read(self.buffer, stop - self.buffer)
+                                           if stop > self.buffer else b"")
+
+    def _rwp(self, read) -> int:
+        rwp = int.from_bytes(read(self.chip.etr + RWP, 4), "little")
+        if not self.buffer <= rwp <= self.buffer + self.size:
+            raise RuntimeError(f"ETR : pointeur d'écriture {rwp:#x} hors du tampon")
+        rwp = self.buffer + (rwp - self.buffer) // 16 * 16   # dernière trame complète
+        return self.buffer if rwp == self.buffer + self.size else rwp
+
+    def _dist(self, a: int, b: int) -> int:
+        return (b - a) % self.size
+
+    def poll(self, read) -> tuple[bytes, bool]:
+        """Cible en marche : (octets ETM écrits depuis la lecture précédente, trou avant eux).
+        `read(adresse, n)` : le canal mémoire en marche. Si l'écriture a fait le tour pendant
+        la lecture, celle-ci est jetée : la suite repart du pointeur d'écriture, après un trou."""
+        if self.stream_ptr is None:
+            return b"", False
+        r0 = self._rwp(read)
+        avail = self._dist(self.stream_ptr, r0)
+        raw = self._span(read, self.stream_ptr, r0)
+        r1 = self._rwp(read)
+        self.lagging = avail > self.size // 4
+        if avail + self._dist(r0, r1) >= self.size:  # l'ETR a recouvert ce qu'on lisait
+            self.overruns += 1
+            self.stream_ptr = r1
+            return b"", True
+        self.stream_ptr = r0
+        self.streamed += len(raw)
+        data = self._etm_bytes(raw)
+        self.bytes += len(data)
+        return data, False
 
     # ------------------------------------------------------------------ lecture
     def _flush(self, base: int) -> None:
@@ -168,12 +227,19 @@ class EtrCapture:
         end = self.buffer + self.size
         if not self.buffer <= rwp <= end:
             raise RuntimeError(f"ETR : pointeur d'écriture {rwp:#x} hors du tampon")
+        self.runs += 1
+        if self.stream_ptr is not None:         # lu en marche : le reste seulement
+            ptr, self.stream_ptr = self.stream_ptr, None
+            raw = self._span(self.s.read_memory, ptr, rwp if rwp < end else self.buffer)
+            self.last_raw, self.last_wrapped = raw, False
+            data = self._etm_bytes(raw)
+            self.bytes += len(data)
+            return data
         wrapped = bool(sts & STS_FULL)
         if wrapped:
             raw = self.s.read_memory(rwp, end - rwp) + self.s.read_memory(self.buffer, rwp - self.buffer)
         else:
             raw = self.s.read_memory(self.buffer, rwp - self.buffer) if rwp > self.buffer else b""
-        self.runs += 1
         self.wraps += wrapped
         self.last_raw, self.last_wrapped = raw, wrapped
         data = b"".join(chunk for sid, chunk in TpiuDeformatter(aligned=True).feed(raw)
@@ -185,5 +251,8 @@ class EtrCapture:
         plural = "s" if self.wraps > 1 else ""
         wraps = f", {self.wraps} tampon{plural} plein{plural} (début perdu)" if self.wraps else ""
         err = f", {self.mem_errors} erreurs d'écriture en RAM" if self.mem_errors else ""
-        return (f"ETR ({self.chip.name}, {self.size >> 10} Ko à {self.buffer:#010x}) : "
+        if self.overruns:
+            err += f", {self.overruns} lectures rattrapées par l'écriture (trous)"
+        live = f", lu en marche ({self.streamed >> 10} Ko)" if self.stream else ""
+        return (f"ETR ({self.chip.name}, {self.size >> 10} Ko à {self.buffer:#010x}{live}) : "
                 f"{self.runs} exécution{'s' if self.runs > 1 else ''}, {self.bytes} octets ETM{wraps}{err}")

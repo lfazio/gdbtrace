@@ -500,7 +500,7 @@ class ScriptAPI:
         if self.trace is None:
             raise RuntimeError("pas de gestionnaire de trace")
         for line in self.trace.start_etm_tmc(self.s, buffer, stall=stall, cycle_accurate=cycle_accurate,
-                                             timestamps=timestamps):
+                                             timestamps=timestamps, live=self.live):
             print(line)
 
     def itm(self, port: int = 0) -> str:
