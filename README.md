@@ -270,7 +270,7 @@ par tâche FreeRTOS. Sources des échantillons :
 | Source | Comment | Cible |
 |---|---|---|
 | SWO | paquets « PC sample » du DWT (`--swo-config`, échantillonnage réglé via CYCTAP/POSTPRESET) | sonde + broche SWO |
-| Live | lecture de `DWT_PCSR` par l'AHB-AP, cœur non arrêté | OpenOCD, Cortex-M3/M4/M7 (pas M0) |
+| Live | lecture de `DWT_PCSR` par l'AHB-AP, cœur non arrêté | OpenOCD, Cortex-M0+ (ex. STM32G0), M3, M4, M7 ; optionnel en ARMv6-M |
 | Live | PC de la vCPU lu par le moniteur (~2 000 éch./s) | QEMU |
 
 « Auto » prend le SWO si une capture tourne, sinon le Live. Un profil qui marche ne prouve

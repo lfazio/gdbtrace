@@ -340,6 +340,7 @@ def main(argv: list[str] | None = None) -> int:
         msg = None
         if not target.native:                    # trace d'instructions : Cortex-M seulement
             msg = trace.setup_etm(elf, symbols, cycle_accurate=args.etm_cycle_accurate)
+            trace.detect_core(s)                 # ARMv6-M : ni ITM ni ETM, refusés clairement
             if trace.etm is not None:
                 trace.detect_etm(s)              # ETMv3 (M3/M4) ou ETMv4 (M7)
         if args.etm_sim or args.mtb_sim is not None:

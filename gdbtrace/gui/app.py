@@ -401,9 +401,10 @@ class App:
                 msg = self.trace.setup_etm(self.session.elf, self.symbols)
                 if msg:
                     self.report_error(msg)
-        if self.trace.etm is not None and self.session is not None and self.session.state == "stopped" \
-                and not self.native:
-            self.safe(self.trace.detect_etm, self.session)      # ETMv3 (M3/M4) ou ETMv4 (M7)
+        if self.session is not None and self.session.state == "stopped" and not self.native:
+            self.safe(self.trace.detect_core, self.session)     # ARMv6-M : ni ITM ni ETM
+            if self.trace.etm is not None:
+                self.safe(self.trace.detect_etm, self.session)  # ETMv3 (M3/M4) ou ETMv4 (M7)
         if isinstance(target, QemuTarget) and (target.etm_sim or target.mtb_sim is not None) \
                 and self.live is not None:
             if self.trace.etm is not None and target.mtb_sim is not None and self.trace.mtb_sim is None:

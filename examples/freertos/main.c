@@ -51,7 +51,14 @@ static void record_hwm(int id)
 
 static int itm_enabled(unsigned port)
 {
+#if defined(__ARM_ARCH_6M__)
+    /* Cortex-M0/M0+ (ARMv6-M) : pas d'ITM, et sa zone du PPB est réservée (un accès peut
+     * provoquer une HardFault) : la sortie ITM reste muette sans y toucher. */
+    (void)port;
+    return 0;
+#else
     return (ITM_TCR & 1u) && (ITM_TER & (1u << port));
+#endif
 }
 
 static void itm_putc(unsigned port, char c)

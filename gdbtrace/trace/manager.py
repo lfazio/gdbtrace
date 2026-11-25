@@ -19,6 +19,12 @@ from .swo import ExceptionStats, FileSwoSource, SwoSource, TcpSwoSource, TraceSe
 ETM_NOTIFY_PERIOD = 0.5               # s : rafraîchissement des vues pendant une capture
 CPUID = 0xE000ED00
 CORTEX_M7 = 0xC27                      # CPUID.PARTNO
+#: cœurs Cortex-M, par CPUID.PARTNO
+CORE_NAMES = {0xC20: "Cortex-M0", 0xC60: "Cortex-M0+", 0xC23: "Cortex-M3", 0xC24: "Cortex-M4",
+              0xC27: "Cortex-M7", 0xD20: "Cortex-M23", 0xD21: "Cortex-M33", 0xD22: "Cortex-M55",
+              0xD23: "Cortex-M85"}
+#: ARMv6-M : ni ITM, ni TPIU (pas de SWO), ni ETM dans l'architecture ; le M0+ peut avoir une MTB
+ARMV6M = {0xC20, 0xC60}
 #: trace ETM reçue pas encore décodée, au plus (au-delà, la plus ancienne est perdue)
 ETM_MAX_BACKLOG = 256 << 20
 ETM_CHUNK = 4096                        # décodage par morceaux : le retard baisse au fil de l'eau
@@ -92,6 +98,7 @@ class TraceManager:
         #: ETM par SWO configuré (le formateur TPIU doit rester actif) ; journal et cause du
         #: dernier échec de sa mise en route, montrés par les vues (`trace_status`)
         self.etm_swo = False
+        self.core: int | None = None        # CPUID.PARTNO de la cible (detect_core)
         self.setup_log: list[str] = []
         self.setup_error: str | None = None
         #: filtre de la trace ETM : effectif (tel que le matériel l'applique), spécifications
@@ -158,17 +165,47 @@ class TraceManager:
             fn()
         return msg
 
+    def detect_core(self, session) -> int | None:
+        """Cœur de la cible arrêtée (CPUID.PARTNO), retenu pour dire ce que sa trace permet
+        (`no_trace_reason`). None : illisible."""
+        try:
+            self.core = (session.read_u32(CPUID) >> 4) & 0xFFF
+        except Exception:  # noqa: BLE001 - cible qui ne répond pas : cœur inconnu
+            self.core = None
+        return self.core
+
+    @property
+    def core_name(self) -> str | None:
+        if self.core is None:
+            return None
+        return CORE_NAMES.get(self.core, f"cœur {self.core:#05x}")
+
+    def no_trace_reason(self) -> str | None:
+        """Pourquoi ce cœur n'a ni ITM, ni SWO, ni ETM (ARMv6-M : Cortex-M0, M0+), ou None."""
+        if self.core not in ARMV6M:
+            return None
+        mtb = (" ; trace d'instructions par la MTB si la puce en a une (--mtb-probe, --mtb)"
+               if self.core == 0xC60 else "")
+        return f"{self.core_name} (ARMv6-M) : ni ITM, ni SWO, ni ETM{mtb}"
+
+    def _require_itm(self) -> None:
+        """Refuse clairement une trace ITM, SWO ou ETM sur un cœur qui n'en a pas : sinon les
+        écritures dans des registres absents échouent sans dire pourquoi."""
+        reason = self.no_trace_reason()
+        if reason:
+            self.setup_error = reason
+            raise RuntimeError(reason)
+
     def detect_etm(self, session) -> int:
         """Architecture de l'ETM de la cible arrêtée : TRCIDR1/ETMIDR si un ETM répond, sinon
         d'après le cœur (CPUID : Cortex-M7 → ETMv4, pour l'ETM simulé de QEMU). Le décodeur
-        suit ; retourne 3 ou 4."""
+        suit ; retourne 3 ou 4. Retient aussi le cœur (`core`)."""
         from .etm.config import etm_version
+        part = self.detect_core(session)
+        if part in ARMV6M:                       # pas d'ETM : le décodeur garde sa version
+            return self.etm.version if self.etm is not None else 3
         v = etm_version(session.read_u32)
         if v not in (2, 3, 4):                   # pas d'ETM lisible (QEMU)
-            try:
-                part = (session.read_u32(CPUID) >> 4) & 0xFFF
-            except Exception:  # noqa: BLE001
-                part = 0
             v = 4 if part == CORTEX_M7 else 3
         v = 4 if v == 4 else 3
         self.set_etm_version(v)
@@ -496,6 +533,7 @@ class TraceManager:
     def configure_etm(self, cfg, session) -> list[str]:
         """Programme l'ETM et le TPIU (cible arrêtée) ; le décodeur suit l'architecture de
         l'ETM détectée (v3 ou v4)."""
+        self._require_itm()
         if self.etm is not None:                # ETM illisible (QEMU) : version déjà détectée
             cfg.version = self.etm.version
         cfg.dwt_reserved = tuple(self.datatrace.vars)   # comparateurs de la trace de données
@@ -553,6 +591,7 @@ class TraceManager:
             raise ValueError("accès : write, read ou rw")
         if session is None or session.state != "stopped":
             raise RuntimeError("arrêter la cible pour programmer le DWT")
+        self._require_itm()                     # les échantillons sortent par l'ITM
         if cpu_hz:
             self.datatrace.cpu_hz = cpu_hz
         self.untrace_variable(session, expr, quiet=True)          # reprogrammée si déjà tracée
@@ -607,6 +646,7 @@ class TraceManager:
         from .etm.config import EtmConfig
         self.setup_error = None
         try:
+            self._require_itm()
             served = isinstance(target, OpenOcdTarget) or (isinstance(target, RemoteTarget)
                                                            and bool(target.tcl_port))
             if not (served or swo or swo_file):
@@ -647,6 +687,7 @@ class TraceManager:
         from .tmc import EtrCapture, buffer_from_symbols
         self.setup_error = None
         try:
+            self._require_itm()
             if self.etm is None:
                 raise RuntimeError("trace ETM indisponible (capstone requis, ou pas d'ELF)")
             chip = chip or detect_chip(session.read_u32)
@@ -686,6 +727,8 @@ class TraceManager:
                     f"{st['erreurs']} erreurs")
         src, sess = self.source, self.session
         if src is None:
+            if self.no_trace_reason():
+                return self.setup_error or self.no_trace_reason()
             hint = ("aucune capture de trace d'instructions : Trace › ETM par SWO… (ou --etm-config "
                     "--etm-port swo), --etm-config --trace HOST:PORT (sonde parallèle), --mtb (M0+)")
             return f"{self.setup_error} — {hint}" if self.setup_error else hint
@@ -764,7 +807,8 @@ class TraceManager:
 
     def status(self) -> str:
         if self.source is None:
-            return "pas de capture SWO"
+            reason = self.no_trace_reason()
+            return f"pas de capture SWO — {reason}" if reason else "pas de capture SWO"
         s = self.session.stats if self.session else {}
         state = "connecté" if self.source.connected else ("erreur : " + self.source.error
                                                           if self.source.error else "en attente")
@@ -814,6 +858,7 @@ class TraceManager:
                          host: str = "127.0.0.1") -> list[str]:
         """Programme ITM/DWT/TPIU (cible arrêtée). Avec OpenOCD, configure aussi son TPIU
         pour servir le SWO en TCP sur `port`, et démarre la capture. Retourne un journal."""
+        self._require_itm()
         if cfg.chip is None:
             from .chips import detect_chip
             cfg.chip = detect_chip(session.read_u32)
