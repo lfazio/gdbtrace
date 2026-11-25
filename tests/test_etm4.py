@@ -221,6 +221,23 @@ def test_resynchronisation_mid_stream(qemu_paths):
         assert full[len(full) - len(tail):] == tail
 
 
+@needs_qemu
+def test_coverage_counted_by_blocks_matches_events(qemu_paths):
+    """EtmTrace (v4) compte la couverture par bloc, sans parcourir les instructions : même
+    résultat que CoverageDB.add sur les événements, et même nombre d'instructions et de trous."""
+    from gdbtrace.trace.coverage import CoverageDB
+    from gdbtrace.trace.etm.trace import EtmTrace
+    img, events = qemu_paths["rtos"]
+    data = encode(events[:300_000], img, sync_period=512)
+    decoded, _pk, fl = decode(data, img)
+    ref = CoverageDB(img, None)
+    ref.add(decoded)
+    t = EtmTrace(img, version=4)
+    n = sum(t.feed(data[i:i + 4096]) for i in range(0, len(data), 4096)) + t.flush()
+    assert n == fl.stats.instructions == sum(isinstance(e, ql.Step) for e in decoded)
+    assert t.cov.e == ref.e and t.cov.n == ref.n and ref.n
+
+
 # ====================================================================== intégration
 def test_detect_etm_version():
     """TRCIDR1 d'un vrai ETM d'abord ; sans ETM lisible (QEMU), le cœur décide (CPUID)."""
@@ -262,7 +279,14 @@ def test_simulated_etmv4_on_qemu_cortex_m7(elf, tmp_path):
     script.write_text("g = gdbtrace\nprint('ETMv%d' % g.trace.etm.version)\n"
                       "g.break_('fib'); g.go(); g.wait(); g.trace.wait_etm()\n"
                       "st = g.trace.etm.stats\nprint('instructions', st['instructions'], 'erreurs', st['erreurs'])\n"
-                      "print('dernière', g.trace.etm.last(1)[0].addr)\n")
+                      # dernière instruction hors exception : une SysTick peut s'intercaler
+                      # entre le bl et l'arrêt (la trace finit alors par son retour)
+                      "from gdbtrace.trace.etm.qemu_log import ExcEntry, ExcReturn, Step\n"
+                      "depth = 0\n"
+                      "for e in reversed(g.trace.etm.last(5000)):\n"
+                      "    depth += isinstance(e, ExcReturn) - isinstance(e, ExcEntry)\n"
+                      "    if isinstance(e, Step) and depth <= 0:\n"
+                      "        print('dernière', e.addr); break\n")
     r = subprocess.run([sys.executable, "-m", "gdbtrace", elf, "--machine", "mps2-an500",
                         "--etm-sim", "--batch", "--script", str(script)],
                        cwd=ROOT, capture_output=True, text=True, timeout=120)

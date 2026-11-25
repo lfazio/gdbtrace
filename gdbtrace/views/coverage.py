@@ -90,9 +90,9 @@ class CoverageView(View):
     def _on_new_trace(self) -> None:
         if not self.winfo_exists():
             return
-        if self.session is not None and self.session.state == "running" and self.db is not None:
-            # capture continue : seul le résumé suit (reconstruire l'arbre de milliers de
-            # fonctions à chaque paquet gèle le GUI) ; refresh() redessine à l'arrêt
+        if self.trace_settling and self.db is not None:
+            # capture continue ou décodage en retard : seul le résumé suit (reconstruire l'arbre
+            # de milliers de fonctions à chaque paquet gèle le GUI) ; redessiné à la fin
             self._update_info()
             return
         self.render()
@@ -100,6 +100,9 @@ class CoverageView(View):
             self._annotate_views()
 
     def refresh(self) -> None:
+        if self.trace_settling and self.db is not None:
+            self._update_info()
+            return
         self.render()
 
     def on_program_changed(self) -> None:
@@ -109,7 +112,14 @@ class CoverageView(View):
     def _update_info(self) -> None:
         db, tm = self.db, self.app.trace
         # rien de décodé : dire d'où la trace devrait venir et pourquoi elle n'arrive pas
-        src = tm.trace_status() if not tm.etm.stats["instructions"] else tm.source_label()
+        if not tm.etm.stats["instructions"] or tm.etm_pending():
+            src = tm.trace_status()
+        else:
+            src = tm.source_label()
+        if not db.e and not db.n and not db.ready:
+            # rien encore : un résumé à 0 % ne vaut pas de désassembler tout l'ELF ici
+            self.info.configure(text=src)
+            return
         self.info.configure(text=f"{db.summary()} — {src}")
 
     def _tick(self) -> None:

@@ -79,20 +79,37 @@ class EtmTrace:
         """La cible repart après un arrêt (appelé avant chaque reprise)."""
         self._resumed = True
 
-    def _clean(self, events: list[Event]) -> list[Event]:
-        """Retire le « trou » qui ne fait que marquer la reprise après un arrêt."""
-        if not self._resumed and not any(isinstance(e, TraceGap) for e in events):
+    def _clean(self, events: list[Event], gaps: int) -> list[Event]:
+        """Retire le « trou » qui ne fait que marquer la reprise après un arrêt (ceux d'avant
+        la première instruction qui la suit) et compte les autres. `gaps` : trous dans
+        `events`, compte du décodeur. Les événements ne sont parcourus que jusqu'à la
+        première instruction après une reprise : une trace qui déborde (ETM par SWO) a des
+        trous dans presque chaque paquet, et des millions d'instructions entre eux."""
+        if not self._resumed:
+            self.gaps += gaps
             return events
-        out = []
-        for e in events:
-            if isinstance(e, TraceGap):
-                if self._resumed:
-                    continue
-                self.gaps += 1
-            elif isinstance(e, Step):
-                self._resumed = False
-            out.append(e)
-        return out
+        first = next((i for i, e in enumerate(events) if isinstance(e, Step)), len(events))
+        if first < len(events):
+            self._resumed = False
+        if not gaps:
+            return events
+        head = [e for e in events[:first] if not isinstance(e, TraceGap)]
+        self.gaps += gaps - (first - len(head))
+        return head + events[first:]
+
+    def discontinuity(self) -> None:
+        """Des octets de trace ont été perdus avant le décodage : le décodeur de paquets
+        attend la prochaine synchronisation, le flot une nouvelle adresse ; un trou."""
+        with self._lock:
+            self.packets.synced = False
+            reset = getattr(self.flow, "_reset", None)
+            if reset is not None:
+                reset()
+            else:
+                self.flow.addr = None
+            self.history.append(TraceGap())
+            self.gaps += 1
+            self.generation += 1
 
     def feed_events(self, events: list[Event], errors: int = 0) -> int:
         """Ajoute des événements déjà décodés (trace MTB) ; retourne le nombre d'instructions."""
@@ -109,11 +126,24 @@ class EtmTrace:
         """Ajoute des octets de trace ETM ; retourne le nombre d'instructions décodées."""
         with self._lock:
             self.bytes += len(data)
-            events = self._clean(self.flow.feed(self.packets.feed(data)))
-            self.history.extend(events)
+            return self._add(lambda: self.flow.feed(self.packets.feed(data)))
+
+    def _add(self, decode) -> int:
+        """Événements de `decode()` dans l'historique et la couverture. Par paquet de quelques
+        Ko de trace, des millions d'instructions : rien ici ne les parcourt une à une en
+        Python (le décodeur compte instructions, trous et, en ETMv4, la couverture)."""
+        fs = self.flow.stats
+        n0, g0 = fs.instructions, fs.gaps
+        events = self._clean(decode(), fs.gaps - g0)
+        if not events:
+            return 0
+        self.history.extend(events)
+        if hasattr(self.flow, "take_counts"):
+            self.cov.add_counts(*self.flow.take_counts())
+        else:
             self.cov.add(events)
-            self.generation += 1
-            return sum(1 for e in events if isinstance(e, Step))
+        self.generation += 1
+        return fs.instructions - n0
 
     def flush(self) -> int:
         """ETMv4 : valide les éléments encore spéculatifs ; retourne le nombre d'instructions.
@@ -122,13 +152,7 @@ class EtmTrace:
         if self.version != 4:
             return 0
         with self._lock:
-            events = self._clean(self.flow.flush())
-            if not events:
-                return 0
-            self.history.extend(events)
-            self.cov.add(events)
-            self.generation += 1
-            return sum(1 for e in events if isinstance(e, Step))
+            return self._add(self.flow.flush)
 
     def reset(self) -> None:
         with self._lock:

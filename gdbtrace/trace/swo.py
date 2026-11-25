@@ -9,6 +9,7 @@ Sources TCP courantes (flux brut, formateur TPIU désactivé) :
 """
 from __future__ import annotations
 
+import collections
 import socket
 import threading
 from dataclasses import dataclass
@@ -107,13 +108,67 @@ class SwoSource:
 
 
 class TcpSwoSource(SwoSource):
-    """Flux SWO servi en TCP (OpenOCD -output :port, Orbuculum, J-Link). Reconnexion auto."""
+    """Flux SWO servi en TCP (OpenOCD -output :port, Orbuculum, J-Link). Reconnexion auto.
+
+    La lecture et le décodage sont deux threads. Décoder (l'ETM surtout) peut être plus lent
+    que le flux : dans le thread de lecture, la socket se remplissait, OpenOCD (monothread) se
+    bloquait en écrivant — lectures en direct en échec, données SWO perdues, ITM et ETM
+    corrompus. Ici la socket est toujours vidée ; le décodage rattrape à son rythme
+    (`backlog` : octets en attente ; au-delà de MAX_BACKLOG, les plus anciens sont perdus)."""
+
+    MAX_BACKLOG = 128 << 20
 
     def __init__(self, host: str, port: int, retry: float = 1.0):
         super().__init__()
         self.host, self.port, self.retry = host, port, retry
         self.description = f"SWO TCP {host}:{port}"
         self._sock: socket.socket | None = None
+        self._pending: collections.deque[bytes] = collections.deque()
+        self._cv = threading.Condition()
+        self.backlog = 0                 # octets reçus pas encore décodés
+        self.lost = 0                    # octets abandonnés (retard au-delà de MAX_BACKLOG)
+        self._decoder: threading.Thread | None = None
+
+    def start(self, session: TraceSession) -> None:
+        super().start(session)
+        self._decoder = threading.Thread(target=self._decode_loop, name="swo-decoder", daemon=True)
+        self._decoder.start()
+
+    def stop(self) -> None:
+        super().stop()
+        with self._cv:
+            self._cv.notify_all()
+        if self._decoder is not None:
+            self._decoder.join(timeout=2)
+        self._decoder = None
+
+    def _push(self, data: bytes) -> None:
+        with self._cv:
+            self._pending.append(data)
+            self.backlog += len(data)
+            while self.backlog > self.MAX_BACKLOG and len(self._pending) > 1:
+                old = self._pending.popleft()
+                self.backlog -= len(old)
+                self.lost += len(old)
+            self._cv.notify()
+
+    def _decode_loop(self) -> None:
+        while True:
+            with self._cv:
+                while not self._pending and not self._stop.is_set():
+                    self._cv.wait(0.2)
+                if self._stop.is_set():
+                    return
+                chunks = list(self._pending)
+                self._pending.clear()
+            data = b"".join(chunks)
+            for i in range(0, len(data), 65536):    # par morceaux : le retard baisse au fil de l'eau
+                if self._stop.is_set():
+                    return
+                piece = data[i:i + 65536]
+                self.session.feed(piece)
+                with self._cv:
+                    self.backlog -= len(piece)
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -128,7 +183,7 @@ class TcpSwoSource(SwoSource):
                         continue
                     if not data:
                         raise ConnectionError("connexion fermée par le serveur SWO")
-                    self.session.feed(data)
+                    self._push(data)
             except ConnectionRefusedError:
                 # OpenOCD n'ouvre ce port qu'à `tpiu enable` : connexion faite trop tôt
                 self.error = (f"rien n'écoute sur {self.host}:{self.port} (OpenOCD : « Configurer "

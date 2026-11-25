@@ -27,6 +27,7 @@ class FlowStats:
     lost_atoms: int = 0          # atomes reçus sans adresse connue
     unknown_code: int = 0        # adresse hors de l'image (code non chargé, désynchro)
     cycles: int = 0              # total des cycles (mesurés ou estimés)
+    gaps: int = 0                # trous émis (TraceGap)
 
 
 class FlowDecoder:
@@ -57,6 +58,7 @@ class FlowDecoder:
                 # trace réactivée (filtre) ou reprise après débordement : un trou dans le chemin
                 if self.synced and p.reason in (1, 2):
                     out.append(TraceGap())
+                    self.stats.gaps += 1
                     self.exc_depth, self.last_was_return = 0, False
                 self.synced = True
                 self.addr = p.addr

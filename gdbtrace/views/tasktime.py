@@ -61,6 +61,7 @@ class TaskTimeView(View):
         self._gen = None
         self._bars: list[tuple[float, float, float, object]] = []   # (x0, x1, y, tranche)
         self._colors: dict[int, str] = {}
+        self.redraw_when_shown(self.render)
         self.after(500, self._tick)
 
     @property
@@ -90,7 +91,8 @@ class TaskTimeView(View):
     def _tick(self) -> None:
         if not self.winfo_exists():
             return
-        self.render()
+        if self.shown:
+            self.render()
         self.after(500, self._tick)
 
     def refresh(self) -> None:
@@ -152,13 +154,14 @@ class TaskTimeView(View):
         x0, x1 = LEFT + NAME_W, w - LEFT
         X = lambda t: x0 + (t - t0) / (t1 - t0) * (x1 - x0)  # noqa: E731
         lane = {t.tcb: i for i, t in enumerate(rows)}
+        self._grid: list[int] = []
         conv, unit = self._conv()
         h = TOP + len(rows) * ROW
         step = nice_step(conv(t1 - t0))
         k = 0
         while k * step <= conv(t1 - t0) + 1e-12:               # axe récessif
             x = x0 + k * step / conv(t1 - t0) * (x1 - x0)
-            c.create_line(x, TOP - 4, x, h, fill=GRID)
+            self._grid.append(c.create_line(x, TOP - 4, x, h, fill=GRID))
             if x < x1 - 30:
                 c.create_text(x + 2, TOP - 6, anchor="sw", text=f"{k * step:,.10g}".replace(",", " "), fill=MUTED)
             k += 1
@@ -166,14 +169,30 @@ class TaskTimeView(View):
         for t in rows:
             y = TOP + lane[t.tcb] * ROW
             c.create_text(LEFT, y + ROW / 2, anchor="w", text=t.name, fill=INK)
+        # barres : une image, un appel Tk par couloir (des milliers de rectangles prenaient des
+        # secondes pendant une capture : chaque appel Tk y attend le GIL des fils de décodage) ;
+        # `_bars` garde une entrée par tranche pour le survol
+        left, width = int(x0), max(1, int(x1) - int(x0))
+        pixels: list[list[str] | None] = [None] * len(rows)
         for sl in slices:
             i = lane.get(sl.tcb)
             if i is None:
                 continue
-            y = TOP + i * ROW
             xa, xb = X(sl.start), max(X(sl.end), X(sl.start) + 1)
-            c.create_rectangle(xa, y + 3, xb, y + ROW - 3, fill=self._colors.get(sl.tcb, OTHER), width=0)
-            self._bars.append((xa, xb, y, sl))
+            self._bars.append((xa, xb, TOP + i * ROW, sl))
+            a, b = max(0, int(xa) - left), min(width, int(xb + 0.999) - left)
+            if b > a:
+                if pixels[i] is None:
+                    pixels[i] = [SURFACE] * width
+                pixels[i][a:b] = [self._colors.get(sl.tcb, OTHER)] * (b - a)
+        img = tk.PhotoImage(width=width, height=max(1, len(rows) * ROW))
+        for i, px in enumerate(pixels):
+            if px is not None:              # une ligne, répétée sur la hauteur de la barre
+                img.put("{" + " ".join(px) + "}", to=(0, i * ROW + 3, width, (i + 1) * ROW - 3))
+        c.create_image(left, TOP, anchor="nw", image=img)
+        self._image = img                   # Tk ne garde pas de référence à l'image
+        for t in self._grid:                # l'axe récessif reste visible par-dessus
+            c.tag_raise(t)
         self._bars.sort(key=lambda b: b[0])
 
     def _motion(self, ev) -> None:

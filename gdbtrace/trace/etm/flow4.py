@@ -48,12 +48,18 @@ class Flow4Stats:
     cycles: int = 0              # total des cycles estimés
     overflows: int = 0           # débordements de la FIFO de l'ETM
     errors: int = 0              # séquences impossibles (exception sans adresse...)
+    gaps: int = 0                # trous émis (TraceGap)
 
 
 class Etm4Flow:
     def __init__(self, image: CodeImage, max_spec: int = 1):
         self.image = image
         self.max_spec = max_spec
+        self._blocks: dict[int, tuple | None] = {}   # blocs de code par adresse de départ
+        # couverture comptée au fil du décodage, par bloc (clé : adresse << 1 | atome E) et,
+        # hors blocs, par instruction : un compte par atome au lieu d'un par instruction
+        self._hits: dict[int, int] = {}
+        self._walked: dict[int, int] = {}
         self.cycle_accurate = False
         self.stats = Flow4Stats()
         self._reset()
@@ -174,6 +180,7 @@ class Etm4Flow:
                 # trace réactivée (filtre ViewInst) après un premier tronçon : un trou
                 if self.stats.instructions:
                     out.append(TraceGap())
+                    self.stats.gaps += 1
                 self.addr = None
                 self.exc_depth, self.last_was_return = 0, False
             elif kind == "exc":
@@ -261,34 +268,80 @@ class Etm4Flow:
             steps.append(Step(addr, cycles=cycles_of(ins)))
             addr += ins.size
         out += steps
+        w = self._walked
+        for st in steps:
+            w[st.addr] = w.get(st.addr, 0) + 1
         self.stats.instructions += len(steps)
         self.stats.cycles += sum(s.cycles for s in steps)
         self.addr = addr
         return True if stop is not None else ins
 
+    def take_counts(self) -> tuple[dict[int, int], dict[int, int]]:
+        """Instructions émises depuis l'appel précédent, comptées par adresse : (atomes E,
+        atomes N) — ce que CoverageDB.add tirerait des événements, sans les parcourir."""
+        e: dict[int, int] = {}
+        n: dict[int, int] = {}
+        for key, k in self._hits.items():
+            steps, _cyc, e_atom, n_atom = self._blocks[key >> 1]
+            for st in steps:
+                e[st.addr] = e.get(st.addr, 0) + k
+            d, wp = (e, e_atom[0]) if key & 1 else (n, n_atom[0])
+            d[wp.addr] = d.get(wp.addr, 0) + k
+        for addr, k in self._walked.items():
+            e[addr] = e.get(addr, 0) + k
+        self._hits.clear()
+        self._walked.clear()
+        return e, n
+
+    def _block(self, addr: int) -> tuple | None:
+        """Bloc de code commençant à `addr` : les instructions jusqu'au prochain point de passage
+        (Step déjà faits), puis, pour l'atome E et pour l'atome N : (Step du point de passage,
+        adresse suivante, retour ?). Mémorisé : le parcours ne dépend que de l'adresse de
+        départ, et c'est l'essentiel du coût du décodage (les Step sont immuables, partagés).
+        None : code inconnu ou trop long sans point de passage."""
+        blk = self._blocks.get(addr, False)
+        if blk is not False:
+            return blk
+        steps: list[Step] = []
+        a, blk = addr, None
+        while len(steps) < MAX_RUN:
+            ins = self.image.instr(a)
+            if ins is None:
+                break
+            if ins.waypoint:
+                seq = a + ins.size
+                e_next = ins.target if ins.kind == DIRECT else (None if ins.kind == INDIRECT else seq)
+                taken = ins.kind in (DIRECT, INDIRECT)
+                blk = (tuple(steps), sum(st.cycles for st in steps),
+                       (Step(a, cycles=cycles_of(ins, True, taken), executed=True), e_next, ins.ret),
+                       (Step(a, cycles=cycles_of(ins, False, False), executed=False), seq, False))
+                break
+            steps.append(Step(a, cycles=cycles_of(ins)))
+            a += ins.size
+        self._blocks[addr] = blk
+        return blk
+
     def _atom(self, atom: str, out: list[Event]) -> None:
         if self.need_ctx or self.addr is None:
             self.stats.lost_atoms += 1
             return
-        ins = self._walk(out)
-        if ins is None:
+        blk = self._block(self.addr)
+        if blk is None:
+            self.stats.unknown_code += 1
+            self.addr = None
             return
-        executed = atom == "E"
-        taken = executed and ins.kind in (DIRECT, INDIRECT)
-        c = cycles_of(ins, executed, taken)
-        out.append(Step(self.addr, cycles=c, executed=executed))
-        self.stats.instructions += 1
-        self.stats.cycles += c
-        if not executed:
+        steps, cyc, e_atom, n_atom = blk
+        key = self.addr << 1 | (atom == "E")
+        self._hits[key] = self._hits.get(key, 0) + 1
+        step, nxt, ret = e_atom if atom == "E" else n_atom
+        out += steps
+        out.append(step)
+        self.stats.instructions += len(steps) + 1
+        self.stats.cycles += cyc + step.cycles
+        if atom != "E":
             self.stats.not_executed += 1
-        self.last_was_return = executed and ins.ret
-        nxt: int | None = self.addr + ins.size
-        if executed:
-            if ins.kind == DIRECT:
-                nxt = ins.target
-            elif ins.kind == INDIRECT:
-                nxt = None                          # adresse dans un prochain paquet
-        self.addr = nxt
+        self.last_was_return = ret
+        self.addr = nxt                             # None : adresse dans un prochain paquet
 
     def _exception(self, pkt: ExceptionPacket, out: list[Event]) -> None:
         nxt = self.queue[0]

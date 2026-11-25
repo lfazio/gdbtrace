@@ -65,6 +65,7 @@ class ProfileView(View):
         self.sampler: PcSampler | None = None
         self.running_source: str | None = None
         self._line_items: dict[str, tuple[str, int]] = {}
+        self.redraw_when_shown(lambda: self.render() if self.running_source is not None else None)
         self._tick()
 
     @staticmethod
@@ -144,7 +145,7 @@ class ProfileView(View):
     def _tick(self) -> None:
         if not self.winfo_exists():
             return
-        if self.running_source is not None:
+        if self.running_source is not None and self.shown:
             self.render()
         self.after(500, self._tick)
 

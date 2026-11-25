@@ -16,6 +16,7 @@ from ..gui.view_base import View
 from .timing import GRID, INK, INK2, MUTED, SLOTS, SURFACE, nice_step
 
 LANE, GAP, PAD_L, PAD_R, AXIS = 64, 10, 8, 84, 20     # PAD_R : bornes min/max et unité
+WINDOW = 5000                           # échantillons dessinés (les plus récents)
 
 
 class VarTraceView(View):
@@ -63,6 +64,7 @@ class VarTraceView(View):
         self._gen = None
         self._lanes: list[tuple] = []                     # (variable, y0, y1, points) pour le survol
         self._span = (0.0, 1.0)
+        self.redraw_when_shown(self.render)
         self.after(500, self._tick)
 
     # ------------------------------------------------------------------ actions
@@ -104,7 +106,8 @@ class VarTraceView(View):
     def _tick(self) -> None:
         if not self.winfo_exists():
             return
-        self.render()
+        if self.shown:
+            self.render()
         self.after(500, self._tick)
 
     def refresh(self) -> None:
@@ -142,7 +145,7 @@ class VarTraceView(View):
         series = []
         for v in vars_:
             pts = []                                           # (t, valeur, échantillon)
-            for smp in list(v.samples):
+            for smp in list(v.samples)[-WINDOW:]:
                 val = v.number(smp)
                 if val is not None:
                     pts.append((smp.t, val, smp))

@@ -28,6 +28,7 @@ xvfb-run -a .venv/bin/python -m pytest                 # suite complète
 .venv/bin/python -m pytest tests/test_etm.py -k rtos   # sous-ensemble
 .venv/bin/python -m pytest tests/test_etm.py::test_roundtrip_matches_qemu
 tools/build_opencsd.sh           # oracle OpenCSD dans .cache/ (active test_opencsd_*)
+tools/release_check.sh           # release : toute la suite, cartes de test exigées
 ```
 
 Outils externes : `qemu-system-arm`, `gdb-multiarch`, `arm-none-eabi-gcc`, `xvfb-run`. Les
@@ -37,6 +38,13 @@ tests non exécutés, vérifier les skips. Les fixtures `elf` / `rtos_elf` de
 `tests/conftest.py` recompilent les firmwares (`make`) ; `session` / `rtos_session` lancent
 QEMU sur un port libre. `pythonpath` inclut `tests/`, d'où `from conftest import …`.
 Aucun linter n'est configuré.
+
+Tests sur carte (`tests/test_board_f746.py`, Nucleo-F746ZG, firmware `examples/nucleo-f746`
+flashé par le test) : `--boards=auto|require|skip` (`tests/boards.py` trouve la sonde par
+`/sys` puis l'IDCODE). Le GUI tourne par le vrai `main()`, `App.mainloop` remplacé par un
+scénario ; le contenu de chaque vue est relevé (`boards.dump_views`, dans
+`tests/artifacts/board-f746.json`) puis vérifié vue par vue, avec la latence de la boucle Tk.
+Le test laisse la carte sans ETM ni stall, mais avec son firmware de test.
 
 ## Architecture
 
@@ -83,7 +91,16 @@ tkinter n'est pas thread-safe. Tout ce qui vient d'un autre thread passe par
 `EventPump.post(fn, …)` ; les actions longues par `pump.background(fn, then=…)` ou
 `App.run_action()`. `App.safe()` / `report_error()` envoient les exceptions vers la console
 et la barre d'état. Les `except Exception` larges (`# noqa: BLE001`) sont voulus : un abonné
-ou un callback défaillant ne doit pas tuer un thread de travail.
+ou un callback défaillant ne doit pas tuer un thread de travail. Un flux continu (trace en
+marche) ne doit jamais poster un appel par paquet : regrouper (lignes ITM :
+`TraceManager._line`, notifications ETM : `_etm_changed`) ; la pompe ne draine que 100 ms
+par tour. Un fil de calcul Python prend le GIL au thread GUI : chaque appel Tk attend
+ensuite l'intervalle de bascule (réduit à 0,5 ms par `App`). Donc peu d'appels Tk par rendu
+(une image pour la chronologie des tâches, un seul `insert` par vue texte), pas de rendu
+périodique d'une vue cachée (`View.shown`, `redraw_when_shown`), et pas de rendu complet de
+la trace tant qu'elle change (`View.trace_settling`). Le décodage ETM cède la place quand
+la pompe exécute des rappels (`EventPump.busy` → `TraceManager.gui_busy`). `App.busy`
+(programmation de la flash) refuse les commandes de marche.
 
 ### Deux chemins vers la mémoire
 
@@ -113,6 +130,13 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
 - SWO : source TCP/fichier → `TraceSession` → déformateur TPIU (`tpiu.py`) → `ItmDecoder`
   (`itm.py`) → abonnés (texte ITM, profil, stats d'exceptions). Sur un port parallèle
   formaté, l'ID 1 va à l'ITM et l'ID 2 à l'ETM.
+- Débit : un SWO saturé (2 Mbit/s, ETM-M7) arrive plus vite que le Python ne décode l'ETM.
+  `TcpSwoSource` lit la socket dans un fil et décode dans un autre (sinon OpenOCD, monothread,
+  se bloque en écrivant : lectures en direct en échec, SWO perdu, ITM corrompu) ; l'ETM a son
+  propre fil de décodage (`TraceManager._etm_loop`) pour que l'ITM reste en direct. Les
+  retards sont affichés (`status()`, `trace_status()`), `wait_etm()` attend la fin. Le flot
+  ETMv4 mémorise les blocs de code et compte la couverture par bloc (`take_counts`) :
+  rien ne doit parcourir les instructions une à une en Python sur ce chemin.
 - Trace de données (`trace/datatrace.py`) : comparateurs du DWT (FUNCTION 0xD/0xC/0x2, +PC
   0xF/0xE/0x3) programmés par `TraceManager.trace_variable` (cible arrêtée, pris par le haut,
   partagés avec le filtre ETMv3 : `EtmConfig.dwt_reserved` / `dwt_used`) ; `DataTraceSink`

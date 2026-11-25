@@ -695,3 +695,26 @@ sonde (`noinit`) s'il est installé ; il a été utilisé sur une Nucleo-F746ZG.
 sonde réelle le support RTOS d'OpenOCD (`--rtos`), la capture SWO et `DWT_PCSR` via OpenOCD.
 Les tests ETM comparent notre décodeur à OpenCSD si `tools/build_opencsd.sh` a été lancé
 (sinon ce test est ignoré) ; la trace ETM nécessite `pip install capstone` (extra `etm`).
+
+### Tests sur carte (à chaque release)
+
+```bash
+tools/release_check.sh          # toute la suite ; une carte de test absente = échec
+```
+
+`tests/test_board_f746.py` teste l'application sur une **Nucleo-F746ZG** : le firmware de test
+est construit depuis ce dépôt (`examples/nucleo-f746` : la démo FreeRTOS à 16 MHz, port
+FreeRTOS ARM_CM7 r0p1) et flashé ; GdbTrace est lancé par son vrai point d'entrée, GUI compris,
+avec le SVD, l'ETM et l'ITM par SWO (stall) et une variable tracée par le DWT. Trois phases
+(arrêt sur `worker_step`, marche avec le profil, arrêt), et à chacune le contenu de toutes les
+vues est relevé dans `tests/artifacts/board-f746.json` ; un test par vue vérifie ce qui doit
+s'y afficher : source, registres, pile (fichier:ligne), Watch (et en direct), RTOS (piles,
+tick en direct), périphériques du SVD, mémoire, threads, texte ITM, profil par SWO, variable
+tracée, temps par tâche, liste de trace ETM, Timing, couverture.
+
+- La carte est trouvée seule : sonde ST-LINK lue dans `/sys`, puis identité de la puce lue
+  par OpenOCD sans reset. `GDBTRACE_F746_SERIAL` impose la sonde ; le SVD vient de
+  STM32CubeIDE (`GDBTRACE_SVD_DIR` sinon).
+- `pytest --boards=auto` (défaut) ignore ces tests sans la carte ; `--boards=require` les fait
+  échouer ; `--boards=skip` les désactive.
+- Le test remplace le firmware de la carte, et la laisse sans ETM ni stall.

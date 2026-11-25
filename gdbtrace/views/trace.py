@@ -86,11 +86,19 @@ class TraceView(View):
         return self.app.trace.etm
 
     def _on_new_trace(self) -> None:
-        # cible en marche : la liste changerait sans cesse ; refresh() la dessine à l'arrêt
-        if self.winfo_exists() and not (self.session is not None and self.session.state == "running"):
+        # trace qui change encore (marche, décodage en retard) : la liste changerait sans cesse ;
+        # dessinée à la notification qui suit la fin du décodage, ou par refresh() à l'arrêt
+        if not self.winfo_exists() or self.etm is None:
+            return
+        if self.trace_settling:
+            self._update_info()
+        else:
             self.render()
 
     def refresh(self) -> None:
+        if self.etm is not None and self.trace_settling:
+            self._update_info()
+            return
         self.render()
 
     def _clear(self) -> None:
@@ -107,7 +115,8 @@ class TraceView(View):
     def _update_info(self) -> None:
         etm, tm = self.etm, self.app.trace
         st = etm.stats
-        if not st["instructions"]:          # rien de décodé : d'où cela devrait venir, et pourquoi
+        if not st["instructions"] or tm.etm_pending():
+            # rien de décodé : d'où cela devrait venir, et pourquoi ; ou le retard du décodage
             self.info.configure(text=tm.trace_status())
             return
         self.info.configure(text=f"{tm.source_label()} — {st['instructions']} instructions décodées, "

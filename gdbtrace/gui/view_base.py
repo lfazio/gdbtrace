@@ -10,7 +10,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import ttk
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from .app import App
@@ -33,6 +33,29 @@ class View(ttk.Frame):
         self.mono = mono_font()
 
     # ---- cycle de vie, à surcharger
+    @property
+    def trace_settling(self) -> bool:
+        """La trace d'instructions change encore : cible en marche, ou trace reçue en cours de
+        décodage (le décodage rattrape un SWO saturé). Les vues qui la dessinent en entier
+        (liste, Timing, couverture) attendent : redessiner à chaque paquet gèle le GUI."""
+        if self.session is not None and self.session.state == "running":
+            return True
+        trace = getattr(self.app, "trace", None)
+        return trace is not None and trace.etm_pending()
+
+    @property
+    def shown(self) -> bool:
+        """La vue est à l'écran (onglet sélectionné, fenêtre ouverte). Les rendus périodiques
+        des vues cachées sont du temps GUI perdu : ils attendent `<Map>` (`redraw_when_shown`)."""
+        try:
+            return bool(self.winfo_ismapped())
+        except tk.TclError:
+            return False
+
+    def redraw_when_shown(self, render: Callable[[], object]) -> None:
+        """`render()` dès que la vue redevient visible (onglet choisi)."""
+        self.bind("<Map>", lambda e: render() if e.widget is self else None, add="+")
+
     def refresh(self) -> None:
         """Relit l'état de la cible. Appelé dans le thread GUI quand la cible est arrêtée."""
 

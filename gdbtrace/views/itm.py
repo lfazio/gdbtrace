@@ -62,6 +62,7 @@ class ItmView(View):
         self.out.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
 
+        self._pending: list[tuple[int, str, int]] = []
         self.app.trace.line_listeners.append(self.on_line)
         self._tick()
 
@@ -72,14 +73,28 @@ class ItmView(View):
 
     # ------------------------------------------------------------------ réception
     def on_line(self, port: int, text: str, ts: int) -> None:
+        """Une ligne reçue : affichée avec les autres de la même salve (un seul défilement)."""
+        self._pending.append((port, text, ts))
+        if len(self._pending) == 1:
+            self.after_idle(self._show_pending)
+
+    def _show_pending(self) -> None:
+        lines, self._pending = self._pending, []
+        if not lines or not self.winfo_exists():
+            return
         wanted = parse_ports(self.ports_var.get())
-        if wanted is not None and port not in wanted:
+        show_ts = self.ts_var.get()
+        args: list = []
+        for port, text, ts in lines[-5000:]:
+            if wanted is not None and port not in wanted:
+                continue
+            if show_ts:
+                args += [f"{ts:>10} ", "meta"]
+            args += [f"[{port}] ", "meta", text + "\n", f"p{port % len(PORT_COLORS)}"]
+        if not args:
             return
         self.out.configure(state="normal")
-        if self.ts_var.get():
-            self.out.insert("end", f"{ts:>10} ", "meta")
-        self.out.insert("end", f"[{port}] ", "meta")
-        self.out.insert("end", text + "\n", f"p{port % len(PORT_COLORS)}")
+        self.out.insert("end", *args)
         if int(self.out.index("end").split(".")[0]) > 20_000:
             self.out.delete("1.0", "2000.0")
         self.out.see("end")

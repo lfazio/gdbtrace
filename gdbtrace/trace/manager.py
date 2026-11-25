@@ -6,6 +6,7 @@ PC du DWT. `post(fn, *args)` sert à rappeler les abonnés dans le bon thread (G
 """
 from __future__ import annotations
 
+import collections
 import threading
 import time
 from typing import Callable
@@ -18,8 +19,20 @@ from .swo import ExceptionStats, FileSwoSource, SwoSource, TcpSwoSource, TraceSe
 ETM_NOTIFY_PERIOD = 0.5               # s : rafraîchissement des vues pendant une capture
 CPUID = 0xE000ED00
 CORTEX_M7 = 0xC27                      # CPUID.PARTNO
+#: trace ETM reçue pas encore décodée, au plus (au-delà, la plus ancienne est perdue)
+ETM_MAX_BACKLOG = 256 << 20
+ETM_CHUNK = 4096                        # décodage par morceaux : le retard baisse au fil de l'eau
+ETM_YIELD_MAX = 0.5                     # attente maximale du décodage derrière le GUI, par morceau
 
 LineListener = Callable[[int, str, int], None]
+
+
+def _quietly(fn) -> None:
+    """Calcul d'avance dont l'échec sera de toute façon revu à l'usage : rien à signaler ici."""
+    try:
+        fn()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 class TraceManager:
@@ -49,6 +62,23 @@ class TraceManager:
         self._notify_pending = False
         self._notify_last = 0.0
         self.etm_busy = False
+        # décodage de l'ETM reçu par SWO/TPIU : son propre fil. Le Python décode moins vite
+        # qu'un SWO saturé : dans le fil SWO, l'ITM (texte, profil, tâches) prendrait le
+        # même retard ; ici seul l'ETM attend (`etm_backlog`, montré par trace_status)
+        self._etm_q: collections.deque[bytes] = collections.deque()
+        self._etm_cv = threading.Condition()
+        self._etm_thread: threading.Thread | None = None
+        self._etm_decoding = False
+        self._etm_lost_pending = False
+        self._etm_flush_pending = False      # arrêt pendant le décodage : flush() à la fin
+        self.etm_backlog = 0                 # octets ETM reçus, pas encore décodés
+        #: le thread GUI est occupé (rafraîchissement des vues à l'arrêt…) : le décodage, qui
+        #: lui prendrait le GIL, attend (ETM_YIELD_MAX au plus). Fourni par l'interface.
+        self.gui_busy: Callable[[], bool] = lambda: False
+        self.etm_dropped = 0                 # octets ETM perdus (retard > ETM_MAX_BACKLOG)
+        # lignes ITM : livrées par lots au thread GUI (une par paquet le submergerait)
+        self._lines: list[tuple[int, str, int]] = []
+        self._lines_lock = threading.Lock()
         #: ETM par SWO configuré (le formateur TPIU doit rester actif) ; journal et cause du
         #: dernier échec de sa mise en route, montrés par les vues (`trace_status`)
         self.etm_swo = False
@@ -74,6 +104,11 @@ class TraceManager:
         except Exception as exc:  # noqa: BLE001 - capstone absent, ELF illisible
             self.etm = None
             return f"trace ETM indisponible : {exc}"
+        # code mesurable du programme (désassemblage de tout l'ELF, ~1 s) : calculé d'avance,
+        # pas au premier affichage de la couverture dans le thread GUI
+        cov = self.etm.cov
+        threading.Thread(target=lambda: _quietly(cov.universe), name="coverage-universe",
+                         daemon=True).start()
         return None
 
     def retarget(self, elf: str, symbols, cycle_accurate: bool = False) -> str | None:
@@ -250,8 +285,69 @@ class TraceManager:
 
     # ------------------------------------------------------------------ cycle des exécutions
     def _etm_feed(self, data: bytes) -> None:
-        self.etm.feed(data)
-        self._etm_changed()
+        """Octets ETM du déformateur TPIU (fil SWO) : mis en file pour le fil de décodage."""
+        with self._etm_cv:
+            self._etm_q.append(data)
+            self.etm_backlog += len(data)
+            while self.etm_backlog > ETM_MAX_BACKLOG and len(self._etm_q) > 1:
+                old = self._etm_q.popleft()
+                self.etm_backlog -= len(old)
+                self.etm_dropped += len(old)
+                self._etm_lost_pending = True
+            if self._etm_thread is None or not self._etm_thread.is_alive():
+                self._etm_thread = threading.Thread(target=self._etm_loop, name="etm-decoder",
+                                                    daemon=True)
+                self._etm_thread.start()
+            self._etm_cv.notify()
+
+    def _etm_loop(self) -> None:
+        while True:
+            with self._etm_cv:
+                while not self._etm_q:
+                    self._etm_cv.wait()
+                data = b"".join(self._etm_q)
+                self._etm_q.clear()
+                lost, self._etm_lost_pending = self._etm_lost_pending, False
+                self._etm_decoding = True
+            etm = self.etm
+            try:
+                if etm is not None and lost:
+                    etm.discontinuity()
+                for i in range(0, len(data), ETM_CHUNK):
+                    end = time.monotonic() + ETM_YIELD_MAX
+                    while self.gui_busy() and time.monotonic() < end:
+                        time.sleep(0.005)
+                    if etm is not None and etm is self.etm:
+                        etm.feed(data[i:i + ETM_CHUNK])
+                    with self._etm_cv:
+                        self.etm_backlog -= min(ETM_CHUNK, len(data) - i)
+                    self._etm_changed()
+            except Exception as exc:  # noqa: BLE001 - le fil de décodage ne doit pas mourir
+                self.on_error(f"décodage ETM : {type(exc).__name__}: {exc}")
+                with self._etm_cv:
+                    self.etm_backlog = sum(len(d) for d in self._etm_q)
+            finally:
+                with self._etm_cv:
+                    flush = self._etm_flush_pending and not self._etm_q
+                    if flush:
+                        self._etm_flush_pending = False
+                if flush and etm is not None and etm is self.etm:
+                    try:
+                        if etm.flush():
+                            self._etm_changed()
+                    except Exception as exc:  # noqa: BLE001
+                        self.on_error(f"décodage ETM : {type(exc).__name__}: {exc}")
+                with self._etm_cv:
+                    self._etm_decoding = False
+                    drained = not self._etm_q
+                    self._etm_cv.notify_all()
+                if drained:                         # les vues en attente du décodage redessinent
+                    self._etm_changed()
+
+    def etm_pending(self) -> bool:
+        """Trace ETM reçue pas encore décodée."""
+        with self._etm_cv:
+            return bool(self._etm_q) or self._etm_decoding
 
     def _etm_changed(self) -> None:
         """Prévient les vues que la trace a changé. Pendant une capture continue, la trace
@@ -294,7 +390,8 @@ class TraceManager:
         import time
         end = time.monotonic() + timeout
         while time.monotonic() < end:
-            if not self.etm_busy and all(s.path is None for s in self._sims()):
+            if (not self.etm_busy and all(s.path is None for s in self._sims())
+                    and not self.etm_pending()):
                 return True
             time.sleep(0.02)
         return False
@@ -323,8 +420,13 @@ class TraceManager:
         jobs = [s for s in self._sims() if s.path is not None]
         mtb = self.mtb
         if not jobs and mtb is None:
-            if self.etm is not None and self.etm.version == 4 and self.etm.flush():
-                self._etm_changed()
+            if self.etm is not None and self.etm.version == 4:
+                with self._etm_cv:          # trace encore en file : validé après son décodage
+                    if self._etm_q or self._etm_decoding:
+                        self._etm_flush_pending = True
+                        return
+                if self.etm.flush():
+                    self._etm_changed()
             return
         import threading
         session = getattr(self, "_attached", None)
@@ -511,8 +613,13 @@ class TraceManager:
             return (f"{src.description} : {sess.bytes} octets reçus, aucun octet ETM (ID 2) : "
                     "ETM programmé (--etm-config) ? débit SWO et --cpu-hz justes ?")
         st = self.etm.stats
+        late = ""
+        if self.etm_backlog:
+            late = f" — décodage en retard de {self.etm_backlog >> 10} Ko"
+        if self.etm_dropped:
+            late += f" — {self.etm_dropped >> 10} Ko perdus (retard trop grand)"
         return (f"{src.description} : {sess.etm_bytes} octets ETM, {st['instructions']} instructions, "
-                f"{st['débordements']} débordements, {st['erreurs']} erreurs")
+                f"{st['débordements']} débordements, {st['erreurs']} erreurs{late}")
 
     def close(self) -> None:
         self.stop()
@@ -563,14 +670,30 @@ class TraceManager:
         s = self.session.stats if self.session else {}
         state = "connecté" if self.source.connected else ("erreur : " + self.source.error
                                                           if self.source.error else "en attente")
+        late = ""
+        backlog, lost = getattr(self.source, "backlog", 0), getattr(self.source, "lost", 0)
+        if backlog > 64 << 10:                  # le décodage n'a pas suivi le flux
+            late += f" — décodage en retard de {backlog >> 10} Ko"
+        if lost:
+            late += f" — {lost >> 10} Ko perdus (retard trop grand)"
         return (f"{self.source.description} — {state} — {s.get('octets', 0)} octets, "
                 f"{s.get('paquets', 0)} paquets, {s.get('erreurs', 0)} erreurs, "
-                f"{s.get('overflows', 0)} overflows")
+                f"{s.get('overflows', 0)} overflows{late}")
 
     # ------------------------------------------------------------------ texte ITM
     def _line(self, port: int, text: str, ts: int) -> None:
+        with self._lines_lock:
+            self._lines.append((port, text, ts))
+            first = len(self._lines) == 1
+        if first:                           # un seul envoi en attente : les lignes s'y ajoutent
+            self.post(self._fire_lines)
+
+    def _fire_lines(self) -> None:
+        with self._lines_lock:
+            lines, self._lines = self._lines, []
         for fn in list(self.line_listeners):
-            self.post(fn, port, text, ts)
+            for line in lines:
+                fn(*line)
 
     def set_text_ports(self, ports: set[int]) -> None:
         self.text.text_ports = set(ports)

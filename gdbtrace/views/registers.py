@@ -5,9 +5,11 @@ from tkinter import simpledialog, ttk
 
 from ..gui.view_base import View
 
+#: registres montrés d'office (les autres : « tous les registres »), comparés sans la casse :
+#: le serveur gdb choisit l'écriture (OpenOCD : « xPSR », QEMU : « xpsr »)
 CORE = ["r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11",
         "r12", "sp", "lr", "pc", "xpsr", "msp", "psp", "primask", "basepri",
-        "faultmask", "control"]
+        "faultmask", "control", "fpscr"]
 
 
 def decode_xpsr(v: int) -> str:
@@ -49,15 +51,15 @@ class RegistersView(View):
         if not self.stopped:
             return
         regs = self.session.registers()
-        known = {n for n, _ in regs}
-        order = [n for n in CORE if n in known] + ([n for n, _ in regs if n not in CORE]
-                                                   if self.show_all else [])
+        by_lower = {n.lower(): n for n, _ in regs}
+        core = [by_lower[c] for c in CORE if c in by_lower]
+        order = core + ([n for n, _ in regs if n not in core] if self.show_all else [])
         values = dict(regs)
         self.tree.delete(*self.tree.get_children())
         for name in order:
             v = values[name]
             signed = v - (1 << 32) if v & 0x80000000 else v
-            info = decode_xpsr(v) if name == "xpsr" else ""
+            info = decode_xpsr(v) if name.lower() == "xpsr" else ""
             if name in ("pc", "lr") and self.app.symbols:
                 f = self.app.symbols.function_at(v & ~1)
                 info = f"<{f.name}+{(v & ~1) - f.start:#x}>" if f else ""

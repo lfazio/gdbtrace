@@ -271,3 +271,105 @@ def test_etm_options_need_etm_config(tmp_path):
     assert r.returncode == 2 and "--etm-port swo : avec --etm-config" in r.stderr
     r = run("fw.elf", "--etm-stall", "--stm32")
     assert r.returncode == 2 and "--etm-stall, --stm32 : avec --etm-config" in r.stderr
+
+
+# ====================================================================== SWO saturé (carte réelle)
+def test_etm_decoding_never_delays_the_itm(tmp_path):
+    """Le décodage ETM a son propre fil : pendant qu'il prend du retard (le Python décode moins
+    vite qu'un SWO saturé d'ETM), le texte ITM arrive quand même ; le retard est affiché,
+    `wait_etm()` attend la fin, et la trace est complète."""
+    from test_etm4 import TinyImage
+    from test_itm import SYNC, stim
+
+    from gdbtrace.trace.etm import qemu_log as ql
+    from gdbtrace.trace.etm.encoder4 import encode
+    from gdbtrace.trace.etm.trace import EtmTrace
+    from gdbtrace.trace.tpiu import frame_bytes
+    etm_data = encode([ql.Step(0x100), ql.Step(0x102), ql.Step(0x104), ql.Step(0x106)], TinyImage())
+    itm = SYNC + b"".join(stim(0, c) for c in b"bonjour\n")
+    path = tmp_path / "swo.bin"
+    path.write_bytes(frame_bytes(2, etm_data) + frame_bytes(1, itm))
+    tm = TraceManager()
+    tm.etm = EtmTrace(TinyImage(), version=4)
+    gate = threading.Event()
+    feed = tm.etm.feed
+    tm.etm.feed = lambda data: (gate.wait(10), feed(data))[1]       # décodeur ETM bloqué
+    lines = []
+    tm.line_listeners.append(lambda port, text, ts: lines.append(text))
+    src = tm.start_file(str(path), formatter=True)
+    try:
+        assert until(lambda: lines == ["bonjour"], 5)                  # l'ITM n'attend pas l'ETM
+        assert tm.etm_pending() and "décodage en retard" in tm.trace_status()
+        assert not tm.wait_etm(timeout=0.2)
+        gate.set()
+        assert tm.wait_etm(timeout=5) and src.done.is_set()
+        assert "retard" not in tm.trace_status()
+        tm.on_target_stopped()                                        # ETMv4 : flush à l'arrêt
+        assert [e.addr for e in tm.etm.last(10)] == [0x100, 0x102, 0x104, 0x106]
+    finally:
+        gate.set()
+        tm.stop()
+
+
+def test_itm_lines_reach_the_gui_in_batches():
+    """Des milliers de lignes ITM : un seul envoi en attente vers le thread GUI à la fois."""
+    posted = []
+    tm = TraceManager(post=lambda fn, *a: posted.append((fn, a)))
+    got = []
+    tm.line_listeners.append(lambda port, text, ts: got.append(text))
+    for i in range(5000):
+        tm._line(0, f"ligne {i}", i)
+    assert len(posted) == 1
+    fn, args = posted.pop()
+    fn(*args)
+    assert got == [f"ligne {i}" for i in range(5000)]
+    tm._line(0, "suite", 0)
+    assert len(posted) == 1
+
+
+def test_event_pump_yields_to_tk_under_a_flood():
+    """Un fil qui poste sans arrêt ne retient pas le thread GUI dans la pompe d'événements."""
+    from gdbtrace.gui.event_pump import EventPump
+
+    class Root:                                  # le minimum de Tk dont la pompe se sert
+        def after(self, ms, fn):
+            return "id"
+
+        def after_cancel(self, ident):
+            pass
+    pump = EventPump(Root())
+
+    def again():
+        pump.post(again)                         # chaque événement en poste un autre
+    pump.post(again)
+    t = time.monotonic()
+    pump._poll()
+    assert time.monotonic() - t < 1.0
+    pump.stop()
+
+
+def test_etm_decoding_yields_to_a_busy_gui(tmp_path):
+    """Thread GUI occupé (rafraîchissement des vues à l'arrêt) : le décodage ETM attend au lieu
+    de lui disputer le GIL ; jamais plus de ETM_YIELD_MAX par morceau (pas de famine)."""
+    from test_etm4 import TinyImage
+
+    from gdbtrace.trace import manager as mgr
+    from gdbtrace.trace.etm import qemu_log as ql
+    from gdbtrace.trace.etm.encoder4 import encode
+    from gdbtrace.trace.etm.trace import EtmTrace
+    data = encode([ql.Step(0x100), ql.Step(0x102), ql.Step(0x104), ql.Step(0x106)], TinyImage())
+    tm = TraceManager()
+    tm.etm = EtmTrace(TinyImage(), version=4)
+    busy = threading.Event()
+    busy.set()
+    tm.gui_busy = busy.is_set
+    tm._etm_feed(data)
+    time.sleep(0.2)
+    assert tm.etm_pending() and tm.etm.stats["instructions"] == 0     # cède la place au GUI
+    busy.clear()
+    assert tm.wait_etm(timeout=5) and tm.etm.stats["instructions"] > 0
+    busy.set()                                                      # GUI toujours occupé
+    t = time.monotonic()
+    tm._etm_feed(data)
+    assert tm.wait_etm(timeout=5)
+    assert time.monotonic() - t < mgr.ETM_YIELD_MAX + 1.0             # pas de famine

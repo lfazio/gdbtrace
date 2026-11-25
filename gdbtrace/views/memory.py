@@ -127,17 +127,18 @@ class MemoryView(View):
         t.configure(state="normal")
         yview = t.yview()
         t.delete("1.0", "end")
+        args: list = []                     # un seul insert : (texte, étiquette) en paires
         for off in range(0, len(data), WIDTH):
             chunk = data[off:off + WIDTH]
-            t.insert("end", f"{base + off:08x}  ", "addr")
+            args += [f"{base + off:08x}  ", "addr"]
             for i, b in enumerate(chunk):
                 k = off + i
                 tag = "changed" if prev and k < len(prev) and prev[k] != b else ""
-                t.insert("end", f"{b:02x}", tag)
-                t.insert("end", " ")
-            t.insert("end", "   " * (WIDTH - len(chunk)) + " ")
-            t.insert("end", "".join(chr(b) if 32 <= b < 127 else "." for b in chunk), "ascii")
-            t.insert("end", "\n")
+                args += [f"{b:02x}", tag, " ", ""]
+            args += ["   " * (WIDTH - len(chunk)) + " ", "",
+                     "".join(chr(b) if 32 <= b < 127 else "." for b in chunk), "ascii", "\n", ""]
+        if args:
+            t.insert("end", *args)
         t.yview_moveto(yview[0])
         t.configure(state="disabled")
         self.prev, self.prev_base = data, base

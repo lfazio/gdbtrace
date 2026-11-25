@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tkinter as tk
 import traceback
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -67,6 +68,10 @@ DEFAULT_LAYOUT = [
 
 class App:
     def __init__(self, root: tk.Tk | None = None, layout_file: str | None = None):
+        # Les fils de décodage (ETM, SWO) calculent en Python sans relâche pendant une capture.
+        # Le thread GUI rend le GIL à chaque appel Tk et attend ensuite l'intervalle de bascule
+        # pour le reprendre : 5 ms par défaut, soit 10 s pour dessiner 2 000 rectangles.
+        sys.setswitchinterval(0.0005)
         self.root = root or tk.Tk()
         self.root.title("gdbtrace")
         self.root.geometry("1400x900")
@@ -77,6 +82,9 @@ class App:
 
         self.pump = EventPump(self.root)
         self.pump.on_error = self.report_error
+        # opération qui exclut toute commande de marche (programmation de la flash : un Go
+        # relancerait le cœur au milieu du chargement, de la vérification ou du reset)
+        self._exclusive: str | None = None
         self.session: Session | None = None
         self.api: ScriptAPI | None = None
         self.console: Console | None = None
@@ -92,6 +100,7 @@ class App:
         self._rtos_layout = None               # disposition FreeRTOS (calculée à l'arrêt)
         # trace SWO/ITM (capture, texte ITM, exceptions) et fréquence du cœur pour la configurer
         self.trace = TraceManager(post=self.pump.post, on_error=self.report_error)
+        self.trace.gui_busy = lambda: self.pump.busy
         self.cpu_hz = 25_000_000
         self.coverage_in_source = False        # couverture ETM affichée dans la vue Source
         self.etm_cycle_accurate = False        # ETM matériel en mode cycle-accurate (ETMCR bit 12)
@@ -265,8 +274,17 @@ class App:
         name = os.path.basename(path)
         if s is not None and s.state != "disconnected":
             self.status.set(f"Programmation de {name}…")
+            self._exclusive = f"programmation de {name}"
+
+            def job():
+                try:
+                    return self.api.program(path, verify, quiet=True)
+                except BaseException:
+                    self.pump.post(setattr, self, "_exclusive", None)
+                    raise
 
             def done(res) -> None:
+                self._exclusive = None
                 msg = res.summary()
                 self.write_console(msg + "\n", "err" if res.mismatched else "gdb")
                 self.status.set(msg)
@@ -274,7 +292,7 @@ class App:
                     self.report_error(msg)
                 if then:
                     then(res)
-            self.run_action(lambda: self.api.program(path, verify, quiet=True), then=done)
+            self.run_action(job, then=done)
             return
         if self.target_factory is None:
             self.status.set("Pas de cible : lancer gdbtrace avec --qemu, --openocd ou --remote")
@@ -538,7 +556,15 @@ class App:
             return
         self.pump.background(fn, then=then)
 
+    @property
+    def busy(self) -> str | None:
+        """Opération en cours qui interdit Go, pas et arrêt (programmation), ou None."""
+        return self._exclusive
+
     def _need(self, state: str) -> bool:
+        if self._exclusive:
+            self.status.set(f"{self._exclusive} en cours : patienter")
+            return False
         return self.session is not None and self.session.state == state
 
     @property

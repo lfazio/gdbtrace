@@ -14,6 +14,7 @@ condition.
 from __future__ import annotations
 
 import bisect
+import threading
 from dataclasses import dataclass
 
 from elftools.elf.elffile import ELFFile
@@ -99,6 +100,9 @@ class CodeImage:
         self._mark_addrs = [a for a, _ in marks]
         self._swept: set[int] = set()
         self._it: dict[int, Instr] = {}           # instructions couvertes par un IT
+        # décodage (fil ETM) et vues (thread GUI, précalcul de la couverture) se partagent
+        # l'image : capstone n'est pas réentrant, et un balayage en cours n'est pas fini
+        self._lock = threading.Lock()
 
     def read(self, addr: int, n: int) -> bytes | None:
         for base, data in self.segments:
@@ -112,17 +116,22 @@ class CodeImage:
     def instr(self, addr: int) -> Instr | None:
         """Instruction à `addr` (bit Thumb ignoré), ou None si hors image / indécodable."""
         addr &= ~1
-        if addr in self._cache:
+        try:
             return self._cache[addr]
-        self._sweep_function(addr)
-        info = self._it.get(addr)
-        if info is None:
-            code = self.read(addr, 4) or self.read(addr, 2)
-            if code is not None:
-                for ins in self.cs.disasm(code, addr, 1):
-                    info = _classify(ins)
-        self._cache[addr] = info
-        return info
+        except KeyError:
+            pass
+        with self._lock:
+            if addr in self._cache:
+                return self._cache[addr]
+            self._sweep_function(addr)
+            info = self._it.get(addr)
+            if info is None:
+                code = self.read(addr, 4) or self.read(addr, 2)
+                if code is not None:
+                    for ins in self.cs.disasm(code, addr, 1):
+                        info = _classify(ins)
+            self._cache[addr] = info
+            return info
 
     def _sweep_function(self, addr: int) -> None:
         """Balaie une fois la fonction qui contient `addr` : condition réelle des

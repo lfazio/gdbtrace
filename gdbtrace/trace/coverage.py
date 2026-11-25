@@ -108,6 +108,7 @@ class CoverageDB:
         self.n: dict[int, int] = {}          # atomes N par adresse
         self.generation = 0
         self._lock = threading.Lock()
+        self._ulock = threading.Lock()
         self._universe: list[tuple[list, list[InstrInfo]]] | None = None
         self._by_addr: dict[int, InstrInfo] | None = None
         self._by_line: dict[tuple[str | None, int | None], list[InstrInfo]] = {}
@@ -136,6 +137,14 @@ class CoverageDB:
                         n[ev.addr] = n.get(ev.addr, 0) + 1
             self.generation += 1
 
+    def add_counts(self, e_counts: dict[int, int], n_counts: dict[int, int]) -> None:
+        """Comme `add`, depuis des comptes par adresse (décodeur qui compte lui-même)."""
+        with self._lock:
+            for src, dst in ((e_counts, self.e), (n_counts, self.n)):
+                for addr, k in src.items():
+                    dst[addr] = dst.get(addr, 0) + k
+            self.generation += 1
+
     def reset(self) -> None:
         """COVerage.RESet."""
         with self._lock:
@@ -148,12 +157,23 @@ class CoverageDB:
         with self._lock:
             return set(self.e) | set(self.n)
 
+    @property
+    def ready(self) -> bool:
+        """Le code mesurable du programme est déjà connu (`universe()` ne coûte plus rien)."""
+        return self._universe is not None
+
     # ------------------------------------------------------------------ programme
     def universe(self) -> list[tuple[list, list[InstrInfo]]]:
         """[(fonctions de même adresse, instructions)] : le code mesurable du programme, hors
         « literal pools » ; les instructions d'un bloc IT sont conditionnelles."""
         if self._universe is not None:
             return self._universe
+        with self._ulock:                    # précalcul en tâche de fond : on attend le sien
+            if self._universe is None:
+                self._universe = self._compute_universe()
+            return self._universe
+
+    def _compute_universe(self) -> list[tuple[list, list[InstrInfo]]]:
         sym = self.symbols
         by_start: dict[int, list] = {}
         for f in sym.functions if sym else []:
@@ -192,7 +212,7 @@ class CoverageDB:
             _drop_padding(instrs)
             if instrs:
                 out.append((funcs, instrs))
-        self._universe = out
+        # publié par universe() une fois les index faits (lu sans verrou par les autres fils)
         self._by_addr = {i.addr: i for _f, ins in out for i in ins}
         for _f, ins in out:
             for i in ins:

@@ -124,3 +124,25 @@ def qemu_paths(tmp_path_factory, elf, rtos_elf):
         assert len(ql.steps(events)) == count, f"{name} : journal QEMU trop court"
         out[name] = (CodeImage(path), events)
     return out
+
+
+# ---------------------------------------------------------------------- cartes de test
+def pytest_addoption(parser):
+    parser.addoption("--boards", choices=("auto", "require", "skip"), default="auto",
+                     help="tests sur cartes : auto (ignorés si la carte est absente), require "
+                          "(carte absente = échec, pour une release), skip")
+
+
+def board_serial(request, spec):
+    """Sonde de la carte `spec` (tests/boards.py), selon --boards."""
+    import boards
+    mode = request.config.getoption("--boards")
+    if mode == "skip":
+        pytest.skip("tests sur cartes désactivés (--boards=skip)")
+    serial = boards.find_board(spec)
+    if serial is None:
+        msg = f"{spec.name} non branchée (sonde ST-LINK + {spec.openocd_cfg}, ou {spec.env})"
+        if mode == "require":
+            pytest.fail(msg)
+        pytest.skip(msg)
+    return serial

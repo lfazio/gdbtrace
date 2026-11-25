@@ -292,6 +292,7 @@ def test_itm_view_with_fake_swo_server(rtos_app, rtos_elf):
     iv.ports_var.set("1")
     iv.on_line(0, "ignoré", 0)
     iv.on_line(1, "gardé", 0)
+    app.root.update()                       # lignes affichées par salve, au repos de Tk
     assert iv.contents() == "[1] gardé\n"
     app.trace.stop()
 
@@ -325,7 +326,11 @@ def test_trace_view_with_simulated_etm(etm_app):
     ins = app.trace.etm.image.instr(int(last[0], 16))
     assert int(last[0], 16) + ins.size == app.current_frame.pc
     flow = [tv.flow.item(i, "values")[0].strip() for i in tv.flow.get_children()]
-    assert flow[-1] == "→ fib" and "→ update_sensor" in flow
+    assert "→ update_sensor" in flow and "→ fib" in flow
+    # dernier appel : fib ; une interruption a pu suivre (⚡ … ↩), la trace reprend dans fib
+    after = flow[len(flow) - 1 - flow[::-1].index("→ fib"):]
+    assert after[-1] in ("→ fib", "• fib"), after
+    assert after[-1] == "→ fib" or "↩" in after, after
     # double-clic sur une ligne du listing → source
     tv.listing.focus(rows[-1])
     tv._goto(tv.listing)
@@ -514,7 +519,11 @@ def test_program_elf_from_menu(app, rtos_elf):
     app.go()
     assert pump(app, lambda: app.session.state == "running")
     app.program_elf(rtos_elf)                                   # cible en marche : arrêtée d'abord
+    assert app.busy == "programmation de freertos.elf"
+    app.go()                                                    # refusé pendant la programmation
+    assert "programmation de freertos.elf en cours" in app.status.get()
     assert pump(app, lambda: "vérifié" in app.status.get(), timeout=30), app.status.get()
+    assert app.busy is None and app.session.state == "stopped"
     pump(app, lambda: False, timeout=0.3)
     assert app.session.elf == rtos_elf and app.symbols.path == rtos_elf
     assert app.current_frame.func == "Reset_Handler" and app.recent_elfs[0] == rtos_elf
@@ -914,8 +923,14 @@ def test_tasktime_view(rtos_app, tmp_path):
     assert not any(n.startswith("TCB ") for n in rows)                  # noms relus
     assert sum(int(r[0]) for r in rows.values()) == len(seq) + 1
     assert "changements de tâche sur 800.0 µs" in v.info.cget("text")    # 8 × 2500 cycles à 25 MHz
-    bars = [i for i in v.canvas.find_all() if v.canvas.type(i) == "rectangle"]
-    assert len(bars) == len(seq)
+    from gdbtrace.views.tasktime import ROW, TOP
+    assert len(v._bars) == len(seq)                       # une entrée de survol par tranche
+    images = [i for i in v.canvas.find_all() if v.canvas.type(i) == "image"]
+    assert len(images) == 1                               # les barres : une image
+    left = v.canvas.coords(images[0])[0]
+    for x0, x1, y, sl in v._bars:                         # chaque tranche à sa couleur de tâche
+        rgb = v._image.get(int((x0 + x1) / 2 - left), int(y - TOP + ROW / 2))
+        assert "#%02x%02x%02x" % tuple(rgb) == v._colors[sl.tcb]
     x0, x1, y, _sl = v._bars[0]
     v._motion(type("E", (), {"x": (x0 + x1) / 2, "y": y + 8})())
     tip = [v.canvas.itemcget(i, "text") for i in v.canvas.find_withtag("hover") if v.canvas.type(i) == "text"]
