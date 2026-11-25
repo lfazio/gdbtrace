@@ -28,8 +28,12 @@ QUEUE_TYPES = {0: "queue", 1: "mutex", 2: "sémaphore compteur", 3: "sémaphore 
                4: "mutex récursif"}
 MUTEX_TYPES = {1, 4}
 
-# Registres sauvegardés sur la pile d'une tâche par le port ARM_CM3 (adresses croissantes)
+# Registres sauvegardés sur la pile d'une tâche par le port ARM_CM3 (adresses croissantes) ;
+# ARM_CM0 jusqu'à V11.2 aussi. ARM_CM0 depuis V11.3 (portasm.c) : EXC_RETURN d'abord, puis
+# r4-r7 et r8-r11 (9 mots).
 CM3_SOFT = ["r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11"]
+CPUID = 0xE000ED00
+ARMV6M = {0xC20, 0xC60}                 # Cortex-M0, M0+ (CPUID.PARTNO)
 HW_FRAME = ["r0", "r1", "r2", "r3", "r12", "lr", "pc", "xpsr"]
 
 
@@ -38,6 +42,14 @@ def detect(symbols) -> bool:
     locaux sans type, d'où le test sur `pxCurrentTCB` et une fonction du noyau)."""
     return (symbols is not None and "pxCurrentTCB" in symbols.objects
             and symbols.function("vTaskSwitchContext") is not None)
+
+
+def _armv6m(session) -> bool:
+    """La cible est-elle un Cortex-M0/M0+ (CPUID) ?"""
+    try:
+        return (session.read_u32(CPUID) >> 4) & 0xFFF in ARMV6M
+    except Exception:  # noqa: BLE001 - CPUID illisible : on garde le cadre ARM_CM3
+        return False
 
 
 def _u(data: bytes, off: int, size: int = 4) -> int:
@@ -98,7 +110,8 @@ class FreeRtosLayout:
     reg_item_size: int = 0
     reg_name: int = 0
     reg_handle: int = 0
-    #: port de pile : "CM3" (sans FPU) ou "CM4F" (EXC_RETURN + registres FP éventuels)
+    #: port de pile : "CM3" (sans FPU), "CM4F" (EXC_RETURN + registres FP éventuels) ou "CM0"
+    #: (ARM_CM0 depuis V11.3 : EXC_RETURN en tête)
     port: str = "CM3"
     #: cache des noms d'objets (chaînes en flash, constantes)
     names: dict[int, str] = field(default_factory=dict, repr=False)
@@ -186,6 +199,9 @@ class FreeRtosLayout:
 
         if symbols is not None and symbols.function("vPortEnableVFP") is not None:
             L.port = "CM4F"
+        elif symbols is not None and symbols.function("vRestoreContextOfFirstTask") is not None \
+                and _armv6m(session):
+            L.port = "CM0"                   # ARM_CM0 V11.3+ (les ports ARMv8-M ont ce symbole aussi)
         return L
 
     def kernel_lists(self) -> list[tuple[str, int, str]]:
@@ -517,9 +533,14 @@ def _objects(L, read, raw, tasks: dict[int, Task]) -> list[KernelObject]:
 
 # ====================================================================== contexte des tâches
 def task_registers(L: FreeRtosLayout, task: Task, read: Reader) -> dict[str, int]:
-    """Registres sauvegardés sur la pile d'une tâche **non courante** (port ARM_CM3/CM4F)."""
+    """Registres sauvegardés sur la pile d'une tâche **non courante** (port ARM_CM3, CM4F ou
+    CM0)."""
     top = task.stack_top
-    if L.port == "CM4F":
+    if L.port == "CM0":                  # EXC_RETURN, r4-r11
+        soft = read(top, 9 * 4)
+        regs = {n: _u(soft, 4 + i * 4) for i, n in enumerate(CM3_SOFT)}
+        pos, fp_frame = top + 36, False
+    elif L.port == "CM4F":
         soft = read(top, 9 * 4)
         regs = {n: _u(soft, i * 4) for i, n in enumerate(CM3_SOFT)}
         exc_return = _u(soft, 32)
@@ -541,6 +562,7 @@ def task_registers(L: FreeRtosLayout, task: Task, read: Reader) -> dict[str, int
 CORE_REGS = ["r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12",
              "sp", "lr", "pc"]
 TASK_EXIT_ARTIFACTS = {"prvTaskExitError", "pxPortInitialiseStack"}
+TASK_RETURN = "prvTaskExitError"      # portTASK_RETURN_ADDRESS : LR initial de chaque tâche
 
 
 def task_context(session, layout: FreeRtosLayout, task: Task) -> tuple[dict[str, int], list]:
@@ -561,6 +583,14 @@ def task_context(session, layout: FreeRtosLayout, task: Task) -> tuple[dict[str,
     return regs, task_backtrace(session, regs)
 
 
+def _task_return_address(session) -> int | None:
+    """Adresse de prvTaskExitError (bit Thumb retiré), ou None si gdb ne la connaît pas."""
+    try:
+        return session.address_of_expr(TASK_RETURN) & ~1
+    except Exception:  # noqa: BLE001 - configTASK_RETURN_ADDRESS, symbole absent…
+        return None
+
+
 def task_backtrace(session, regs: dict[str, int]) -> list:
     """Pile d'appels d'une tâche : charge ses registres dans gdb le temps de dérouler la pile,
     puis restaure **toujours** les registres d'origine. Cible arrêtée uniquement."""
@@ -574,7 +604,12 @@ def task_backtrace(session, regs: dict[str, int]) -> list:
         frames = session.backtrace()
         # La pile initiale d'une tâche porte une adresse de retour factice
         # (prvTaskExitError) : gdb en tire une frame sans signification, on la retire.
-        while frames and frames[-1].func in TASK_EXIT_ARTIFACTS:
+        # gdb nomme une frame appelante d'après l'octet qui précède l'adresse de retour :
+        # c'est la fonction placée avant prvTaskExitError (pxPortInitialiseStack en ARM_CM3,
+        # vPortSetupTimerInterrupt en ARM_CM0) ; d'où la comparaison par adresse.
+        exit_pc = _task_return_address(session)
+        while frames and (frames[-1].func in TASK_EXIT_ARTIFACTS
+                          or (exit_pc is not None and frames[-1].pc == exit_pc)):
             frames.pop()
         return frames
     finally:

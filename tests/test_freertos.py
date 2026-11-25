@@ -120,6 +120,25 @@ def test_cm3_saved_context():
     assert fr.task_registers(L, task, mem.read)["sp"] == top + 68
 
 
+def test_cm0_v11_3_saved_context():
+    """Port ARM_CM0 depuis FreeRTOS V11.3 (portasm.c) : EXC_RETURN en tête, puis r4-r11."""
+    L = tiny_layout()
+    L.port = "CM0"
+    mem = Mem()
+    top = 0x2800
+    mem.w(top, 0xFFFFFFFD)                   # EXC_RETURN : mode thread, PSP
+    for i in range(8):                       # r4..r11
+        mem.w(top + 4 + 4 * i, 4 + i)
+    hw = [0, 1, 2, 3, 12, 0x111, 0x1234, 0x01000000]
+    for i, v in enumerate(hw):
+        mem.w(top + 36 + 4 * i, v)
+    task = fr.Task(0, "t", "Ready", 1, 1, 1, 0, None, top, None, None, None, None)
+    regs = fr.task_registers(L, task, mem.read)
+    assert [regs[f"r{i}"] for i in range(4)] == [0, 1, 2, 3] and regs["r12"] == 12
+    assert regs["r4"] == 4 and regs["r11"] == 11 and regs["pc"] == 0x1234 and regs["lr"] == 0x111
+    assert regs["sp"] == top + 68
+
+
 # ====================================================================== firmware réel (QEMU)
 EXPECTED = {  # nom : priorité
     "producer": 2, "consumer": 3, "worker": 2, "sleeper": 1, "hog": 1, "IDLE": 0, "Tmr Svc": 4}
