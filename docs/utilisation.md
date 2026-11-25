@@ -901,8 +901,8 @@ trace:
 | `serveur`, QEMU | `machine` | `--machine` |
 | `serveur`, OpenOCD | `openocd` (liste de `.cfg`), `rtos` | `--openocd CFG…`, `--rtos` |
 | `serveur`, ST-LINK | `stlink` (numéro de série), `stlink-ap`, `ram-boot` | `--stlink SN`, `--stlink-ap`, `--ram-boot` |
-| `serveur`, programme de l'hôte | `args`, `cwd` | `--native --args`, `--cwd` |
-| `serveur`, déjà lancé | `remote`, `tcl` | `--remote`, `--tcl` |
+| `serveur`, programme de l'hôte | `args`, `cwd`, `pid`, `non-stop` | `--native --args`, `--cwd`, `--pid` (sans `--native`), `--non-stop` |
+| `serveur`, déjà lancé | `remote`, `tcl` ; programme de l'hôte servi par gdbserver : `remote-exec`, `args`, `cwd`, `non-stop` | `--remote`, `--tcl`, `--remote-exec`, `--args`, `--cwd`, `--non-stop` |
 | `serveur`, commun | `gdb`, `gdb-port`, `no-load` | `--gdb`, `--gdb-port`, `--no-load` |
 | `os` | `aucun`, `freertos`, `pthread` | `--os` |
 | `script` | chemin | `--script` |

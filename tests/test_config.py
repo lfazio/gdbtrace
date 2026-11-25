@@ -215,3 +215,30 @@ def test_batch_with_config(elf, tmp_path):
 def test_bad_config_on_the_command_line(tmp_path):
     r = run("--config", write(tmp_path / "x.yaml", "serveur: {type: jlink}\n"), "--batch")
     assert r.returncode == 2 and "serveur.type : « jlink » inconnu" in r.stderr
+
+
+def test_native_and_trace_options_of_later_milestones():
+    """--pid, --non-stop, --remote-exec, --etm-timestamps, --etr-at-stop : une option de la
+    ligne de commande marche aussi dans une configuration (aller et retour)."""
+    native = os.path.join(ROOT, "examples", "native", "pthreads")
+    n6 = os.path.join(ROOT, "examples", "nucleo-n6", "nucleo-n6.elf")
+    cases = [
+        ({"cible": {"elf": native}, "serveur": {"type": "gdb", "pid": 1234, "non-stop": True},
+          "os": "pthread"}, ["--pid", "1234", "--non-stop"], "--native"),
+        ({"cible": {"elf": native}, "serveur": {"type": "remote", "remote": "127.0.0.1:2345",
+                                                "remote-exec": "/srv/prog", "non-stop": True}},
+         ["--remote", "127.0.0.1:2345", "--remote-exec", "/srv/prog", "--non-stop"], None),
+        ({"cible": {"elf": n6}, "serveur": {"type": "stlink", "stlink-ap": 1, "ram-boot": True},
+          "trace": {"etm-config": True, "etm-port": "etr", "etm-timestamps": True, "etr-at-stop": True}},
+         ["--etm-timestamps", "--etr-at-stop"], None),
+    ]
+    for data, wanted, absent in cases:
+        cfg = SessionConfig(data)
+        argv = cfg.to_argv()
+        assert all(w in argv for w in wanted), argv
+        assert absent is None or absent not in argv, argv
+        cfg.check()
+        back = SessionConfig.from_args(cfg.parse()).data
+        for section in ("serveur", "trace"):
+            if section in data:
+                assert back[section] == data[section], (section, back[section])

@@ -427,10 +427,11 @@ def validate(args) -> list[str]:
     return errors
 
 
-SERVER_DESTS = ("qemu", "openocd", "stlink", "remote", "native")
+SERVER_DESTS = ("qemu", "openocd", "stlink", "remote", "native", "pid")
 #: options propres à un serveur : retirées de la configuration quand la ligne de commande en
 #: donne un autre
-SERVER_OPTION_DESTS = ("machine", "rtos", "stlink_ap", "ram_boot", "args", "cwd", "tcl")
+SERVER_OPTION_DESTS = ("machine", "rtos", "stlink_ap", "ram_boot", "args", "cwd", "tcl",
+                       "non_stop", "remote_exec")
 
 
 def parse_command_line(argv: list[str] | None = None):
@@ -450,7 +451,7 @@ def parse_command_line(argv: list[str] | None = None):
         p.error(str(exc))
     explicit = vars(_explicit_parser().parse_args(argv))
     kinds = {"qemu": "qemu", "openocd": "openocd", "stlink": "stlink", "remote": "remote",
-             "native": "gdb"}
+             "native": "gdb", "pid": "gdb"}
     cli_server = next((kinds[d] for d in SERVER_DESTS if d in explicit), None)
     other_server = cli_server is not None and cli_server != cfg.server
     merged = p.parse_args(cfg.to_argv(server=not other_server))

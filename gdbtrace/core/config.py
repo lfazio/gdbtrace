@@ -47,16 +47,17 @@ SERVER_KEYS = {
     "qemu": ["machine"],
     "openocd": ["openocd", "rtos"],
     "stlink": ["stlink", "stlink-ap", "ram-boot"],
-    "gdb": ["args", "cwd"],
-    "remote": ["remote", "tcl"],
+    "gdb": ["args", "cwd", "pid", "non-stop"],
+    "remote": ["remote", "tcl", "remote-exec", "args", "cwd", "non-stop"],
 }
 SERVER_COMMON = ["gdb", "gdb-port", "no-load"]
 CIBLE_KEYS = ["elf", "svd", "cpu-hz", "programmer", "verifier", "go"]
 COUVERTURE_KEYS = ["fusionner", "exporter"]
 #: options de trace de la ligne de commande, dans l'ordre de --help
 TRACE_KEYS = ["swo", "swo-file", "swo-formatter", "swo-config", "swo-hz", "swo-port", "var-trace",
-              "etm-sim", "trace", "trace-file", "etm-config", "etm-cycle-accurate", "etm-width",
-              "etm-port", "etr-buffer", "etm-stall", "stm32", "etm-filter", "etm-start", "etm-stop",
+              "etm-sim", "trace", "trace-file", "etm-config", "etm-cycle-accurate", "etm-timestamps",
+              "etm-width", "etm-port", "etr-buffer", "etr-at-stop", "etm-stall", "stm32", "etm-filter",
+              "etm-start", "etm-stop",
               "mtb", "mtb-buffer", "mtb-sim", "mtb-autohalt", "mtb-probe"]
 TOP_KEYS = ["gdbtrace", "nom", "cible", "serveur", "os", "script", "couverture", "trace"]
 
@@ -68,7 +69,7 @@ PATH_KEYS = {("cible", "elf"), ("cible", "svd"), ("serveur", "openocd"), ("serve
 OPTION_OF = {("cible", "programmer"): "--program", ("couverture", "fusionner"): "--coverage-merge",
              ("couverture", "exporter"): "--coverage"}
 #: une option qui choisit le serveur (groupe exclusif de la ligne de commande)
-SERVER_DESTS = ("qemu", "openocd", "stlink", "remote", "native")
+SERVER_DESTS = ("qemu", "openocd", "stlink", "remote", "native", "pid")
 
 
 class ConfigError(ValueError):
@@ -269,8 +270,8 @@ class SessionConfig:
             elif kind == "stlink":
                 sn = srv.pop("stlink", None)
                 argv += ["--stlink"] + ([str(sn)] if sn not in (None, "", True) else [])
-            elif kind == "gdb":
-                argv.append("--native")
+            elif kind == "gdb" and not srv.get("pid"):   # --pid : programme de l'hôte déjà
+                argv.append("--native")                  # lancé (exclusif de --native)
             elif kind == "remote":
                 if not srv.get("remote"):
                     raise ConfigError("serveur.remote : hôte:port du serveur gdb déjà lancé")
@@ -342,7 +343,7 @@ class SessionConfig:
                 srv["stlink"] = args.stlink
         elif args.remote:
             srv = {"type": "remote", "remote": args.remote}
-        elif args.native or (not args.qemu and args.elf and is_native_elf(args.elf)):
+        elif args.native or args.pid or (not args.qemu and args.elf and is_native_elf(args.elf)):
             srv = {"type": "gdb"}
         else:
             srv = {"type": "qemu"}

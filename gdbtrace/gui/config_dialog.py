@@ -31,7 +31,9 @@ TRACE_FIELDS = {
             ("etm-stall", "Ralentir le cœur plutôt que perdre de la trace", "bool"),
             ("stm32", "Broches de trace (DBGMCU_CR des STM32)", "bool"),
             ("etm-cycle-accurate", "Cycle-accurate (durées mesurées)", "bool"),
+            ("etm-timestamps", "Horodatage (ETMv4)", "bool"),
             ("etr-buffer", "Tampon de l'ETR (ADRESSE:TAILLE)", "str"),
+            ("etr-at-stop", "Lire l'ETR à l'arrêt seulement", "bool"),
             ("trace", "Flux TPIU en TCP (hôte:port)", "str"),
             ("trace-file", "Rejouer une capture TPIU", "path")],
     "Données et filtre": [("var-trace", "Variables tracées (une par ligne, EXPR[:ACCÈS])", "list"),
@@ -162,9 +164,14 @@ class ConfigEditor(tk.Toplevel):
         fr = self.server_frames["gdb"] = ttk.LabelFrame(holder, text="Programme de l'hôte", padding=6)
         self._row(fr, 0, "Arguments (syntaxe shell)", "serveur", "args")
         self._row(fr, 1, "Répertoire de travail", "serveur", "cwd", browse="dir")
+        self._row(fr, 2, "S'attacher au processus (PID ; vide : lancer le programme)", "serveur", "pid")
+        self._row(fr, 3, "Mode non-stop (un thread s'arrête, les autres continuent)", "serveur",
+                  "non-stop", "bool")
         fr = self.server_frames["remote"] = ttk.LabelFrame(holder, text="Serveur déjà lancé", padding=6)
         self._row(fr, 0, "Serveur gdb (hôte:port)", "serveur", "remote")
         self._row(fr, 1, "Port TCL d'un OpenOCD (hôte:port, mémoire en marche)", "serveur", "tcl")
+        self._row(fr, 2, "Programme de l'hôte servi par gdbserver --multi : son chemin côté serveur",
+                  "serveur", "remote-exec")
         common = ttk.LabelFrame(f, text="Commun", padding=6)
         common.pack(fill="x")
         self._row(common, 0, "Exécutable gdb", "serveur", "gdb")
@@ -283,7 +290,7 @@ class ConfigEditor(tk.Toplevel):
         kind = self.server_var.get()
         srv: dict = {"type": kind}
         keys = {"qemu": ["machine"], "openocd": [], "stlink": ["stlink", "stlink-ap", "ram-boot"],
-                "gdb": ["args", "cwd"], "remote": ["remote", "tcl"]}[kind]
+                "gdb": ["args", "cwd", "pid", "non-stop"], "remote": ["remote", "tcl", "remote-exec"]}[kind]
         for key in keys + ["gdb", "gdb-port", "no-load"]:
             var = self.vars[("serveur", key)]
             if isinstance(var, tk.BooleanVar):
@@ -294,7 +301,7 @@ class ConfigEditor(tk.Toplevel):
             if not v or (key == "gdb" and v == "gdb-multiarch") or (key in ("gdb-port", "stlink-ap") and v == "0") \
                     or (key == "machine" and v == "mps2-an385"):
                 continue
-            srv[key] = _number(v) if key in ("gdb-port", "stlink-ap") else v
+            srv[key] = _number(v) if key in ("gdb-port", "stlink-ap", "pid") else v
         if kind == "openocd":
             srv["openocd"] = self._get_list("serveur", "openocd")
             if self.vars[("serveur", "rtos")].get():
