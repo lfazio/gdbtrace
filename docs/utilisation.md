@@ -14,7 +14,7 @@ Comment installer, lancer et utiliser GdbTrace : interface, breakpoints, donnée
 8. [Sur une Nucleo-F746ZG](#8-sur-une-nucleo-f746zg)
 9. [Sur une Nucleo-N657X0-Q (STM32N6)](#9-sur-une-nucleo-n657x0-q-stm32n6)
 10. [Sur une Nucleo-G070RB ou une Nucleo-F072RB (Cortex-M0+, Cortex-M0)](#10-sur-une-nucleo-g070rb-ou-une-nucleo-f072rb-cortex-m0-cortex-m0)
-11. [Console et scripts Python](#11-console-et-scripts-python)
+11. [Console, scripts Python et serveur MCP](#11-console-scripts-python-et-serveur-mcp)
 12. [Référence des options](#12-référence-des-options)
 13. [Dépannage et limites](#13-dépannage-et-limites)
 
@@ -643,9 +643,9 @@ Chaque carte est trouvée seule : sonde ST-LINK dans `/sys`, puis identité de l
 xvfb-run -a .venv/bin/python -m pytest tests/test_board_m0.py -k f072 --boards=require
 ```
 
-## 11. Console et scripts Python
+## 11. Console, scripts Python et serveur MCP
 
-Tout ce que fait l'interface se pilote aussi en Python, par l'objet `gdbtrace`. La notice complète est à part : [`docs/scripting.md`](scripting.md).
+Tout ce que fait l'interface se pilote aussi en Python, par l'objet `gdbtrace`. La notice complète est à part : [`docs/scripting.md`](scripting.md). Un agent (Claude Code) pilote GdbTrace par le serveur MCP.
 
 ### Console
 
@@ -669,6 +669,61 @@ La console affiche aussi la sortie de gdb, les messages des breakpoints à actio
 Dans l'interface, **Fichier › Exécuter un script…** fait la même chose. Exemples fournis dans `examples/scripts/` : `session.py` (session complète), `demo.py`, `rtos.py` (FreeRTOS), `coverage.py` (campagne de couverture).
 
 Un script peut ce que l'interface ne propose pas : une **action Python** sur un breakpoint, qui décide de l'arrêt (`gdbtrace.break_("animate", action=fonction)`), une campagne de tests en intégration continue, une injection de fautes, un journal CSV.
+
+### Serveur MCP (Claude Code)
+
+Un agent peut déboguer à votre place, ou avec vous : `python -m gdbtrace.mcp` est un serveur
+MCP (Model Context Protocol) sur stdio. L'agent ouvre une session GdbTrace sans interface,
+comme le mode batch, et la pilote par des outils.
+
+**Installer dans Claude Code**, depuis le dépôt (chemin absolu de l'interpréteur du venv) :
+
+```bash
+claude mcp add gdbtrace -- "$PWD/.venv/bin/python" -m gdbtrace.mcp
+claude mcp list                     # gdbtrace : connected
+```
+
+Ou dans le `.mcp.json` d'un projet (partagé avec l'équipe) :
+
+```json
+{"mcpServers": {"gdbtrace": {"command": "/chemin/gdbtrace/.venv/bin/python",
+                             "args": ["-m", "gdbtrace.mcp"]}}}
+```
+
+Les chemins donnés aux outils (ELF, fichiers de configuration) sont relatifs au répertoire où
+Claude Code a été lancé.
+
+**Session.** L'outil `connect` prend les options de la ligne de commande (section 12), sans
+`--batch`, `--script` ni `--coverage` : `examples/firmware/demo.elf --etm-sim`, `fw.elf
+--openocd configs/nucleo-f746zg.cfg --program --swo-config --cpu-hz 16000000`, `fw.elf
+--stlink --stlink-ap 1 --ram-boot --program`, `--pid 1234`. Il rend le journal de mise en route
+et l'arrêt courant. Une session à la fois : un nouveau `connect` ferme la précédente.
+
+| Outil | Effet |
+| --- | --- |
+| `connect`, `disconnect` (`leave_running`), `status` | ouvrir, fermer la session ; état, dernier arrêt, état de la trace |
+| `go` | Go, `until` : jusqu'à un emplacement ; attend l'arrêt `wait` s (5 par défaut, 0 : sans attendre), sinon la cible reste en marche |
+| `halt`, `reset` | Break ; reset arrêté au vecteur de reset (programme de l'hôte : relancé) |
+| `step` | `kind` : `line`, `over`, `out`, `instruction` ; `count` pas |
+| `break` | breakpoint : `condition`, `count` (arrêt au Nᵉ passage), `log` (message à chaque passage, la cible repart), `hardware`, `temporary` |
+| `watch`, `delete`, `breakpoints` | watchpoint (`write`, `read`, `rw`), suppression, liste avec les passages et les derniers messages |
+| `evaluate`, `set` | expression C (`format` : `hex`, `dec`, `bin`…), affectation |
+| `registers`, `backtrace`, `memory` | registres, pile avec les locales, dump (`address` : nombre ou expression, 4096 octets au plus) |
+| `threads` (`select`), `rtos` | threads d'un programme de l'hôte, tâches FreeRTOS |
+| `trace_list`, `calls`, `coverage`, `timing` | trace d'instructions de l'exécution qui précède l'arrêt (décodée avant d'être rendue) |
+| `profile`, `itm` | profil statistique pendant `seconds` ; texte d'un port ITM |
+| `program` | programmer un ELF (celui de la session par défaut) |
+| `gdb`, `python` | commande CLI de gdb ; code Python avec l'objet `gdbtrace` (tout ce que les autres outils ne couvrent pas, [`docs/scripting.md`](scripting.md)) |
+
+**Cible en marche.** gdb ne lit rien pendant la marche ; `evaluate` relit alors par le canal
+mémoire (QEMU, OpenOCD, ST-LINK_gdbserver, programme de l'hôte) une variable à adresse fixe
+(globale, champ, élément de tableau) que l'agent a déjà évaluée une fois cible arrêtée :
+« `ticks = 1234 (lu en direct)` ». `memory` lit une adresse numérique.
+
+**Sorties.** Tout ce que GdbTrace écrit revient dans le résultat de l'outil : journal de
+`connect`, `print` du code Python, messages des breakpoints à action et sortie d'un programme
+de l'hôte (aussi ceux arrivés entre deux appels, rendus au suivant). Une erreur (expression
+inconnue, cible en marche) est un résultat d'erreur ; la session continue.
 
 ## 12. Référence des options
 
@@ -813,7 +868,7 @@ Quand une capture ne démarre pas, GdbTrace le dit : le journal de mise en route
 | Octets reçus mais aucun de l'ETM | ETM non programmé, ou `--cpu-hz` / débit SWO faux | `--etm-config` (ou Trace › ETM par SWO…), fréquence réelle du cœur |
 | Trace à trous (« trace interrompue ») | le débit du port ne suit pas le cœur | `--etm-stall`, un filtre ETM, ou une horloge plus basse |
 | Vues figées cible en marche | pas de canal mémoire : `--remote` sans `--tcl` | ajouter `--tcl` (OpenOCD), sinon les vues se rafraîchissent à l'arrêt |
-| Écriture d'un registre de périphérique sans effet sous QEMU | QEMU ignore ces écritures | GdbTrace le signale à la relecture ; sur une vraie carte, elles marchent |
+| Écriture d'un registre de périphérique sans effet sous QEMU | QEMU 8.2 ignore ces écritures (QEMU 11.1 les applique) | GdbTrace le signale à la relecture ; sur une vraie carte, elles marchent |
 | Rien dans la vue ITM sous QEMU | QEMU n'émule ni l'ITM ni le SWO | tester l'ITM sur carte |
 | OpenOCD ne démarre pas : port déjà pris | un autre OpenOCD tient la sonde ou le port | GdbTrace vérifie les ports avant de lancer et le dit ; arrêter l'autre serveur |
 | La connexion échoue sur un firmware qui ne dort jamais | connexion à chaud difficile | connexion sous reset (défaut de `configs/nucleo-f746zg.cfg`) |
@@ -826,6 +881,8 @@ Quand une capture ne démarre pas, GdbTrace le dit : le journal de mise en route
 | Go.Till refusé | la condition porte sur un registre ou une valeur sans adresse | Step.Till |
 | Configuration refusée (« serveur.stlink-ap : option du serveur stlink, pas de openocd ») | une clé du YAML ne va pas avec le serveur, l'OS ou les autres options | le message nomme la clé ; mêmes règles que la ligne de commande (section 12) |
 | « SVD STM32G070.svd introuvable » | SVD donné par son nom, absent de STM32CubeIDE | donner son chemin, ou `GDBTRACE_SVD_DIR` ; la session continue sans vue Périphériques |
+| Claude Code : serveur gdbtrace « failed » | interpréteur introuvable (chemin relatif), ou venv sans GdbTrace | chemin absolu de `.venv/bin/python` dans `claude mcp add` ; `claude mcp list` ; journal du serveur sur stderr |
+| Outil MCP `evaluate` : « cible en marche » | variable jamais évaluée cible arrêtée, locale, ou cible sans canal mémoire | l'évaluer une fois après `halt` ; avec `--remote`, ajouter `--tcl` |
 | « Cortex-M0+ (ARMv6-M) : ni ITM, ni SWO, ni ETM » | le cœur n'a pas de trace (STM32G0, STM32F0, STM32L0…) | profil par lecture du PC (« Live ») ; MTB si `--mtb-probe` en trouve une |
 
 ### Limites connues

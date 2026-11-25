@@ -81,7 +81,7 @@ def test_svd_by_name(tmp_path, monkeypatch):
     ("trace: {swo-config: oui}", "trace.swo-config : true ou false attendu"),
     ("trace: {etm-port: usb, etm-config: true}", "trace.etm-port : « usb » hors de parallel, swo, etr"),
     ("trace: {swo-hz: vite}", "trace.swo-hz : entier attendu"),
-    ("trace: {etr-buffer: '0x0:64'}", "--etr-buffer : avec --etm-config --etm-port etr"),
+    ("trace: {etr-buffer: '0x0:64'}", "--etr-buffer / --etr-at-stop : avec --etm-config --etm-port etr"),
     ("gdbtrace: 2", "gdbtrace: 2 : format inconnu"),
     ("- a\n- b", "doit être un dictionnaire"),
 ])

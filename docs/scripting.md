@@ -42,7 +42,7 @@ la cible, avec trois objets déjà définis :
 | `hexdump(octets, adresse)` | met en forme un dump hexadécimal |
 
 Tout le reste est du Python : boucles, conditions, fichiers, `csv`, `json`, `time`,
-`assert`. Le même script tourne de quatre façons :
+`assert`. Le même script tourne de cinq façons :
 
 | Où | Comment | Remarque |
 |---|---|---|
@@ -50,6 +50,7 @@ Tout le reste est du Python : boucles, conditions, fichiers, `csv`, `json`, `tim
 | Au démarrage du GUI | `python -m gdbtrace fw.elf --script s.py` | les vues (Source, Watch, Pile, Breakpoints…) suivent chaque arrêt |
 | Depuis le GUI | Fichier › Exécuter un script… | même chose, sur la cible déjà connectée |
 | Ligne par ligne | console du GUI (onglet Console) | `gdbtrace.…` ; `!cmd` pour une commande gdb, `mon cmd` pour une commande `monitor` |
+| Par un agent | outil `python` du serveur MCP (`python -m gdbtrace.mcp`) | Claude Code ; `print` et la valeur d'une expression reviennent dans le résultat ([notice](utilisation.md#serveur-mcp-claude-code)) |
 
 Dans le GUI, le script tourne dans son propre fil d'exécution : l'interface reste réactive,
 et `print` écrit dans la console. Un script peut en lancer un autre avec

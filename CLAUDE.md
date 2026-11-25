@@ -27,6 +27,7 @@ make -C examples/nucleo-f072     # firmware de test STM32F072RB (M0, 8 MHz ; dé
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf --etm-sim     # + trace ETM simulée
 .venv/bin/python -m gdbtrace fw.elf --batch --script s.py             # sans GUI
 .venv/bin/python -m gdbtrace --config configs/qemu-freertos.yaml      # session décrite en YAML
+.venv/bin/python -m gdbtrace.mcp                                       # serveur MCP (stdio)
 
 xvfb-run -a .venv/bin/python -m pytest                 # suite complète
 .venv/bin/python -m pytest tests/test_etm.py -k rtos   # sous-ensemble
@@ -62,8 +63,17 @@ mais avec son firmware de test.
 
 `GdbMI` (`core/gdb_backend.py`) → `Session` (`core/session.py`) → consommateurs :
 `App` (GUI), `ScriptAPI` (objet `gdbtrace` de la console et des scripts), mode `--batch`
-(`__main__.py`).
+(`__main__.py`), serveur MCP (`mcp.py`).
 
+- `BatchSession` (`__main__.py`) : session sans GUI (connexion, programmation, trace,
+  `ScriptAPI`), commune à `--batch` et au serveur MCP ; `check_args` contrôle les options
+  pour les deux. Serveur MCP : JSON-RPC sur stdio, une ligne par message, une session à la
+  fois ouverte par l'outil `connect` (options de la ligne de commande). Les descripteurs 0 et
+  1 sont dupliqués pour le protocole puis remplacés (/dev/null, stderr) : un fils (gdb, QEMU)
+  ne doit ni lire les requêtes ni écrire dans les réponses. Chaque outil capture stdout/stderr
+  dans son résultat ; les événements du thread lecteur (actions, sortie du programme) sont
+  gardés pour le résultat suivant. Un outil sur une méthode de `ScriptAPI` est déclaré dans
+  `TOOLS` et implémenté par `tool_<nom>`.
 
 - `GdbMI` : un thread lecteur ; chaque commande porte un jeton et attend sa réponse dans une
   queue. Les abonnés sont appelés **dans le thread lecteur** et ne doivent jamais bloquer.
@@ -271,13 +281,14 @@ Une option ajoutée à la ligne de commande doit marcher dans une configuration 
 trace s'ajoute à `TRACE_KEYS` (`core/config.py`) et à `TRACE_FIELDS` (`gui/config_dialog.py`) ;
 une autre option, à sa section (`CIBLE_KEYS`, `SERVER_KEYS`…), à `from_args` et à la boîte de
 dialogue ; une règle entre options va dans `validate()`, jamais directement dans `main()`.
-Une méthode ajoutée à `ScriptAPI` se documente aussi dans `docs/scripting.md` (notice) ; ses
+Une méthode ajoutée à `ScriptAPI` se documente aussi dans `docs/scripting.md` (notice) et,
+si un agent en a l'usage, devient un outil du serveur MCP (`mcp.py`, `docs/utilisation.md`) ; ses
 blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et doivent rester verts.
 
 ## Limites connues (ne pas « corriger » côté gdbtrace)
 
-- Le gdbstub de QEMU ignore les écritures du débogueur dans les périphériques (RAM/ROM
-  seulement) ; QEMU n'émule ni ITM ni SWO.
+- Le gdbstub de QEMU 8.2 ignore les écritures du débogueur dans les périphériques (RAM/ROM
+  seulement ; QEMU 11.1 les applique) ; QEMU n'émule ni ITM ni SWO.
 - QEMU (8.2) sous charge : environ un pas à pas sur quelques centaines revient sans avoir
   exécuté l'instruction (`vCont;s` → mêmes registres). En enjambant un breakpoint, gdb le
   revoit alors au même endroit : un passage compté deux fois (hits, `count=`, messages

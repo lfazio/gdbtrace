@@ -161,9 +161,12 @@ def test_peripheral_write_and_layout_state(app, tmp_path, monkeypatch):
     p.tree.focus("TIMER0.CTRL.EN")
     p._edit(None)
     assert writes == [(0x40000000, (0x0).to_bytes(4, "little"))]
-    # QEMU ignore les écritures périphériques du débogueur : la relecture le révèle
-    assert app.session.read_u32(0x40000000) & 1 == 1
-    assert "relu 0x1" in app.status.get() and "ignorée" in app.status.get()
+    # QEMU 8.2 ignore les écritures périphériques du débogueur, la relecture le révèle ;
+    # QEMU 11 les applique : rien à signaler
+    if app.session.read_u32(0x40000000) & 1:
+        assert "relu 0x1" in app.status.get() and "ignorée" in app.status.get()
+    else:
+        assert "ignorée" not in app.status.get()
     # registre en lecture seule : refusé
     p.expand("SCB")
     p.tree.focus("SCB.CPUID")

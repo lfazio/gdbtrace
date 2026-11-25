@@ -179,6 +179,76 @@ def setup_mtb(args, trace, session, log=print) -> None:
     log(describe(base, trace.setup_mtb(session, base, *buffer, autohalt=args.mtb_autohalt)))
 
 
+class BatchSession:
+    """Session sans interface : mode `--batch`, serveur MCP (`gdbtrace.mcp`). Connexion,
+    programmation (`program`), décodage de la trace, objet `gdbtrace` (`api`) ; `setup()`
+    met en route les captures demandées, `close()` ferme tout. `log` : où vont les messages ;
+    `on_event` : abonné aux événements de la session (défaut : messages des actions) ;
+    `config` : configuration de session (`gdbtrace.config`)."""
+
+    def __init__(self, args, elf: str, target, load, program: bool, verify: bool, log=print,
+                 on_event=_print_action, config=None):
+        from .core import svd
+        from .core.scripting import ScriptAPI
+        from .core.session import Session
+        from .core.symbols import SymbolTable
+        from .trace.manager import TraceManager
+        self.args, self.elf, self.target, self.log = args, elf, target, log
+        device = svd.parse(args.svd) if args.svd else None
+        self.s = s = Session(args.gdb)
+        s.on_event(on_event)
+        self.live = None
+        self.trace = TraceManager(on_error=log)
+        try:
+            s.connect(elf, target, load)
+        except BaseException:
+            s.disconnect()
+            raise
+        self.rc = 0
+        if program:
+            res = s.program(elf, verify)
+            log(res.summary())
+            self.rc = 1 if res.mismatched else 0
+        self.live = live = target.live_memory()
+        trace = self.trace
+        self.symbols = symbols = SymbolTable(elf)
+        msg = None
+        if not target.native:                    # trace d'instructions : Cortex-M seulement
+            msg = trace.setup_etm(elf, symbols, cycle_accurate=args.etm_cycle_accurate)
+            trace.detect_core(s)                 # ARMv6-M : ni ITM ni ETM, refusés clairement
+            if trace.etm is not None:
+                trace.detect_etm(s)              # ETMv3 (M3/M4) ou ETMv4 (M7)
+        if args.etm_sim or args.mtb_sim is not None:
+            if msg:
+                log(msg)
+            elif args.mtb_sim is not None:
+                trace.enable_mtb_sim(live, target.mtb_sim, s, autohalt=args.mtb_autohalt)
+                trace.attach_session(s)
+            else:
+                trace.enable_qemu_sim(live)
+                trace.attach_session(s)
+        self.api = api = ScriptAPI(s, live, device)
+        api.trace = trace
+        api.symbols = symbols
+        api.cpu_hz = args.cpu_hz
+        api.on_program = lambda e: trace.retarget(e, api._symbols(), args.etm_cycle_accurate)
+        api._config = config.data if config is not None else None
+
+    def setup(self) -> None:
+        """Captures de trace demandées par les options, couvertures à fusionner."""
+        setup_trace(self.args, self.trace, self.s, self.target, self.log)
+        for path in self.args.coverage_merge:
+            self.api.cov.load(path)
+
+    def close(self, leave_running: bool = False) -> None:
+        try:
+            self.trace.close()
+            if self.live:
+                self.live.close()
+        finally:
+            self.s.disconnect(halt=not leave_running)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Options de la ligne de commande (aussi utilisées par les tests du GUI)."""
     p = argparse.ArgumentParser(prog="gdbtrace", description="GdbTrace : débogueur Cortex-M (et programmes natifs) sur gdb")
@@ -406,8 +476,10 @@ def _explicit_parser():
     return p
 
 
-def main(argv: list[str] | None = None) -> int:
-    p, args, config = parse_command_line(argv)
+def resolve_session(p: argparse.ArgumentParser, args) -> tuple:
+    """Après l'analyse (configuration comprise) : ELF (`--program`, `--pid`), règles
+    (`validate`), SVD donné par son nom ; `p.error` sinon. Retourne (elf, program, verify,
+    load, svd_warning). Commun à la ligne de commande et à l'outil `connect` du serveur MCP."""
     if args.program:
         if args.elf and os.path.abspath(args.elf) != os.path.abspath(args.program):
             p.error("deux ELF différents : l'ELF de la ligne de commande et celui de --program")
@@ -431,71 +503,39 @@ def main(argv: list[str] | None = None) -> int:
     elf = os.path.abspath(args.elf) if args.elf else None
     if elf and not os.path.isfile(elf):
         p.error(f"ELF introuvable : {elf}")
-
-    target = build_target(args, elf) if elf else None
     load = False if (args.no_load or program) else None
+    return elf, program, verify, load, svd_warning
+
+
+def main(argv: list[str] | None = None) -> int:
+    p, args, config = parse_command_line(argv)
+    elf, program, verify, load, svd_warning = resolve_session(p, args)
+    target = build_target(args, elf) if elf else None
 
     if args.batch:
-        from .core.scripting import ScriptAPI
-        from .core.session import Session
-        from .core import svd
-        from .trace.manager import TraceManager
         if svd_warning:
             print(svd_warning, file=sys.stderr)
-        device = svd.parse(args.svd) if args.svd else None
-        s = Session(args.gdb)
-        s.on_event(_print_action)                # messages des breakpoints à action
-        s.connect(elf, target, load)
-        rc = 0
-        if program:
-            res = s.program(elf, verify)
-            print(res.summary())
-            rc = 1 if res.mismatched else 0
-        live = target.live_memory()
-        trace = TraceManager(on_error=print)
-        from .core.symbols import SymbolTable
-        symbols = SymbolTable(elf)
-        msg = None
-        if not target.native:                    # trace d'instructions : Cortex-M seulement
-            msg = trace.setup_etm(elf, symbols, cycle_accurate=args.etm_cycle_accurate)
-            trace.detect_core(s)                 # ARMv6-M : ni ITM ni ETM, refusés clairement
-            if trace.etm is not None:
-                trace.detect_etm(s)              # ETMv3 (M3/M4) ou ETMv4 (M7)
-        if args.etm_sim or args.mtb_sim is not None:
-            if msg:
-                print(msg)
-            elif args.mtb_sim is not None:
-                trace.enable_mtb_sim(live, target.mtb_sim, s, autohalt=args.mtb_autohalt)
-                trace.attach_session(s)
-            else:
-                trace.enable_qemu_sim(live)
-                trace.attach_session(s)
-        api = ScriptAPI(s, live, device)
-        api.trace = trace
-        api.symbols = symbols
-        api.cpu_hz = args.cpu_hz
-        api.on_program = lambda e: trace.retarget(e, api._symbols(), args.etm_cycle_accurate)
-        api._config = config.data if config is not None else None
         try:
-            setup_trace(args, trace, s, target)
-            for path in args.coverage_merge:
-                api.cov.load(path)
+            b = BatchSession(args, elf, target, load, program, verify, config=config)
+        except (RuntimeError, ValueError, OSError) as exc:
+            print(f"erreur : {exc}", file=sys.stderr)
+            return 1
+        rc = b.rc
+        try:
+            b.setup()
             if args.script:
-                api.run_script(args.script)
+                b.api.run_script(args.script)
             for path in args.coverage:
-                api.cov.export(path)
+                b.api.cov.export(path)
             if args.coverage:
-                api.cov.summary()
-            if args.go and s.state == "stopped":
-                s.go()                          # le programme continue après gdbtrace
+                b.api.cov.summary()
+            if args.go and b.s.state == "stopped":
+                b.s.go()                        # le programme continue après gdbtrace
         except (RuntimeError, ValueError, OSError) as exc:
             print(f"erreur : {exc}", file=sys.stderr)
             rc = 1
         finally:
-            trace.close()
-            if live:
-                live.close()
-            s.disconnect(halt=not args.go)
+            b.close(leave_running=args.go)
         return rc
 
     from .gui.app import App

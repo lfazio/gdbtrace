@@ -23,6 +23,7 @@ Interface en **tkinter**.
 | 13. ST-LINK_gdbserver et STM32N6 (Cortex-M55) | ST-LINK_gdbserver piloté derrière un relais RSP (mémoire en direct, reset système), image exécutée en RAM ; ITM par le SWO de la sonde ; ETMv4.5 écrit en RAM par l'ETR, lu en continu par le relais ; décodage ARMv8.1-M (boucles à faible coût, Helium) ; DWT de l'ARMv8-M ; validé sur Nucleo-N657X0-Q | ✅ |
 | 14. Cortex-M0 et M0+ (STM32G0, STM32F0) | Nucleo-G070RB (M0+) et Nucleo-F072RB (M0) par OpenOCD : cœur ARMv6-M reconnu (CPUID), traces ITM, SWO et ETM refusées en le disant (console, vues de trace) ; profil par `DWT_PCSR` ; FreeRTOS port ARM_CM0 V11.3 (son cadre de pile), validé sous QEMU `microbit` ; test sur carte | 🚧 (à valider sur carte) |
 | 15. Configurations de session | Menu Configuration et `--config FICHIER.yaml` : cible (chemin de l'ELF, SVD), serveur (QEMU, OpenOCD, ST-LINK_gdbserver, gdb pour un programme de l'hôte, serveur déjà lancé), OS (vues RTOS, Temps des tâches ou Threads selon l'OS), script et couverture, trace ; une configuration = une ligne de commande ; exemples dans `configs/`, sessions des tests sur carte | ✅ |
+| 16. Serveur MCP | Un agent (Claude Code…) pilote une session sans interface par le protocole MCP sur stdio : connexion avec les options de la ligne de commande, run-control, breakpoints, données (relues en marche), trace, couverture, timing, code Python avec l'objet `gdbtrace` | ✅ |
 
 ## Installation
 
@@ -216,8 +217,8 @@ case « Live » ; les lectures de toutes les vues sont regroupées par un seul t
   lecture-modification-écriture. Le registre est relu après chaque écriture et un écart est
   signalé.
 
-Limite connue de QEMU : son gdbstub **ignore les écritures du débogueur dans les périphériques**
-(seules la RAM et la ROM sont écrites). gdbtrace le détecte à la relecture et l'affiche. Sur une
+Limite connue de QEMU 8.2 : son gdbstub **ignore les écritures du débogueur dans les
+périphériques** (seules la RAM et la ROM sont écrites ; QEMU 11.1 les applique). gdbtrace le détecte à la relecture et l'affiche. Sur une
 vraie sonde, les écritures fonctionnent.
 
 ### Programmes natifs et pthreads (vue Threads)
@@ -783,10 +784,38 @@ de variables, lectures cible en marche), `demo.py`, `rtos.py` (FreeRTOS), `cover
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf --batch --script examples/scripts/session.py
 ```
 
+### Serveur MCP : déboguer avec un agent (Claude Code)
+
+`python -m gdbtrace.mcp` (ou `gdbtrace-mcp`) est un serveur [MCP](https://modelcontextprotocol.io)
+sur stdio : un agent comme Claude Code ouvre une session GdbTrace sans interface et la pilote
+par des outils. Dans Claude Code :
+
+```bash
+claude mcp add gdbtrace -- "$PWD/.venv/bin/python" -m gdbtrace.mcp     # depuis le dépôt
+```
+
+L'agent commence par l'outil `connect`, avec les options de la ligne de commande
+(`examples/firmware/demo.elf --etm-sim`, `fw.elf --openocd configs/nucleo-f746zg.cfg --program
+--swo-config --cpu-hz 16000000`, `--pid 1234`…), puis :
+
+| Outils | Rôle |
+| --- | --- |
+| `connect`, `disconnect`, `status` | session (une à la fois), état et dernier arrêt |
+| `go` (`until`, attente de l'arrêt), `halt`, `step` (ligne, par-dessus, retour, instruction), `reset` | run-control |
+| `break` (condition, compteur, message), `watch`, `delete`, `breakpoints` | breakpoints et watchpoints |
+| `evaluate`, `set`, `registers`, `backtrace`, `memory`, `threads`, `rtos` | données ; `evaluate` relit en marche une globale déjà évaluée |
+| `trace_list`, `calls`, `coverage`, `timing`, `profile`, `itm` | trace et mesures |
+| `program`, `gdb` (commande CLI brute), `python` (code avec l'objet `gdbtrace`) | le reste |
+
+Ce que GdbTrace affiche (journal de mise en route, messages des breakpoints à action, sortie
+d'un programme de l'hôte) revient dans le résultat des outils ; stdout ne porte que le
+protocole. Détails : [`docs/utilisation.md`](docs/utilisation.md#serveur-mcp-claude-code).
+
 ## Architecture
 
 ```
 gdbtrace/
+  mcp.py                serveur MCP (stdio) : outils pour un agent, sur une BatchSession
   core/gdb_backend.py   pilote GDB/MI asynchrone (thread lecteur, jetons, événements)
   core/session.py       API haut niveau (run-control, mémoire, registres, varobjs ; breakpoints
                         à action et à compteur, Go.Till, Step.Till / Step.Change)
