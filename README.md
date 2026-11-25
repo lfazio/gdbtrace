@@ -30,6 +30,10 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'     # dev inclut caps
 
 ## Utilisation
 
+**Notice d'utilisation complète : [`docs/utilisation.md`](docs/utilisation.md)** — installation,
+lancement et cibles, interface, breakpoints, données, RTOS et threads, trace, Nucleo-F746ZG,
+options, dépannage. Le pilotage en Python a la sienne : [`docs/scripting.md`](docs/scripting.md).
+
 ```bash
 make -C examples/firmware                                        # firmware de démo Cortex-M3
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf          # QEMU mps2-an385, sans matériel
@@ -239,7 +243,7 @@ void gdbtrace_task_switched_in(void *tcb);         /* écrit tcb sur le port ITM
 Il faut une capture SWO ou de trace avec l'horodatage ITM (`--swo-config`, Trace › ETM par
 SWO…). Script : `gdbtrace.task_times()`, `gdbtrace.task_timeline(30)`. Validé : le crochet de
 la démo reçoit exactement `pxCurrentTCB` à chaque changement (vérifié sous QEMU), calculs
-sur des flux ITM reconstitués ; la capture réelle reste à valider sur carte.
+sur des flux ITM reconstitués, et capture réelle validée sur Nucleo-F746ZG (test sur carte).
 
 ### Trace SWO/ITM et profilage
 
@@ -294,11 +298,12 @@ Limites : variables scalaires de 1, 2 ou 4 octets (un champ ou un élément d'un
 4 comparateurs au plus sur un Cortex-M3/M4/M7. Ces comparateurs sont partagés avec le filtre
 ETMv3 et les watchpoints de gdb ; GdbTrace les prend par le haut et refuse quand il n'en reste
 plus. Un accès plus court que la variable est montré en hexadécimal brut. Validé sur des flux
-ITM synthétiques ; à valider sur carte.
+ITM synthétiques et sur Nucleo-F746ZG (test sur carte).
 
 QEMU n'émule ni l'ITM ni le SWO : sous QEMU, la sortie ITM du firmware reste inerte et
 seul le profil « Live » fonctionne. Le décodage SWO est testé sur des flux synthétiques et un
-faux serveur ; il reste à valider sur sonde réelle.
+faux serveur, et validé sur Nucleo-F746ZG (ST-Link, OpenOCD) : texte ITM, profil par SWO,
+trace de données, temps des tâches.
 
 ### Trace d'instructions ETM (vue Trace)
 
@@ -691,8 +696,11 @@ xvfb-run -a .venv/bin/python -m pytest
 
 Les tests lancent QEMU (`mps2-an385`) avec le firmware de démo. Sans `DISPLAY`, les tests GUI sont ignorés.
 Le client TCL OpenOCD est testé contre un faux serveur TCL, et contre un vrai OpenOCD lancé sans
-sonde (`noinit`) s'il est installé ; il a été utilisé sur une Nucleo-F746ZG. Restent à valider sur
-sonde réelle le support RTOS d'OpenOCD (`--rtos`), la capture SWO et `DWT_PCSR` via OpenOCD.
+sonde (`noinit`) s'il est installé ; il a été utilisé sur une Nucleo-F746ZG. Validés sur cette
+carte (test sur carte, ci-dessous) : capture SWO et ITM, ETMv4 par SWO, trace de données du DWT,
+profil par SWO, vue RTOS et temps des tâches. Restent à valider sur sonde réelle : le support
+RTOS d'OpenOCD (`--rtos`), `DWT_PCSR` via OpenOCD, le port de trace parallèle, l'ETMv3 d'un
+M3/M4 et la MTB d'un M0+.
 Les tests ETM comparent notre décodeur à OpenCSD si `tools/build_opencsd.sh` a été lancé
 (sinon ce test est ignoré) ; la trace ETM nécessite `pip install capstone` (extra `etm`).
 

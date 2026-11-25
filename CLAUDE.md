@@ -204,9 +204,11 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
   d'action). Masquer les interruptions n'y change rien (`qqemu.sstep` vaut déjà 0x7). Les
   tests qui comptent des passages exacts sous QEMU le tolèrent (`collapse`,
   `tests/test_breakactions.py`).
-- Non validé sur sonde réelle : `--rtos`, capture SWO, `DWT_PCSR` via OpenOCD, trace ETM
-  matérielle, ETM par SWO, MTB (dont le sens de l'adresse source d'une entrée d'exception :
-  prise comme adresse de retour). ETMv4 : M7 (ETMv4.0) seulement, sans cycle-accurate ni
+- Validé sur Nucleo-F746ZG (`tests/test_board_f746.py`) : capture SWO et ITM, ETMv4 par SWO,
+  trace de données du DWT, profil par SWO, vue RTOS, temps des tâches. Non validé sur sonde
+  réelle : `--rtos`, `DWT_PCSR` via OpenOCD, port de trace parallèle, ETMv3 matériel (M3/M4,
+  y compris par SWO), MTB (dont le sens de l'adresse source d'une entrée d'exception : prise
+  comme adresse de retour). ETMv4 : M7 (ETMv4.0) seulement, sans cycle-accurate ni
   horodatage ; pas les ARMv8-M (M33, M55).
 - ETMv4 : un atome = un point de passage (`Instr.waypoint` : branchement ou ISB), pas une
   instruction ; en profondeur de spéculation 1, le dernier élément n'est validé qu'au
