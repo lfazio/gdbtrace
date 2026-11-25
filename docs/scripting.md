@@ -94,6 +94,22 @@ variables et lectures cible en marche.
 | `--openocd CFG…` | sonde réelle via OpenOCD, par ex. `--openocd configs/nucleo-f746zg.cfg` |
 | `--stlink [SN] [--stlink-ap N] [--ram-boot]` | sonde ST-LINK via ST-LINK_gdbserver, par ex. une Nucleo-N657X0-Q : `--stlink --stlink-ap 1 --ram-boot` |
 | `--remote HOST:PORT [--tcl HOST:PORT]` | serveur gdb déjà lancé (J-Link, pyOCD, OpenOCD) |
+| `--config F.yaml` | une configuration de session (cible, serveur, OS, trace : [`utilisation.md`](utilisation.md), sections 2 et 12) ; les autres options l'emportent sur elle |
+
+Un script lit la configuration de la session par `gdbtrace.config` : une copie du YAML en
+lecture seule (sections `cible`, `serveur`, `os`, `script`, `couverture`, `trace`), ou `None`
+sans configuration. Un même script peut ainsi s'adapter à la carte :
+
+<!-- test: examples/freertos/freertos.elf --config configs/qemu-freertos.yaml -->
+```python
+cfg = gdbtrace.config
+print(cfg["nom"], "—", cfg["serveur"]["type"], "—", cfg["os"])
+if cfg["os"] == "freertos":
+    gdbtrace.break_("worker_step", temporary=True)
+    gdbtrace.go()
+    gdbtrace.wait()
+    print(len(gdbtrace.rtos().tasks), "tâches")
+```
 
 ### Options utiles
 
@@ -106,6 +122,7 @@ variables et lectures cible en marche.
 | `--cpu-hz N` | fréquence du cœur (durées en µs, configuration du SWO) |
 | `--etm-sim`, `--mtb-sim N` | trace d'instructions simulée sous QEMU (section 10) |
 | `--coverage F` | écrit la couverture à la fin (`.html`, `.info`, `.json`) |
+| `--os freertos` | OS de la cible (vues de l'interface ; lu par `gdbtrace.config` dans une configuration) |
 
 ### Paramètres d'un script
 
@@ -883,4 +900,5 @@ gdbtrace.cov.export("couverture.html")
 | `gdb(cli)`, `monitor(cmd)` | commandes gdb et `monitor` brutes |
 | `run_script(chemin)` | exécute un autre script |
 | `symbols` | table des symboles de l'ELF (pyelftools), chargée à la demande |
+| `config` | configuration de la session (dict, copie en lecture seule), ou `None` |
 | `session` | la session gdb (section 11) |

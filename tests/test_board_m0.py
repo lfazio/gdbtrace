@@ -34,7 +34,7 @@ class M0Board:
     name: str                       # id du test et nom du relevé : g070 → board-g070.json
     spec: boards.BoardSpec
     firmware: str                   # dossier de examples/, ELF du même nom
-    cpu_hz: int                     # horloge du reset (aucune configuration d'horloge)
+    config: str                     # configuration de la session (configs/)
     core: str                       # nom du cœur dans la raison « pas de trace »
     device: str                     # début du nom de la puce dans le SVD
 
@@ -43,8 +43,8 @@ class M0Board:
         return f"{self.core} (ARMv6-M) : ni ITM, ni SWO, ni ETM"
 
 
-BOARDS = [M0Board("g070", boards.NUCLEO_G070, "nucleo-g070", 16_000_000, "Cortex-M0+", "STM32G07"),
-          M0Board("f072", boards.NUCLEO_F072, "nucleo-f072", 8_000_000, "Cortex-M0", "STM32F07")]
+BOARDS = [M0Board("g070", boards.NUCLEO_G070, "nucleo-g070", "nucleo-g070rb.yaml", "Cortex-M0+", "STM32G07"),
+          M0Board("f072", boards.NUCLEO_F072, "nucleo-f072", "nucleo-f072rb.yaml", "Cortex-M0", "STM32F07")]
 
 pytestmark = pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="pas de DISPLAY (xvfb-run)")
 
@@ -109,14 +109,10 @@ def run(request, tmp_path_factory):
     relevé, et la carte (`board`)."""
     board: M0Board = request.param
     serial = board_serial(request, board.spec)
-    svd = boards.find_svd(board.spec.svd)
-    fw_dir = os.path.join(ROOT, "examples", board.firmware)
-    subprocess.run(["make", "-s", "-C", fw_dir], check=True)
-    argv = [os.path.join(fw_dir, f"{board.firmware}.elf"), "--openocd", board.spec.openocd_cfg,
-            "--program", "--cpu-hz", str(board.cpu_hz),
+    subprocess.run(["make", "-s", "-C", os.path.join(ROOT, "examples", board.firmware)], check=True)
+    # la session de configs/<carte>.yaml : flashage, SVD, horloge du reset, FreeRTOS
+    argv = ["--config", os.path.join(ROOT, "configs", board.config),
             "--layout", str(tmp_path_factory.mktemp("layout") / "layout.json")]
-    if svd:
-        argv += ["--svd", svd]
     old = os.environ.get("STLINK_SERIAL")
     os.environ["STLINK_SERIAL"] = serial
     try:
@@ -204,9 +200,10 @@ def test_memory_dump(run):
     assert len(view(run, "arret", "memory")["text"].splitlines()) >= 8
 
 
-def test_threads(run):
-    rows = view(run, "arret", "threads")["tree"]
-    assert len(rows) == 1 and "worker_step" in rows[0]["values"][4]
+def test_views_follow_the_os(run):
+    """Configuration FreeRTOS : vues RTOS et Temps des tâches, pas de vue Threads."""
+    kinds = set(run["phases"]["arret"])
+    assert {"rtos", "tasktime"} <= kinds and "threads" not in kinds
 
 
 # ====================================================================== en marche

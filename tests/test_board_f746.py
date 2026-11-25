@@ -20,6 +20,7 @@ import boards
 
 FW_DIR = os.path.join(ROOT, "examples", "nucleo-f746")
 FW = os.path.join(FW_DIR, "nucleo-f746.elf")
+CONFIG = os.path.join(ROOT, "configs", "nucleo-f746zg.yaml")
 TASKS = {"producer", "consumer", "worker", "sleeper", "hog", "IDLE", "Tmr Svc"}
 
 pytestmark = pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="pas de DISPLAY (xvfb-run)")
@@ -29,7 +30,6 @@ pytestmark = pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="pas de DI
 def run(request, tmp_path_factory):
     """La session GUI complète ; retourne {phase: {vue: contenu}} et le reste du relevé."""
     serial = board_serial(request, boards.NUCLEO_F746)
-    svd = boards.find_svd(boards.NUCLEO_F746.svd)
     subprocess.run(["make", "-s", "-C", FW_DIR], check=True)
 
     def cleanup(app, s):                    # la carte sans ETM ni stall après le test
@@ -37,11 +37,9 @@ def run(request, tmp_path_factory):
         for addr in (TRCPRGCTLR, TRCSTALLCTLR):
             s.write_u32(addr, 0)
 
-    argv = [FW, "--openocd", boards.NUCLEO_F746.openocd_cfg, "--program", "--cpu-hz", "16000000",
-            "--etm-config", "--etm-port", "swo", "--etm-stall", "--var-trace", "produced:write",
-            "--layout", str(tmp_path_factory.mktemp("layout") / "layout.json")]
-    if svd:
-        argv += ["--svd", svd]
+    # la session de configs/nucleo-f746zg.yaml : flashage, SVD, ETM et ITM par SWO (stall), une
+    # variable tracée ; FreeRTOS (vues RTOS et Temps des tâches)
+    argv = ["--config", CONFIG, "--layout", str(tmp_path_factory.mktemp("layout") / "layout.json")]
     old = os.environ.get("STLINK_SERIAL")
     os.environ["STLINK_SERIAL"] = serial
     try:
@@ -132,9 +130,10 @@ def test_memory_dump(run):
     assert len(view(run, "arret", "memory")["text"].splitlines()) >= 8
 
 
-def test_threads(run):
-    rows = view(run, "arret", "threads")["tree"]
-    assert len(rows) == 1 and "worker_step" in rows[0]["values"][4]
+def test_views_follow_the_os(run):
+    """Configuration FreeRTOS : vues RTOS et Temps des tâches, pas de vue Threads."""
+    kinds = set(run["phases"]["arret"])
+    assert {"rtos", "tasktime"} <= kinds and "threads" not in kinds
 
 
 # ====================================================================== en marche

@@ -90,6 +90,39 @@ GdbTrace se lance par `python -m gdbtrace`, suivi de l'ELF à déboguer puis des
 
 Les serveurs lancés par GdbTrace (QEMU, OpenOCD, ST-LINK_gdbserver) s'arrêtent avec lui, même s'il est tué brutalement : aucun serveur orphelin ne garde la sonde.
 
+### Configurations (menu Configuration)
+
+Une **configuration** décrit toute une session dans un fichier YAML : la cible, le serveur gdb, l'OS, le script et la couverture, la trace. Elle se traduit en options de la ligne de commande : ce qu'elle permet, et ses erreurs, sont ceux de la ligne de commande.
+
+| Entrée du menu Configuration | Effet |
+| --- | --- |
+| Nouvelle… | ouvre la boîte de dialogue sur une configuration vide |
+| Ouvrir… | charge un fichier `.yaml` : titre, SVD, réglages, vues selon l'OS, **sans connecter** |
+| Récentes | les 8 dernières configurations ouvertes ou enregistrées |
+| Modifier… | ouvre la boîte de dialogue sur la configuration courante |
+| Enregistrer (`Ctrl+S`), Enregistrer sous… | écrit le fichier YAML |
+| Connecter | lance la session décrite ; une session ouverte est d'abord déconnectée |
+| Fermer | déconnecte, retire la configuration et son SVD, rouvre les vues de l'OS |
+
+La boîte de dialogue a cinq onglets :
+
+- **Cible** : nom, chemin de l'ELF, SVD (un fichier, ou un nom seul cherché dans STM32CubeIDE), fréquence du cœur, programmer l'ELF à la connexion, vérifier, Go après la connexion.
+- **Serveur** : QEMU (machine), OpenOCD (fichiers `.cfg`, tâches RTOS d'OpenOCD), ST-LINK_gdbserver de STMicroelectronics (numéro de série, port d'accès, image en RAM), gdb pour un programme de l'hôte (arguments, répertoire), ou serveur déjà lancé (hôte:port, port TCL) ; l'exécutable gdb et le port.
+- **OS** : Aucun, FreeRTOS ou Pthread ; « Détecter dans l'ELF » le déduit des symboles.
+- **Trace** : SWO/ITM, ETM (sortie, stall, cycle-accurate, tampon de l'ETR), variables tracées, filtre ETM, simulation QEMU, MTB.
+- **Script et couverture** : le script à exécuter après la connexion, les couvertures à fusionner au départ, les fichiers de couverture écrits à la fin du script.
+
+OK valide la configuration ; une erreur s'affiche en bas de la boîte, qui reste ouverte. Une configuration modifiée et pas enregistrée est proposée à l'enregistrement avant Ouvrir, Nouvelle, Fermer ou Quitter. Le titre de la fenêtre porte son nom, suivi de « * » si elle est modifiée.
+
+**Les vues suivent l'OS** : FreeRTOS ouvre les vues RTOS et Temps des tâches ; Pthread ouvre la vue Threads ; aucun OS n'ouvre aucune des trois. Sans configuration, toutes les vues du layout restent.
+
+En ligne de commande, `--config FICHIER.yaml` lance la session de la configuration. Les autres options l'emportent sur elle : une valeur remplace la sienne, une liste (`--var-trace`, `--coverage`…) s'ajoute à la sienne, un serveur d'un autre type remplace le sien. Exemples dans `configs/` : `qemu-demo.yaml`, `qemu-freertos.yaml`, `native-pthreads.yaml`, et les sessions des cartes de test (sections 8 à 10). Le format est décrit dans la section 12.
+
+```bash
+.venv/bin/python -m gdbtrace --config configs/qemu-freertos.yaml
+.venv/bin/python -m gdbtrace --config configs/nucleo-n657x0-q.yaml --stlink 0042001A3133510F37363734
+```
+
 ### Programmer la cible
 
 **Fichier › Programmer un ELF…** (`Ctrl+O`) arrête la cible, la remet à zéro, écrit l'ELF (en flash avec une sonde, en RAM sous QEMU ou avec `--ram-boot`), le vérifie, puis refait un reset. La cible reste arrêtée au vecteur de reset ; symboles, vues et trace passent au nouveau programme.
@@ -136,6 +169,7 @@ La fenêtre principale range 19 vues en quatre zones à onglets, sous un menu, u
 ### Menus
 
 - **Fichier** : Programmer un ELF… (`Ctrl+O`), Reprogrammer l'ELF courant (`Ctrl+R`), ELF récents, Exécuter un script…, Charger un SVD…, Enregistrer le layout, Déconnecter, Quitter.
+- **Configuration** : Nouvelle…, Ouvrir…, Récentes, Modifier…, Enregistrer (`Ctrl+S`), Enregistrer sous…, Connecter, Fermer (section 2).
 - **Run** : les commandes ci-dessus.
 - **Trace** : ETM par SWO…, ETM par l'ETR (RAM, STM32N6), Filtre de trace ETM…, Arrêter la capture.
 - **Vues** : ouvre n'importe quelle vue dans une nouvelle fenêtre.
@@ -407,12 +441,18 @@ make -C examples/nucleo-f746
 
 ### Lancer GdbTrace sur la carte
 
-Avec la configuration OpenOCD fournie (`configs/nucleo-f746zg.cfg`) :
+Avec la configuration fournie (`configs/nucleo-f746zg.yaml`, ou Configuration › Ouvrir… puis Connecter) :
+
+```bash
+.venv/bin/python -m gdbtrace --config configs/nucleo-f746zg.yaml
+```
+
+Elle équivaut à :
 
 ```bash
 .venv/bin/python -m gdbtrace examples/nucleo-f746/nucleo-f746.elf --program \
     --openocd configs/nucleo-f746zg.cfg --svd STM32F746.svd --cpu-hz 16000000 \
-    --etm-config --etm-port swo --etm-stall --var-trace produced:write
+    --etm-config --etm-port swo --etm-stall --var-trace produced:write --os freertos
 ```
 
 - `--etm-config --etm-port swo --etm-stall` : trace ETMv4 et ITM par la broche SWO. Le cœur ralentit au débit du SWO plutôt que de perdre de la trace. Dans l'interface, cible arrêtée : **Trace › ETM par SWO…**.
@@ -432,7 +472,7 @@ tools/release_check.sh
 Ce script lance toute la suite, construit l'oracle OpenCSD s'il manque, et **exige** les cartes de test : la Nucleo-F746ZG, la Nucleo-N657X0-Q (section 9) et les Nucleo-G070RB et F072RB (section 10). Le test sur la F746 (`tests/test_board_f746.py`) :
 
 1. construit et flashe le firmware d'exemple ;
-2. lance GdbTrace par son vrai point d'entrée, interface comprise, avec SVD, ETM et ITM par SWO, et une variable tracée ;
+2. lance GdbTrace par son vrai point d'entrée, interface comprise, avec la configuration `configs/nucleo-f746zg.yaml` : SVD, ETM et ITM par SWO, une variable tracée, FreeRTOS ;
 3. déroule trois phases : arrêt sur `worker_step`, marche avec le profil, arrêt final ;
 4. relève à chaque phase le contenu de toutes les vues dans `tests/artifacts/board-f746.json`, et un test par vue vérifie ce qui doit s'y afficher.
 
@@ -463,9 +503,15 @@ make -C examples/nucleo-n6
 La carte doit être en démarrage de développement (cavalier JP2 en 2-3) : la ROM ne charge alors rien, et le débogueur pose l'image en RAM.
 
 ```bash
+.venv/bin/python -m gdbtrace --config configs/nucleo-n657x0-q.yaml
+```
+
+Elle équivaut à :
+
+```bash
 .venv/bin/python -m gdbtrace examples/nucleo-n6/nucleo-n6.elf --stlink --stlink-ap 1 --ram-boot \
     --program --svd STM32N657.svd --cpu-hz 64000000 --swo-config \
-    --etm-config --etm-port etr --var-trace produced:write
+    --etm-config --etm-port etr --var-trace produced:write --os freertos
 ```
 
 - `--stlink-ap 1` : le cœur est derrière le port d'accès 1, pas le 0.
@@ -486,7 +532,7 @@ La carte doit être en démarrage de développement (cavalier JP2 en 2-3) : la R
 `tests/test_board_n6.py` fait comme sur la F746 :
 
 1. charge le firmware d'exemple en RAM ;
-2. lance l'interface, avec ITM par le SWO, ETM par l'ETR et une variable tracée ;
+2. lance l'interface avec la configuration `configs/nucleo-n657x0-q.yaml` : ITM par le SWO, ETM par l'ETR, une variable tracée ;
 3. relève et vérifie toutes les vues (`tests/artifacts/board-n6.json`).
 
 Il vérifie en plus le décodage des boucles LE : le nombre de tours relevé dans la trace doit suivre le firmware.
@@ -539,13 +585,20 @@ Sans carte, `examples/m0plus` construit la même démo pour QEMU `-M microbit` (
 
 ### Lancer GdbTrace sur la carte
 
-Avec la configuration OpenOCD fournie :
+Avec les configurations fournies (`configs/nucleo-g070rb.yaml`, `configs/nucleo-f072rb.yaml`) :
+
+```bash
+.venv/bin/python -m gdbtrace --config configs/nucleo-g070rb.yaml
+.venv/bin/python -m gdbtrace --config configs/nucleo-f072rb.yaml
+```
+
+Elles équivalent à :
 
 ```bash
 .venv/bin/python -m gdbtrace examples/nucleo-g070/nucleo-g070.elf --program \
-    --openocd configs/nucleo-g070rb.cfg --svd STM32G070.svd --cpu-hz 16000000
+    --openocd configs/nucleo-g070rb.cfg --svd STM32G070.svd --cpu-hz 16000000 --os freertos
 .venv/bin/python -m gdbtrace examples/nucleo-f072/nucleo-f072.elf --program \
-    --openocd configs/nucleo-f072rb.cfg --svd STM32F072.svd --cpu-hz 8000000
+    --openocd configs/nucleo-f072rb.cfg --svd STM32F072.svd --cpu-hz 8000000 --os freertos
 ```
 
 - Profil : vue **Profil**, source « Auto » ou « Live », **Démarrer** cible en marche.
@@ -558,7 +611,7 @@ Avec la configuration OpenOCD fournie :
 `tests/test_board_m0.py` fait comme sur la F746, sans trace, pour chacune des deux cartes (`-k g070`, `-k f072`) :
 
 1. construit et flashe le firmware d'exemple ;
-2. lance l'interface avec le SVD ;
+2. lance l'interface avec la configuration de la carte (`configs/nucleo-g070rb.yaml`, `configs/nucleo-f072rb.yaml`) ;
 3. relève et vérifie toutes les vues (`tests/artifacts/board-g070.json`, `board-f072.json`) : vues à l'arrêt et en marche, RTOS, profil par `DWT_PCSR`, et les vues de trace, qui doivent dire pourquoi elles restent vides.
 
 Il éprouve en plus les comparateurs du cœur :
@@ -624,6 +677,8 @@ Un script peut ce que l'interface ne propose pas : une **action Python** sur un 
 | `--gdb GDB`, `--gdb-port P` | exécutable gdb, port du serveur gdb (avec `--stlink` : port du relais) |
 | `--no-load` | ne pas flasher l'ELF à la connexion |
 | `--layout F` | fichier de layout des fenêtres |
+| `--config F.yaml` | configuration de session (section 2) ; les autres options l'emportent sur elle |
+| `--os aucun\|freertos\|pthread` | OS de la cible : vues RTOS et Temps des tâches (FreeRTOS), Threads (Pthread), aucune des trois (aucun) ; sans `--os`, toutes les vues |
 
 ### Programmation, scripts, batch
 
@@ -671,8 +726,58 @@ Un script peut ce que l'interface ne propose pas : une **action Python** sur un 
 | `--mtb-sim [TAILLE]` | QEMU : MTB simulée |
 | `--mtb-autohalt` | trace complète, au prix d'arrêts internes |
 | `--mtb-probe` | lister les composants CoreSight de la cible |
-| `--coverage F` | en batch : écrire la couverture à la fin (`.html`, `.info`, `.json`) ; répétable |
+| `--coverage F` | écrire la couverture à la fin du `--batch`, ou du script dans l'interface (`.html`, `.info`, `.json`) ; répétable |
 | `--coverage-merge F.json` | ajouter une couverture enregistrée ; répétable |
+
+### Fichier de configuration (YAML)
+
+Une configuration (section 2) est un fichier YAML. Les sections ont des noms français ; dans `serveur` et `trace`, les clés sont les noms des options de la ligne de commande, sans leurs tirets de tête.
+
+```yaml
+gdbtrace: 1                        # version du format
+nom: Nucleo-N657X0-Q
+cible:
+  elf: ../examples/nucleo-n6/nucleo-n6.elf
+  svd: STM32N657.svd
+  cpu-hz: 64000000
+  programmer: true
+  verifier: true                   # false : --no-verify
+  go: false
+serveur:
+  type: stlink
+  stlink-ap: 1
+  ram-boot: true
+os: freertos
+script: ../examples/scripts/rtos.py
+couverture:
+  fusionner: [campagne1.json]
+  exporter: [couverture.html, couverture.json]
+trace:
+  swo-config: true
+  etm-config: true
+  etm-port: etr
+  var-trace: [produced:write]
+```
+
+| Section | Clés | Équivalent en ligne de commande |
+| --- | --- | --- |
+| `cible` | `elf`, `svd`, `cpu-hz`, `programmer`, `verifier`, `go` | l'ELF, `--svd`, `--cpu-hz`, `--program`, `--no-verify` (si `false`), `--go` |
+| `serveur` | `type` : `qemu`, `openocd`, `stlink`, `gdb`, `remote` | `--qemu`, `--openocd`, `--stlink`, `--native`, `--remote` |
+| `serveur`, QEMU | `machine` | `--machine` |
+| `serveur`, OpenOCD | `openocd` (liste de `.cfg`), `rtos` | `--openocd CFG…`, `--rtos` |
+| `serveur`, ST-LINK | `stlink` (numéro de série), `stlink-ap`, `ram-boot` | `--stlink SN`, `--stlink-ap`, `--ram-boot` |
+| `serveur`, programme de l'hôte | `args`, `cwd` | `--native --args`, `--cwd` |
+| `serveur`, déjà lancé | `remote`, `tcl` | `--remote`, `--tcl` |
+| `serveur`, commun | `gdb`, `gdb-port`, `no-load` | `--gdb`, `--gdb-port`, `--no-load` |
+| `os` | `aucun`, `freertos`, `pthread` | `--os` |
+| `script` | chemin | `--script` |
+| `couverture` | `fusionner`, `exporter` (listes) | `--coverage-merge`, `--coverage` |
+| `trace` | toute option de trace : `swo-config`, `swo-hz`, `etm-config`, `etm-port`, `var-trace`, `etm-filter`, `etm-sim`, `mtb`… | la même option |
+
+- Une option sans valeur s'écrit `true` ; une option répétable s'écrit en liste.
+- Un chemin relatif l'est au fichier YAML. Exceptions : un fichier `.cfg` qui n'est pas à côté du YAML est cherché par OpenOCD dans son dossier de scripts (`board/st_nucleo_f4.cfg`), et un SVD donné par son seul nom est cherché dans STM32CubeIDE (`GDBTRACE_SVD_DIR` pour un autre dossier).
+- À l'enregistrement, un chemin proche du fichier (au plus deux `..`) est écrit relatif, les autres absolus.
+- Une clé inconnue, ou qui ne va pas avec le serveur choisi, est refusée en la nommant.
 
 ## 13. Dépannage et limites
 
@@ -697,6 +802,8 @@ Quand une capture ne démarre pas, GdbTrace le dit : le journal de mise en route
 | « tampon de l'ETR » refusé | le firmware ne réserve pas de tampon | un tableau `__etr_buffer__` aligné sur 4 Ko, ou `--etr-buffer ADRESSE:TAILLE` |
 | « ST-LINK_gdbserver lancé sans SWO » | `--swo-config` absent au lancement : le serveur n'a pas démarré sa capture | relancer GdbTrace avec `--swo-config` (et `--cpu-hz`) |
 | Go.Till refusé | la condition porte sur un registre ou une valeur sans adresse | Step.Till |
+| Configuration refusée (« serveur.stlink-ap : option du serveur stlink, pas de openocd ») | une clé du YAML ne va pas avec le serveur, l'OS ou les autres options | le message nomme la clé ; mêmes règles que la ligne de commande (section 12) |
+| « SVD STM32G070.svd introuvable » | SVD donné par son nom, absent de STM32CubeIDE | donner son chemin, ou `GDBTRACE_SVD_DIR` ; la session continue sans vue Périphériques |
 | « Cortex-M0+ (ARMv6-M) : ni ITM, ni SWO, ni ETM » | le cœur n'a pas de trace (STM32G0, STM32F0, STM32L0…) | profil par lecture du PC (« Live ») ; MTB si `--mtb-probe` en trouve une |
 
 ### Limites connues

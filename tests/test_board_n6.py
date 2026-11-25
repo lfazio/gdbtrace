@@ -21,6 +21,7 @@ import boards
 
 FW_DIR = os.path.join(ROOT, "examples", "nucleo-n6")
 FW = os.path.join(FW_DIR, "nucleo-n6.elf")
+CONFIG = os.path.join(ROOT, "configs", "nucleo-n657x0-q.yaml")
 TASKS = {"producer", "consumer", "worker", "sleeper", "hog", "IDLE", "Tmr Svc"}
 
 pytestmark = pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="pas de DISPLAY (xvfb-run)")
@@ -52,19 +53,16 @@ def loop_counts(app) -> dict:
 @pytest.fixture(scope="module")
 def run(request, tmp_path_factory):
     serial = board_serial(request, boards.NUCLEO_N6)
-    svd = boards.find_svd(boards.NUCLEO_N6.svd)
     subprocess.run(["make", "-s", "-C", FW_DIR], check=True)
 
     def cleanup(app, s):                    # la carte sans ETM après le test
         from gdbtrace.trace.etm.config import TRCPRGCTLR
         s.write_u32(TRCPRGCTLR, 0)
 
-    argv = [FW, "--stlink", serial, "--stlink-ap", str(boards.NUCLEO_N6.apid), "--ram-boot",
-            "--program", "--cpu-hz", "64000000", "--swo-config", "--etm-config", "--etm-port", "etr",
-            "--var-trace", "produced:write",
+    # la session de configs/nucleo-n657x0-q.yaml (port d'accès 1, image en RAM, ITM par le SWO,
+    # ETM par l'ETR, une variable tracée), sur la sonde trouvée
+    argv = ["--config", CONFIG, "--stlink", serial,
             "--layout", str(tmp_path_factory.mktemp("layout") / "layout.json")]
-    if svd:
-        argv += ["--svd", svd]
     return boards.run_gui(argv, "n6", ready=lambda app: app.trace.tmc is not None,
                           cleanup=cleanup, extra=loop_counts)
 

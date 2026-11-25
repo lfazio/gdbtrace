@@ -26,6 +26,7 @@ make -C examples/nucleo-f072     # firmware de test STM32F072RB (M0, 8 MHz ; dé
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf               # GUI sur QEMU
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf --etm-sim     # + trace ETM simulée
 .venv/bin/python -m gdbtrace fw.elf --batch --script s.py             # sans GUI
+.venv/bin/python -m gdbtrace --config configs/qemu-freertos.yaml      # session décrite en YAML
 
 xvfb-run -a .venv/bin/python -m pytest                 # suite complète
 .venv/bin/python -m pytest tests/test_etm.py -k rtos   # sous-ensemble
@@ -46,7 +47,9 @@ Tests sur carte (`tests/test_board_f746.py`, Nucleo-F746ZG, firmware `examples/n
 flashé ; `tests/test_board_n6.py`, Nucleo-N657X0-Q, `examples/nucleo-n6` chargé en RAM par
 ST-LINK_gdbserver ; `tests/test_board_m0.py`, Nucleo-G070RB et Nucleo-F072RB, fixture
 paramétrée par carte (`-k g070`, `-k f072`), `examples/nucleo-g070` / `nucleo-f072` flashés,
-sans trace, run-control éprouvé dans `extra`) : `--boards=auto|require|skip` (`tests/boards.py` trouve la sonde par
+sans trace, run-control éprouvé dans `extra`). Chaque test sur carte lance la session de sa
+configuration (`--config configs/<carte>.yaml`) ; `tests/test_config.py` vérifie qu'elle
+redonne exactement les arguments de la session de test. Options : `--boards=auto|require|skip` (`tests/boards.py` trouve la sonde par
 `/sys` puis l'IDCODE, lu par OpenOCD ou ST-LINK_gdbserver). Le GUI tourne par le vrai
 `main()`, `App.mainloop` remplacé par le scénario commun `boards.run_gui` ; le contenu de
 chaque vue est relevé (`boards.dump_views`, dans `tests/artifacts/board-<carte>.json`) puis
@@ -97,6 +100,19 @@ mais avec son firmware de test.
   SYSRESETREQ le serveur refuse toute reprise). `ram_boot` (STM32N6) : reset, puis `load` et
   VTOR/sp/pc pris dans la table des vecteurs (`after_load`, aussi après le `load` de la
   connexion). `verify_by_read` : le CRC de `compare-sections` est faux sur un N6.
+- Configurations (`core/config.py`, `SessionConfig`) : le YAML (sections `cible`, `serveur`,
+  `os`, `script`, `couverture`, `trace` ; clés = noms des options sans tirets) **se traduit en
+  arguments** de `build_parser()` (`to_argv`), puis passe par `validate(args)` (règles entre
+  options, communes à la ligne de commande et aux configurations), `build_target`,
+  `setup_trace`. `parse_command_line` fusionne `--config` et la ligne de commande (valeur
+  remplacée, liste complétée, serveur d'un autre type remplacé avec `SERVER_OPTION_DESTS`).
+  Chemins relatifs au YAML, sauf `.cfg` OpenOCD et SVD par son nom (`svd.locate` /
+  `find_svd`, STM32CubeIDE) s'ils n'y sont pas. Le GUI : `start_gui_session(app, args)` est le
+  seul chemin de lancement (`main()` et Configuration › Connecter) ; ouvrir une configuration
+  (`App.apply_config`) ne connecte pas ; `App.apply_os_views` (FreeRTOS : rtos, tasktime ;
+  Pthread : threads) et `os_hidden` retiré de `known_kinds` du layout ; un Connecter en
+  attente est annulé par Fermer (`_start_token`). Boîte de dialogue : `gui/config_dialog.py`
+  (`ConfigEditor`, non bloquante, `on_ok`).
 - Programme natif PIE : les adresses de `SymbolTable` (ELF) ne sont pas celles de l'exécution
   (relocation) ; demander l'adresse à gdb (`address_of_expr`). La trace ETM et le Cortex-M
   (SVD, RTOS, reset par vecteurs) ne s'appliquent pas (`App.native`).
@@ -229,6 +245,10 @@ log)` (fonction du module, commune aux deux chemins ; `log` = console dans le GU
 par SWO par `TraceManager.start_etm_swo` (aussi Trace › ETM par SWO… et
 `gdbtrace.etm_swo()`). Une capture qui ne démarre pas doit le dire : `setup_error` et
 `trace_status()` (vues Couverture et Trace), jamais un silence.
+Une option ajoutée à la ligne de commande doit marcher dans une configuration : une option de
+trace s'ajoute à `TRACE_KEYS` (`core/config.py`) et à `TRACE_FIELDS` (`gui/config_dialog.py`) ;
+une autre option, à sa section (`CIBLE_KEYS`, `SERVER_KEYS`…), à `from_args` et à la boîte de
+dialogue ; une règle entre options va dans `validate()`, jamais directement dans `main()`.
 Une méthode ajoutée à `ScriptAPI` se documente aussi dans `docs/scripting.md` (notice) ; ses
 blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et doivent rester verts.
 

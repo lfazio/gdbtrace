@@ -22,6 +22,7 @@ Interface en **tkinter**.
 | 12. Programmes natifs | Un ELF de l'hôte (x86-64, AArch64…) débogué sous gdb : arrêt au début de `main`, vue Threads (pthreads nommés, thread courant, changement de thread), mémoire lue en marche dans `/proc/<pid>/mem`, fin et relance du programme | ✅ |
 | 13. ST-LINK_gdbserver et STM32N6 (Cortex-M55) | ST-LINK_gdbserver piloté derrière un relais RSP (mémoire en direct, reset système), image exécutée en RAM ; ITM par le SWO de la sonde ; ETMv4.5 écrit en RAM par l'ETR, lu à chaque arrêt ; décodage ARMv8.1-M (boucles à faible coût, Helium) ; DWT de l'ARMv8-M ; validé sur Nucleo-N657X0-Q | ✅ |
 | 14. Cortex-M0 et M0+ (STM32G0, STM32F0) | Nucleo-G070RB (M0+) et Nucleo-F072RB (M0) par OpenOCD : cœur ARMv6-M reconnu (CPUID), traces ITM, SWO et ETM refusées en le disant (console, vues de trace) ; profil par `DWT_PCSR` ; FreeRTOS port ARM_CM0 V11.3 (son cadre de pile), validé sous QEMU `microbit` ; test sur carte | 🚧 (à valider sur carte) |
+| 15. Configurations de session | Menu Configuration et `--config FICHIER.yaml` : cible (chemin de l'ELF, SVD), serveur (QEMU, OpenOCD, ST-LINK_gdbserver, gdb pour un programme de l'hôte, serveur déjà lancé), OS (vues RTOS, Temps des tâches ou Threads selon l'OS), script et couverture, trace ; une configuration = une ligne de commande ; exemples dans `configs/`, sessions des tests sur carte | ✅ |
 
 ## Installation
 
@@ -61,7 +62,50 @@ make -C examples/freertos && .venv/bin/python -m gdbtrace examples/freertos/free
 make -C examples/m0plus && .venv/bin/python -m gdbtrace examples/m0plus/demo.elf --machine microbit --mtb-sim  # M0+ + MTB
 .venv/bin/python -m gdbtrace fw.elf --openocd … --mtb --mtb-probe  # MTB d'un vrai Cortex-M0+
 make -C examples/native && .venv/bin/python -m gdbtrace examples/native/pthreads --args 100000  # programme natif
+.venv/bin/python -m gdbtrace --config configs/nucleo-g070rb.yaml         # une session décrite en YAML
 ```
+
+### Configurations de session (menu Configuration)
+
+Une **configuration** décrit une session en YAML : la cible (chemin de l'ELF, SVD, fréquence
+du cœur, programmation), le serveur gdb, l'OS, le script et la couverture, et la trace. Elle
+**se traduit en arguments de la ligne de commande** (`gdbtrace/core/config.py`) : GUI, `--batch`
+et ligne de commande partagent les mêmes options et les mêmes erreurs.
+
+```yaml
+gdbtrace: 1
+nom: Nucleo-G070RB
+cible:
+  elf: ../examples/nucleo-g070/nucleo-g070.elf   # relatif au fichier YAML
+  svd: STM32G070.svd                             # nom seul : cherché dans STM32CubeIDE
+  cpu-hz: 16000000
+  programmer: true
+serveur:
+  type: openocd                    # qemu | openocd | stlink | gdb (programme de l'hôte) | remote
+  openocd: [nucleo-g070rb.cfg]
+os: freertos                       # aucun | freertos | pthread
+script: ../examples/scripts/rtos.py
+couverture: {fusionner: [], exporter: [couverture.html]}
+trace: {swo-config: true, var-trace: [produced:write]}   # options de trace, sans les tirets
+```
+
+- **Menu Configuration** : Nouvelle…, Ouvrir…, Récentes, Modifier…, Enregistrer (Ctrl+S),
+  Enregistrer sous…, Connecter, Fermer. Ouvrir charge la configuration (titre, SVD, vues) sans
+  connecter ; **Connecter** lance la session (la précédente est déconnectée). Une
+  configuration modifiée et pas enregistrée est proposée à l'enregistrement avant d'être
+  quittée.
+- **Boîte de dialogue** à onglets : Cible, Serveur (champs propres à chaque serveur), OS
+  (« Détecter dans l'ELF »), Trace (SWO/ITM, ETM, variables, filtre, simulation, MTB), Script
+  et couverture. OK la valide comme la ligne de commande.
+- **Vues selon l'OS** : FreeRTOS → RTOS et Temps des tâches ; Pthread → Threads ; aucun →
+  aucune des trois. Sans configuration, toutes les vues du layout.
+- **`--config FICHIER.yaml`** : la configuration donne la base, les options de la ligne de
+  commande l'emportent (une valeur remplace, une liste s'ajoute, un serveur d'un autre type
+  remplace celui de la configuration). Ex. `--config configs/nucleo-n657x0-q.yaml --stlink SN`.
+- **Exemples** (`configs/`) : `qemu-demo.yaml`, `qemu-freertos.yaml`, `native-pthreads.yaml`, et
+  les sessions des quatre cartes de test (`nucleo-f746zg.yaml`, `nucleo-n657x0-q.yaml`,
+  `nucleo-g070rb.yaml`, `nucleo-f072rb.yaml`).
+- Dans un script, `gdbtrace.config` donne la configuration courante (lecture seule).
 
 ### Programmer la cible
 
@@ -740,7 +784,9 @@ gdbtrace/
   trace/etm/cycles.py   modèle de cycles Cortex-M3/M4 (durées estimées)
   trace/timing.py       analyse temporelle : pile d'appels, durées, chronogramme
   core/scripting.py     API `gdbtrace` + console Python
-  gui/                  fenêtre tkinter, vues détachables, pompe d'événements thread-safe
+  core/config.py        configurations de session (YAML) traduites en ligne de commande
+  gui/                  fenêtre tkinter, vues détachables, pompe d'événements thread-safe ;
+                        gui/config_dialog.py : boîte de dialogue d'une configuration
   views/                Fichiers, Source, Désassemblage, Registres, Mémoire, Watch, Périphériques, RTOS,
                         Threads, Pile, Breakpoints, Console, ITM, Profil, Trace, Timing, Couverture
 examples/
@@ -755,6 +801,7 @@ examples/
   nucleo-n6/            firmware de test sur carte : la démo FreeRTOS, port ARM_CM55_NTZ, en RAM,
                         boucles ARMv8.1-M (lob.c), tampon de l'ETR réservé
   svd/mps2-an385.svd    SVD de démo (SysTick, SCB, TIMER0/1, UART0)
+configs/                configurations OpenOCD (.cfg) et de session (.yaml) : démos, cartes de test
   scripts/demo.py       exemple de script
   scripts/rtos.py       exemple de script FreeRTOS
 ```
@@ -784,6 +831,10 @@ Les tests ETM comparent notre décodeur à OpenCSD si `tools/build_opencsd.sh` a
 tools/release_check.sh          # toute la suite ; une carte de test absente = échec
 ```
 
+Chaque test sur carte lance la session de sa configuration (`configs/<carte>.yaml`, `--config`) :
+les configurations sont ainsi validées sur les cartes, et `tests/test_config.py` vérifie
+qu'elles redonnent exactement les arguments des sessions de test.
+
 `tests/test_board_f746.py` teste l'application sur une **Nucleo-F746ZG** : le firmware de test
 est construit depuis ce dépôt (`examples/nucleo-f746` : la démo FreeRTOS à 16 MHz, port
 FreeRTOS ARM_CM7 r0p1) et flashé ; GdbTrace est lancé par son vrai point d'entrée, GUI compris,
@@ -791,7 +842,7 @@ avec le SVD, l'ETM et l'ITM par SWO (stall) et une variable tracée par le DWT. 
 (arrêt sur `worker_step`, marche avec le profil, arrêt), et à chacune le contenu de toutes les
 vues est relevé dans `tests/artifacts/board-f746.json` ; un test par vue vérifie ce qui doit
 s'y afficher : source, registres, pile (fichier:ligne), Watch (et en direct), RTOS (piles,
-tick en direct), périphériques du SVD, mémoire, threads, texte ITM, profil par SWO, variable
+tick en direct), périphériques du SVD, mémoire, vues selon l'OS, texte ITM, profil par SWO, variable
 tracée, temps par tâche, liste de trace ETM, Timing, couverture.
 
 `tests/test_board_n6.py` fait de même sur une **Nucleo-N657X0-Q** (STM32N6, Cortex-M55), par
