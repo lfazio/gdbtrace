@@ -22,6 +22,12 @@ pytest.importorskip("capstone")
 
 M55_IDR0 = 0x280006E1          # TRCCCI, COMMOPT = 1 : paquets de cycles sans commit
 
+# Segments sur 200 000 instructions. Leur nombre suit les interruptions SysTick, que QEMU
+# cadence sur le temps de l'hôte : en bare-metal, de 850 à 1 070 selon la charge de la
+# machine (de 420 à 600 sur 100 000). Un minimum sous ces valeurs, pour ne pas dépendre
+# de la charge.
+MIN_SEGMENTS = 600
+
 
 def segments(events):
     """[(instructions, cycles estimés, cycles de la marque)] de chaque segment clos."""
@@ -50,7 +56,7 @@ def test_cycle_counts_close_the_segments_they_measure(qemu_paths, name):
     assert [(type(e), getattr(e, "addr", None)) for e in plain] == \
         [(type(e), getattr(e, "addr", None)) for e in path[:len(plain)]]
     segs = segments(decoded)
-    assert len(segs) > 1000 and fl.stats.cycle_counts == len(segs)
+    assert len(segs) > MIN_SEGMENTS and fl.stats.cycle_counts == len(segs)
     # chaque marque = les cycles du chemin pour les événements de son segment (ceux du chemin :
     # le modèle du décodeur suit l'atome réel, l'annotation devine l'issue d'un branchement
     # interrompu par la tâche suivante, et peut différer)
@@ -79,7 +85,7 @@ def test_opencsd_counts_the_same_cycles(qemu_paths, name, tmp_path):
     ref, errors = opencsd.cycle_segments(str(tmp_path / "snap"))
     assert errors == []
     ours = [(n, mark) for n, _est, mark in segments(decode(data, img, commit_opt1=True)[0])]
-    assert len(ref) > 500
+    assert len(ref) > MIN_SEGMENTS // 2
     assert ours[:len(ref)] == ref                               # OpenCSD : un élément en attente
 
 
