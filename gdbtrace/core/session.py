@@ -185,6 +185,8 @@ class Session:
         self._stopped = threading.Event()
         self._listeners: list[EventFn] = []
         self._resume_hooks: list[Callable[[], None]] = []
+        #: arrêts visibles émis (événement « stopped ») : une mesure par arrêt (chrono)
+        self.stop_count = 0
         self._reg_names: list[str] = []
         # arrêts internes (MTB en AUTOHALT) : la cible s'arrête d'elle-même, le propriétaire
         # de l'intercepteur traite l'arrêt puis relance ; vu de l'extérieur, elle tourne
@@ -375,6 +377,8 @@ class Session:
                 pass
 
     def _emit(self, kind: str, data: dict) -> None:
+        if kind == "stopped":
+            self.stop_count += 1
         for fn in list(self._listeners):
             try:
                 fn(kind, data)

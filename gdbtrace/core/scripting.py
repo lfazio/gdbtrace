@@ -159,6 +159,32 @@ class ScriptAPI:
         self.cov = CoverageAPI(self)
         self._until: str | None = None      # breakpoint temporaire de go(until=…)
         self._config: dict | None = None    # configuration de session (menu Configuration)
+        #: RunTime : temps du cœur entre la reprise et l'arrêt (SysTick, DWT_CYCCNT)
+        from .chrono import Chrono
+        self._chrono = Chrono(session, core=lambda: self.trace.core if self.trace is not None else None)
+        session.add_resume_hook(self._chrono.start)
+
+    def chrono(self) -> dict | None:
+        """RunTime : temps du cœur pendant la dernière exécution (de la reprise à l'arrêt :
+        Go jusqu'à un breakpoint, Go.Till, pas…) et le cumul depuis `chrono_reset()`. Mesuré
+        par la cible (SysTick et compteur de ticks sur un Cortex-M0/M0+, DWT_CYCCNT au-delà),
+        sans compter les arrêts. None sans mesure (programme de l'hôte, reset entre-temps)."""
+        from .chrono import format_duration
+        m = self._chrono.stop() if self.s.state == "stopped" else self._chrono.last
+        if m is None:
+            print("pas de mesure (reprise puis arrêt de la cible : Go, Go.Till, pas)")
+            return None
+        hz = self.cpu_hz
+        sec, total = m.seconds(hz), self._chrono.total / hz if hz else None
+        cyc = f"{m.cycles} cycles" if m.cycles is not None else "durée inconnue"
+        print(f"{format_duration(sec)} ({cyc}, {m.source}) — cumul {format_duration(total)} en "
+              f"{self._chrono.runs} mesure(s)" + (f" — {m.note}" if m.note else ""))
+        return {"cycles": m.cycles, "secondes": sec, "source": m.source, "note": m.note,
+                "cumul_cycles": self._chrono.total, "cumul_secondes": total}
+
+    def chrono_reset(self) -> None:
+        """Remet à zéro le cumul du chrono."""
+        self._chrono.reset()
 
     @property
     def config(self) -> dict | None:

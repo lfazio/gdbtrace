@@ -147,6 +147,9 @@ def test_debug_session_on_qemu(client, elf):
     assert trace.count("\n") == 7 and "main" in trace
     assert "fonction" in c("coverage", top=5)
     assert "delay" in c("timing", top=10)
+    chrono = c("chrono")                                       # watchpoint : SysTick lancé
+    assert "SysTick (QEMU : temps simulé)" in chrono and "cumul" in chrono
+    assert "remis à zéro" in c("chrono", reset=True)
     c("python", code="[gdbtrace.delete(b.number) for b in gdbtrace.breaks()]")
 
     # cible en marche : une globale déjà évaluée se relit par le canal mémoire (QMP)

@@ -190,6 +190,8 @@ class App:
         r.add_separator()
         r.add_command(label="Go.Till (jusqu'à une condition)…", command=self._ask_go_till)
         r.add_command(label="Step.Till / Step.Change…", command=self._ask_step_loop)
+        r.add_separator()
+        r.add_command(label="Remettre le chrono à zéro", command=self.reset_chrono)
         mb.add_cascade(label="Run", menu=r)
 
         t = tk.Menu(mb, tearoff=False)
@@ -242,6 +244,9 @@ class App:
         self.live_label = tk.Label(bar, width=6, text="LIVE", fg="white", bg="#aaaaaa")
         self.live_label.pack(side="left", padx=(2, 0))
         self.task_label = ttk.Label(bar, text="", width=22)
+        # RunTime : temps de la dernière exécution (reprise → arrêt) et cumul
+        self.chrono_label = ttk.Label(bar, text="")
+        self.chrono_label.pack(side="right", padx=6)
         self.task_label.pack(side="left", padx=(6, 0))
         ttk.Label(bar, textvariable=self.status).pack(side="left", padx=6)
 
@@ -540,6 +545,7 @@ class App:
 
     def _on_event(self, kind: str, data: dict) -> None:
         if kind == "stopped":
+            self.update_chrono()
             self.refresh_all()
             reason = data.get("reason", "")
             if reason == "signal-received":
@@ -892,6 +898,31 @@ class App:
         path = filedialog.askopenfilename(filetypes=[("Python", "*.py"), ("Tous", "*")])
         if path:
             self.run_script(path)
+
+    # ================================================================== chrono
+    def update_chrono(self) -> None:
+        """Arrêt visible : temps de la dernière exécution, lu dans la cible (barre d'état)."""
+        if self.api is None or self.session is None or self.session.state != "stopped":
+            return
+        from ..core.chrono import format_duration
+        try:
+            m = self.api._chrono.stop()
+        except Exception as exc:  # noqa: BLE001 - mesure impossible : pas d'affichage
+            self.report_error(f"chrono : {exc}")
+            return
+        if m is None:
+            return
+        chrono = self.api._chrono
+        last = format_duration(m.seconds(self.cpu_hz)) if m.cycles is not None else "?"
+        total = format_duration(chrono.total / self.cpu_hz) if self.cpu_hz else "?"
+        approx = " ≈" if m.note else ""
+        self.chrono_label.configure(text=f"⏱{approx} {last}  (Σ {total}, {m.source})")
+
+    def reset_chrono(self) -> None:
+        """Run › Remettre le chrono à zéro : cumul effacé."""
+        if self.api is not None:
+            self.api._chrono.reset()
+        self.chrono_label.configure(text="⏱ Σ 0")
 
     # ================================================================== configuration
     def apply_config(self, config: SessionConfig, load_svd: bool = True) -> None:

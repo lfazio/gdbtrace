@@ -111,6 +111,10 @@ TOOLS = [
           "couvertes (`top`, défaut 20).", {"top": _I}),
     _tool("timing", "Durées par fonction et par exception d'après la trace (brut, net, "
           "min/max/moyenne) : `top` lignes (défaut 20).", {"top": _I}),
+    _tool("chrono", "Temps du cœur pendant la dernière exécution (de la reprise à l'arrêt : go "
+          "jusqu'à un breakpoint, pas…) et cumul, mesuré par la cible sans trace : SysTick et "
+          "compteur de ticks (Cortex-M0/M0+, QEMU), DWT_CYCCNT au-delà. `reset` : remet le "
+          "cumul à zéro.", {"reset": _B}),
     _tool("profile", "Profil statistique (PERF) pendant `seconds` (défaut 1) : la cible tourne, "
           "puis revient à son état.", {"seconds": _N}),
     _tool("itm", "Texte reçu sur un port ITM (`port`, défaut 0) par la capture SWO.",
@@ -483,6 +487,13 @@ class GdbTraceMcp:
     def tool_timing(self, top: int = 20) -> str:
         self._settle()
         self.api.timing(top)
+        return ""
+
+    def tool_chrono(self, reset: bool = False) -> str:
+        if reset:
+            self.api.chrono_reset()
+            return "cumul du chrono remis à zéro"
+        self.api.chrono()
         return ""
 
     def tool_profile(self, seconds: float = 1.0) -> str:

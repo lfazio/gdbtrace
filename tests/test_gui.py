@@ -100,6 +100,23 @@ def run_to(app, func):
     assert pump(app, lambda: app.current_frame is not None and app.current_frame.func == func)
 
 
+def test_chrono_in_status_bar(app):
+    """Chaque arrêt affiche le temps de la dernière exécution (SysTick sous QEMU) et le
+    cumul ; Run › Remettre le chrono à zéro efface le cumul."""
+    run_to(app, "fib")                       # depuis le reset : SysTick pas encore lancé
+    assert app.chrono_label.cget("text") == ""
+    run_to(app, "animate")
+    assert pump(app, lambda: "⏱" in app.chrono_label.cget("text"))
+    first = app.api._chrono.total
+    run_to(app, "animate")
+    assert pump(app, lambda: app.api._chrono.total > first)
+    text = app.chrono_label.cget("text")
+    # la démo compte ses ticks dans `ticks`, pas dans un compteur connu : à une période près
+    assert "SysTick (QEMU : temps simulé)" in text and "Σ" in text and "≈" in text
+    app.reset_chrono()
+    assert app.api._chrono.total == 0 and app.chrono_label.cget("text") == "⏱ Σ 0"
+
+
 def test_live_views_while_running(app):
     """Watch, Mémoire et Périphériques se mettent à jour pendant que la cible tourne."""
     from conftest import SVD
