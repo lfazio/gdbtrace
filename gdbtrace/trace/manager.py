@@ -191,7 +191,9 @@ class TraceManager:
             return None
         mtb = (" ; trace d'instructions par la MTB si la puce en a une (--mtb-probe, --mtb)"
                if self.core == 0xC60 else "")
-        return f"{self.core_name} (ARMv6-M) : ni ITM, ni SWO, ni ETM{mtb}"
+        return (f"{self.core_name} (ARMv6-M) : ni ITM, ni SWO, ni ETM{mtb}. Temps passé par "
+                "fonction : vue Profil (PC lu en marche, DWT_PCSR) ; par tâche : % CPU de la vue "
+                "RTOS")
 
     def _require_itm(self) -> None:
         """Refuse clairement une trace ITM, SWO ou ETM sur un cœur qui n'en a pas : sinon les

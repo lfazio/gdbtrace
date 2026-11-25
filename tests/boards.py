@@ -23,8 +23,6 @@ from dataclasses import dataclass
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 #: produits ST-LINK (USB 0483:xxxx)
-STLINK_PIDS = {"3748": "ST-LINK/V2", "374b": "ST-LINK/V2-1", "3752": "ST-LINK/V2-1",
-               "374e": "STLINK-V3", "374f": "STLINK-V3", "3753": "STLINK-V3", "3754": "STLINK-V3"}
 
 
 @dataclass(frozen=True)
@@ -52,17 +50,9 @@ NUCLEO_F072 = BoardSpec("nucleo-f072rb", "GDBTRACE_F072_SERIAL", "configs/nucleo
 
 def stlink_serials() -> list[tuple[str, str]]:
     """[(numéro de série, produit)] des sondes ST-LINK branchées."""
-    out = []
-    for dev in glob.glob("/sys/bus/usb/devices/*"):
-        try:
-            vid = open(os.path.join(dev, "idVendor")).read().strip()
-            pid = open(os.path.join(dev, "idProduct")).read().strip()
-            serial = open(os.path.join(dev, "serial")).read().strip()
-        except OSError:
-            continue
-        if vid == "0483" and pid in STLINK_PIDS:
-            out.append((serial, STLINK_PIDS[pid]))
-    return sorted(out)
+    sys.path.insert(0, ROOT)
+    from gdbtrace.core.target import stlink_probes
+    return stlink_probes()
 
 
 def read_idcode(spec: BoardSpec, serial: str) -> int | None:

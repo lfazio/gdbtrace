@@ -108,6 +108,9 @@ mais avec son firmware de test.
   `-target-attach`, pas de relance, détaché à la déconnexion. `NativeRemoteTarget` (programme
   natif derrière gdbserver) : ne jamais sonder le port (gdbserver garde la sonde comme client) ;
   préchargé (`gdbserver :port prog`) → jusqu'à `main`, sinon `--multi` → `set remote exec-file`.
+  Un OpenOCD qui ne démarre pas est expliqué d'après son journal (`explain_openocd_failure` :
+  mauvaise sonde — IDCODE inattendu —, sonde déjà prise, numéro de série inconnu), avec
+  les sondes ST-LINK branchées (`stlink_probes`, lues dans /sys).
 - Non-stop (`non_stop`, natif) : `-gdb-set non-stop on` avant tout lancement ; un *running /
   *stopped par thread (`Session._on_mi_nonstop`, `thread_states`). L'état de la session est
   celui du thread **suivi** (`focus`) ; gdb ne change pas de thread courant quand un autre

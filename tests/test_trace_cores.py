@@ -61,7 +61,9 @@ def test_trace_status_names_the_core(elf):
 def test_cortex_m0_and_m4():
     tm = TraceManager()
     tm.detect_core(FakeCore(M0))
-    assert tm.no_trace_reason() == "Cortex-M0 (ARMv6-M) : ni ITM, ni SWO, ni ETM"   # pas de MTB
+    reason = tm.no_trace_reason()
+    assert reason.startswith("Cortex-M0 (ARMv6-M) : ni ITM, ni SWO, ni ETM. ")   # pas de MTB
+    assert "vue Profil" in reason and "RTOS" in reason              # où trouver les durées
     tm.detect_core(FakeCore(M4))
     assert tm.core_name == "Cortex-M4" and tm.no_trace_reason() is None
     tm.detect_core(type("Mute", (), {"read_u32": lambda self, a: (_ for _ in ()).throw(OSError())})())

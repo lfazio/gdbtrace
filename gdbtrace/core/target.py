@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import collections
+import glob
 import os
+import re
 import queue
 import shutil
 import signal
@@ -249,6 +251,66 @@ class QemuTarget(TargetServer):
         return QemuQmp(self.host, self.qmp_port)
 
 
+#: sondes ST-LINK (idProduct USB, fabricant 0483)
+STLINK_PIDS = {"3748": "ST-LINK/V2", "374b": "ST-LINK/V2-1", "3752": "ST-LINK/V2-1",
+               "374e": "STLINK-V3", "374f": "STLINK-V3", "3753": "STLINK-V3", "3754": "STLINK-V3"}
+#: IDCODE du port de débogage (SW-DP) → cœur, pour dire quelle puce a répondu
+DP_CORES = {0x0BB11477: "Cortex-M0", 0x0BC11477: "Cortex-M0+", 0x1BA01477: "Cortex-M3",
+            0x2BA01477: "Cortex-M3/M4", 0x5BA02477: "Cortex-M7", 0x6BA02477: "Cortex-M33/M55"}
+
+
+def stlink_probes() -> list[tuple[str, str]]:
+    """[(numéro de série, produit)] des sondes ST-LINK branchées (lues dans /sys)."""
+    out = []
+    for dev in glob.glob("/sys/bus/usb/devices/*"):
+        try:
+            with open(os.path.join(dev, "idVendor")) as f:
+                vid = f.read().strip()
+            with open(os.path.join(dev, "idProduct")) as f:
+                pid = f.read().strip()
+            with open(os.path.join(dev, "serial")) as f:
+                serial = f.read().strip()
+        except OSError:
+            continue
+        if vid == "0483" and pid in STLINK_PIDS:
+            out.append((serial, STLINK_PIDS[pid]))
+    return sorted(out)
+
+
+def _core_of(idcode: int) -> str:
+    name = DP_CORES.get(idcode)
+    return f"{name} (IDCODE {idcode:#010x})" if name else f"IDCODE {idcode:#010x}"
+
+
+def explain_openocd_failure(log: list[str], configs: list[str],
+                            serial: str | None = None) -> str | None:
+    """Cause lisible d'un OpenOCD qui n'a pas démarré, d'après son journal, ou None. La plus
+    fréquente avec plusieurs cartes branchées : OpenOCD a pris la première sonde venue, et
+    la puce derrière n'est pas celle de la configuration."""
+    text = "\n".join(log)
+    probes = stlink_probes()
+    listing = ", ".join(f"{sn} ({prod})" for sn, prod in probes) or "aucune trouvée dans /sys"
+    which = f"la sonde {serial}" if serial else "la première sonde trouvée (STLINK_SERIAL non défini)"
+    cfg = ", ".join(os.path.basename(c) for c in configs)
+    got = re.search(r"UNEXPECTED idcode: (0x[0-9a-fA-F]+)", text)
+    want = re.search(r"expected \d+ of \d+: (0x[0-9a-fA-F]+)", text)
+    if got and want:
+        return (f"mauvaise sonde : derrière {which}, la puce est un {_core_of(int(got.group(1), 16))}, "
+                f"alors que {cfg} attend un {_core_of(int(want.group(1), 16))}.\n"
+                f"Sondes ST-LINK branchées : {listing}.\n"
+                "Choisir celle de la carte : STLINK_SERIAL=<numéro> devant la commande.")
+    opened = re.search(r"STLINK V\d|ST-LINK V\d", text)
+    if (re.search(r"LIBUSB_ERROR_BUSY|LIBUSB_ERROR_ACCESS|device is busy|claim.*interface", text, re.I)
+            or ("clock speed" in text and not opened)):    # bloqué avant d'ouvrir la sonde
+        return (f"{which} est déjà prise par un autre programme (une autre session GdbTrace, "
+                f"OpenOCD, STM32CubeIDE ?) : la libérer, ou en choisir une autre.\n"
+                f"Sondes ST-LINK branchées : {listing}.")
+    if serial and re.search(r"open failed|unable to open|no device found", text, re.I):
+        return (f"aucune sonde de numéro de série {serial} (STLINK_SERIAL).\n"
+                f"Sondes ST-LINK branchées : {listing}.")
+    return None
+
+
 @dataclass
 class OpenOcdTarget(TargetServer):
     """Sonde réelle. `configs` = liste de fichiers -f (interface + cible ou carte)."""
@@ -280,6 +342,16 @@ class OpenOcdTarget(TargetServer):
 
     def live_memory(self) -> LiveMemory | None:
         return OpenOcdTcl(self.host, self.tcl_port)
+
+    def start(self, timeout: float = 10.0) -> None:
+        try:
+            super().start(timeout)
+        except RuntimeError as exc:
+            why = explain_openocd_failure(list(self.log), self.configs,
+                                          os.environ.get("STLINK_SERIAL") or None)
+            if why is None:
+                raise
+            raise RuntimeError(why) from exc
 
 
 def _latest(patterns: list[str]) -> str | None:

@@ -583,7 +583,14 @@ Ces cœurs n'ont ni ITM, ni SWO, ni ETM, ni MTB (STM32G0 : RM0444, chapitre 40) 
 | Profil | oui, par lecture de `DWT_PCSR` cible en marche (« Live ») |
 | ITM, Variables tracées, Temps des tâches, Trace, Timing, Couverture | non : ni ITM ni trace d'instructions |
 
-GdbTrace reconnaît le cœur à la connexion (registre CPUID). Les vues ITM, Variables tracées, Temps des tâches, Trace et Couverture l'affichent : « Cortex-M0+ (ARMv6-M) : ni ITM, ni SWO, ni ETM » (ou « Cortex-M0 … »). Une trace demandée (`--swo-config`, `--etm-config`, `--var-trace`, **Trace › ETM par SWO…**, bouton **Tracer**) est refusée avec ce même message, sans rien écrire dans des registres absents.
+**Où voir les durées sans trace.** Le temps passé, on le lit dans des registres et en mémoire, cible en marche :
+
+- par fonction et par ligne : vue **Profil**, source « Auto » ou « Live », **Démarrer** cible en marche. GdbTrace lit `DWT_PCSR` (le PC du cœur) des centaines de fois par seconde, sans l'arrêter, et compte où il se trouve ;
+- par tâche : colonne **CPU** de la vue **RTOS**, d'après les compteurs de temps d'exécution de FreeRTOS (`configGENERATE_RUN_TIME_STATS`), relus en marche.
+
+Ce sont des proportions (échantillonnage, compteurs du noyau), pas des durées d'appel : celles de la vue Timing demandent une trace d'instructions, que ces cœurs n'ont pas.
+
+GdbTrace reconnaît le cœur à la connexion (registre CPUID). Les vues ITM, Variables tracées, Temps des tâches, Trace et Couverture l'affichent : « Cortex-M0+ (ARMv6-M) : ni ITM, ni SWO, ni ETM » (ou « Cortex-M0 … »), et renvoient aux vues Profil et RTOS. Une trace demandée (`--swo-config`, `--etm-config`, `--var-trace`, **Trace › ETM par SWO…**, bouton **Tracer**) est refusée avec ce même message, sans rien écrire dans des registres absents.
 
 ### Firmware d'exemple
 
@@ -941,6 +948,8 @@ Quand une capture ne démarre pas, GdbTrace le dit : le journal de mise en route
 | « SVD STM32G070.svd introuvable » | SVD donné par son nom, absent de STM32CubeIDE | donner son chemin, ou `GDBTRACE_SVD_DIR` ; la session continue sans vue Périphériques |
 | Claude Code : serveur gdbtrace « failed » | interpréteur introuvable (chemin relatif), ou venv sans GdbTrace | chemin absolu de `.venv/bin/python` dans `claude mcp add` ; `claude mcp list` ; journal du serveur sur stderr |
 | Outil MCP `evaluate` : « cible en marche » | variable jamais évaluée cible arrêtée, locale, ou cible sans canal mémoire | l'évaluer une fois après `halt` ; avec `--remote`, ajouter `--tcl` |
+| « mauvaise sonde : derrière la sonde …, la puce est un Cortex-M7 » | plusieurs cartes branchées : OpenOCD a pris une autre sonde que celle de la carte | `STLINK_SERIAL=<numéro>` devant la commande ; le message liste les sondes branchées |
+| « la sonde … est déjà prise par un autre programme » | une autre session GdbTrace, un OpenOCD ou STM32CubeIDE tient la sonde | fermer l'autre programme, ou choisir une autre sonde |
 | OpenOCD refuse gdb : « timed out while waiting for target halted », puis « Cannot identify target » | cœur Cortex-M0/M0+ tenu sous reset (connexion sous reset) : un simple halt n'aboutit pas | `configs/nucleo-f072rb.cfg` et `nucleo-g070rb.cfg` font `reset halt` à l'attachement (`gdb-attach`) ; reprendre ce bloc dans une configuration OpenOCD maison |
 | ETMv3 par SWO : le firmware se fige (pile dans une attente de l'ITM) | l'ETM prend toute la broche, l'ITM n'y passe plus | `--etm-filter`, ou mieux `--etm-start` / `--etm-stop` (section 11) ; ou ralentir le cœur |
 | « non pris en charge par cet ETM : cycle-accurate » | l'ETM-M3/M4 n'a pas ce mode | durées estimées ; mesurer avec un ETMv4 (M7, M55) |
