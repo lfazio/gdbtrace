@@ -484,11 +484,16 @@ class NativeTarget(TargetServer):
     needs_load: bool = False
     #: PID du programme débogué, tenu à jour par la session (None : pas démarré)
     pid: int | None = None
+    #: processus déjà lancé auquel s'attacher (`--pid`) : ni lancement ni relance ; à la
+    #: déconnexion, il est détaché et continue
+    attach_pid: int | None = None
+    #: mode non-stop de gdb : un thread s'arrête et repart seul, les autres continuent
+    non_stop: bool = False
     native = True
 
     @property
     def remote(self) -> str:
-        return "programme natif"
+        return f"processus {self.attach_pid}" if self.attach_pid else "programme natif"
 
     def start(self, timeout: float = 10.0) -> None:
         pass
@@ -498,6 +503,9 @@ class NativeTarget(TargetServer):
 
     def reset(self, session) -> None:
         """Pas de reset matériel : le programme est relancé, arrêté au début de `main`."""
+        if self.attach_pid:
+            raise RuntimeError(f"processus attaché ({self.attach_pid}) : GdbTrace ne l'a pas "
+                               "lancé et ne peut pas le relancer")
         session.restart()
 
     def live_memory(self) -> LiveMemory | None:
@@ -524,3 +532,35 @@ class RemoteTarget(TargetServer):
 
     def stop(self) -> None:
         pass
+
+
+@dataclass
+class NativeRemoteTarget(RemoteTarget):
+    """Programme natif servi par un gdbserver (autre machine, conteneur, ou celle-ci) :
+    `gdbserver --multi HOST:PORT` (GdbTrace lance le programme, `exec_file` : son chemin
+    côté serveur, l'ELF par défaut, avec `args` / `cwd`) ou `gdbserver HOST:PORT prog …`
+    (déjà chargé : GdbTrace va jusqu'au début de `main`). Arrêt au début de `main` dans les
+    deux cas. La mémoire se lit en marche par `/proc/<pid>/mem` quand le serveur est sur cette
+    machine ; sinon, pas de vues en direct."""
+    args: list[str] = field(default_factory=list)
+    cwd: str | None = None
+    exec_file: str | None = None
+    needs_load: bool = False
+    pid: int | None = None
+    non_stop: bool = False
+    native = True
+    remote_native = True
+    #: le serveur a lancé le programme lui-même (sans --multi) : pas de relance
+    preloaded: bool = False
+
+    def start(self, timeout: float = 10.0) -> None:
+        """Pas de sondage du port : gdbserver prendrait la sonde pour son client, et ne
+        servirait plus gdb (connexion expirée)."""
+
+    def reset(self, session) -> None:
+        session.restart()
+
+    def live_memory(self) -> LiveMemory | None:
+        if self.host in ("127.0.0.1", "localhost", "::1"):
+            return ProcMem(lambda: self.pid)
+        return None

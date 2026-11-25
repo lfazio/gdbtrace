@@ -19,7 +19,8 @@ import os
 import shlex
 import sys
 
-from .core.target import NativeTarget, OpenOcdTarget, QemuTarget, RemoteTarget, StLinkTarget, free_port
+from .core.target import (NativeRemoteTarget, NativeTarget, OpenOcdTarget, QemuTarget,
+                          RemoteTarget, StLinkTarget, free_port)
 
 
 def is_native_elf(elf: str) -> bool:
@@ -34,9 +35,16 @@ def is_native_elf(elf: str) -> bool:
 
 def build_target(args, elf: str) -> object:
     explicit = args.qemu or args.openocd is not None or args.remote or args.stlink is not None
+    if args.pid:
+        return NativeTarget(attach_pid=args.pid, non_stop=args.non_stop)
     if args.native or (not explicit and is_native_elf(elf)):
-        return NativeTarget(args=shlex.split(args.args or ""),
+        return NativeTarget(args=shlex.split(args.args or ""), non_stop=args.non_stop,
                             cwd=os.path.abspath(args.cwd) if args.cwd else None)
+    if args.remote and (args.native or is_native_elf(elf)):   # programme natif, gdbserver
+        host, _, port = args.remote.rpartition(":")
+        return NativeRemoteTarget(host=host or "127.0.0.1", gdb_port=int(port),
+                                  args=shlex.split(args.args or ""), cwd=args.cwd,
+                                  exec_file=args.remote_exec, non_stop=args.non_stop)
     if args.remote:
         host, _, port = args.remote.rpartition(":")
         t = RemoteTarget(host=host or "127.0.0.1", gdb_port=int(port))
@@ -188,8 +196,17 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--native", action="store_true",
                    help="programme natif (hôte) exécuté sous gdb, arrêté au début de main "
                         "(par défaut pour un ELF qui n'est pas ARM)")
+    g.add_argument("--pid", type=int, metavar="PID",
+                   help="s'attacher à un programme natif déjà lancé (ELF par défaut : /proc/PID/exe) ; "
+                        "à la fin, il est détaché et continue")
     p.add_argument("--args", metavar="'A B…'", help="programme natif : ses arguments (syntaxe shell)")
     p.add_argument("--cwd", metavar="DOSSIER", help="programme natif : son répertoire de travail")
+    p.add_argument("--non-stop", action="store_true",
+                   help="programme natif : mode non-stop de gdb (un thread s'arrête et repart seul, "
+                        "les autres continuent ; vue Threads, clic droit)")
+    p.add_argument("--remote-exec", metavar="CHEMIN",
+                   help="programme natif servi par gdbserver --multi (--remote) : son chemin côté "
+                        "serveur (défaut : celui de l'ELF)")
     p.add_argument("--tcl", metavar="HOST:PORT",
                    help="avec --remote : port TCL d'un OpenOCD lancé à part (mémoire en direct)")
     p.add_argument("--stlink-ap", type=int, default=0, metavar="N",
@@ -326,10 +343,13 @@ def validate(args) -> list[str]:
         errors.append("--stlink-ap / --ram-boot : avec --stlink")
     if args.mtb_autohalt and args.mtb is None and args.mtb_sim is None:
         errors.append("--mtb-autohalt : avec --mtb (cible) ou --mtb-sim (QEMU)")
+    if args.pid and (args.args or args.cwd or args.program is not None):
+        errors.append("--pid : le processus est déjà lancé (ni --args, ni --cwd, ni --program)")
     if args.os in ("freertos", "pthread"):
         explicit = args.qemu or args.openocd is not None or args.remote or args.stlink is not None
-        native = args.native or (not explicit and bool(args.elf) and os.path.isfile(args.elf)
-                                 and is_native_elf(args.elf))
+        native = args.native or bool(args.pid) or (not explicit and bool(args.elf)
+                                                   and os.path.isfile(args.elf)
+                                                   and is_native_elf(args.elf))
         if args.os == "pthread" and not native:
             errors.append("--os pthread : un programme de l'hôte (serveur gdb, --native)")
         if args.os == "freertos" and native:
@@ -392,6 +412,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.elf and os.path.abspath(args.elf) != os.path.abspath(args.program):
             p.error("deux ELF différents : l'ELF de la ligne de commande et celui de --program")
         args.elf = args.program
+    if args.pid and args.elf is None:            # l'exécutable du processus
+        try:
+            args.elf = os.readlink(f"/proc/{args.pid}/exe")
+        except OSError as exc:
+            p.error(f"--pid {args.pid} : {exc.strerror}")
     errors = validate(args)
     if errors:
         p.error(errors[0])

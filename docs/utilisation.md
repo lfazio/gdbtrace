@@ -38,7 +38,8 @@ Il couvre trois usages :
 | Carte avec sonde | OpenOCD, lancé par GdbTrace | `--openocd fichier.cfg` | flash, live, SWO, ETM réels |
 | Carte STM32 avec sonde ST-LINK | ST-LINK_gdbserver (STM32CubeIDE, STM32CubeCLT), lancé par GdbTrace | `--stlink [numéro de série]` | flash ou RAM (`--ram-boot`), live, SWO ; puces qu'OpenOCD ne connaît pas (STM32N6) |
 | Serveur déjà lancé | J-Link GDB Server, pyOCD, OpenOCD… | `--remote hôte:port` (+ `--tcl` pour OpenOCD) | GdbTrace s'y connecte |
-| Programme de l'hôte | gdb local | aucune : l'ELF est reconnu | pthreads, arguments avec `--args` |
+| Programme de l'hôte | gdb local | aucune : l'ELF est reconnu | pthreads, arguments avec `--args` ; `--pid` pour un processus déjà lancé ; `--non-stop` |
+| Programme de l'hôte servi par gdbserver | gdbserver (`--multi`, ou avec le programme) | `--remote hôte:port` | lancé ou repris par GdbTrace, arrêt au début de `main` |
 
 ### Installation
 
@@ -87,6 +88,8 @@ GdbTrace se lance par `python -m gdbtrace`, suivi de l'ELF à déboguer puis des
 | Sonde ST-LINK avec ST-LINK_gdbserver | `--stlink [SN]`, `--stlink-ap N`, `--ram-boot` | lance ST-LINK_gdbserver sur la sonde SN (à donner si plusieurs sondes sont branchées), sur le port d'accès N du cœur ; gdb passe par un relais de GdbTrace qui lit la mémoire en marche et fait le reset. `--ram-boot` : image exécutée en RAM (section 9) |
 | Serveur gdb déjà lancé | `--remote hôte:port` | s'y connecte ; ajouter `--tcl hôte:port` si c'est un OpenOCD, pour la mémoire en marche |
 | Programme de l'hôte | `--native` (implicite pour un ELF non ARM) | gdb l'exécute et l'arrête au début de `main` ; `--args` et `--cwd` règlent ses arguments et son répertoire |
+| Processus de l'hôte déjà lancé | `--pid PID` (ELF : `/proc/PID/exe` par défaut) | gdb s'y attache et l'arrête là où il en est ; à la fin, il est détaché et continue |
+| Programme de l'hôte servi par gdbserver | `--remote hôte:port` avec un ELF de l'hôte | `gdbserver --multi` : GdbTrace lance le programme (`--remote-exec` : son chemin côté serveur) ; `gdbserver hôte:port prog` : déjà chargé ; arrêt au début de `main` |
 
 Les serveurs lancés par GdbTrace (QEMU, OpenOCD, ST-LINK_gdbserver) s'arrêtent avec lui, même s'il est tué brutalement : aucun serveur orphelin ne garde la sonde.
 
@@ -332,9 +335,15 @@ La fonction reste inerte tant que le débogueur n'a pas activé l'ITM. La mesure
 - Pour chaque thread : numéro gdb, nom (`pthread_setname_np`), LWP, état, cœur et position.
 - Le thread courant est en gras ; celui qui a provoqué l'arrêt est rappelé en tête.
 - **Double-clic** (programme arrêté) : le thread devient courant, et registres, pile, source et pas à pas portent sur lui.
-- La liste suit la création et la fin des threads, même en marche. Tous les threads s'arrêtent ensemble (mode all-stop de gdb).
+- La liste suit la création et la fin des threads, même en marche. Tous les threads s'arrêtent ensemble (mode all-stop de gdb), sauf en mode non-stop.
 
-Le programme a son propre terminal : sa sortie arrive dans la console. À la fin du programme, l'état passe à TERMINÉ avec son code de sortie ; **Go** le relance, **Reset** le relance arrêté au début de `main`. Démo : `examples/native/pthreads.c` (producteur, consommateur et moniteur nommés).
+**Mode non-stop** (`--non-stop`) : un thread s'arrête et repart seul, les autres continuent ; un breakpoint n'arrête que le thread qui l'atteint.
+
+- Les vues suivent un thread, en gras : celui qui vient de s'arrêter, ou celui choisi (double-clic, ou clic droit › Suivre ce thread). Arrêté, il s'inspecte et avance en pas à pas pendant que les autres tournent.
+- Clic droit › **Arrêter ce thread** / **Relancer ce thread** ; Go et Break valent pour tous les threads.
+- Les breakpoints à action y sont des arrêts ordinaires.
+
+Le programme a son propre terminal : sa sortie arrive dans la console. À la fin du programme, l'état passe à TERMINÉ avec son code de sortie ; **Go** le relance, **Reset** le relance arrêté au début de `main`. Un processus attaché (`--pid`) ne se relance pas : GdbTrace ne l'a pas lancé. Démo : `examples/native/pthreads.c` (producteur, consommateur et moniteur nommés).
 
 ## 7. Trace, profil et couverture
 
@@ -678,6 +687,9 @@ Un script peut ce que l'interface ne propose pas : une **action Python** sur un 
 | `--remote H:P` | serveur gdb déjà lancé |
 | `--tcl H:P` | avec `--remote` : port TCL d'un OpenOCD lancé à part (mémoire en marche) |
 | `--native` | programme de l'hôte (défaut pour un ELF non ARM) |
+| `--pid PID` | s'attacher à un programme de l'hôte déjà lancé (ELF par défaut : `/proc/PID/exe`) |
+| `--non-stop` | programme de l'hôte : mode non-stop de gdb (un thread s'arrête et repart seul) |
+| `--remote-exec CHEMIN` | programme de l'hôte servi par `gdbserver --multi` : son chemin côté serveur |
 | `--args 'A B…'` | programme de l'hôte : ses arguments (syntaxe shell) |
 | `--cwd DOSSIER` | programme de l'hôte : son répertoire de travail |
 | `--svd F` | description CMSIS-SVD des périphériques |

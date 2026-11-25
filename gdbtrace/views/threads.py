@@ -6,10 +6,14 @@ est (fonction, fichier:ligne) quand le programme est arrêté. Le thread courant
 celui qui a provoqué l'arrêt est rappelé en tête. Double-clic (programme arrêté) : il devient
 le thread courant, et registres, pile, source et pas à pas portent sur lui. La liste suit la
 création et la fin des threads, même programme en marche.
+
+Mode non-stop (`--non-stop`) : chaque thread a son état ; clic droit › Arrêter ce thread /
+Relancer ce thread, les autres continuent. Le thread suivi (celui des vues) est en gras.
 """
 from __future__ import annotations
 
 import os
+import tkinter as tk
 from tkinter import ttk
 
 from ..core.gdb_backend import GdbError
@@ -44,6 +48,7 @@ class ThreadsView(View):
         self.tree.tag_configure("current", font=bold)
         self.tree.tag_configure("running", foreground="#208020")
         self.tree.bind("<Double-1>", self._select)
+        self.tree.bind("<Button-3>", self._menu)
         self.threads = []
 
     # ------------------------------------------------------------------ contenu
@@ -52,7 +57,7 @@ class ThreadsView(View):
         if s is None or s.state not in ("stopped", "running"):
             self._clear("pas de programme en cours" if s is not None and s.state == "exited" else "")
             return
-        if s.state == "running" and not self.app.native:
+        if s.state == "running" and not self.app.native and not s.non_stop:
             # cible distante (QEMU, OpenOCD) : gdb refuse -thread-info cible en marche ; la
             # liste de l'arrêt reste, marquée en marche
             for item in self.tree.get_children():
@@ -73,7 +78,8 @@ class ThreadsView(View):
                 where = f.func or f"{f.pc:#x}"
                 if f.file:
                     where += f"  {os.path.basename(f.file)}:{f.line}"
-            tags = (("current",) if t.current else ()) + (("running",) if t.state == "running" else ())
+            current = t.id == s.focus if s.non_stop else t.current
+            tags = (("current",) if current else ()) + (("running",) if t.state == "running" else ())
             self.tree.insert("", "end", iid=t.id, text=t.id, tags=tags,
                              values=(t.name, t.lwp or "", t.state, "" if t.core is None else t.core, where))
         stopper = (s.stop_reason or {}).get("thread-id") if s.state == "stopped" else None
@@ -88,6 +94,26 @@ class ThreadsView(View):
         self.threads = []
         self.tree.delete(*self.tree.get_children())
         self.info.configure(text=msg)
+
+    def _menu(self, event) -> None:
+        item = self.tree.identify_row(event.y)
+        if not item:
+            return
+        self.tree.focus(item)
+        self.tree.selection_set(item)
+        s = self.session
+        non_stop = s is not None and s.non_stop
+        state = self.tree.set(item, "state")
+        m = tk.Menu(self, tearoff=False)
+        m.add_command(label="Suivre ce thread", command=lambda: self.app.select_thread(item))
+        m.add_separator()
+        m.add_command(label="Arrêter ce thread", command=lambda: self.app.stop_thread(item),
+                      state="normal" if non_stop and state == "running" else "disabled")
+        m.add_command(label="Relancer ce thread", command=lambda: self.app.resume_thread(item),
+                      state="normal" if non_stop and state == "stopped" else "disabled")
+        if not non_stop:
+            m.add_command(label="(un thread seul : mode non-stop, --non-stop)", state="disabled")
+        m.tk_popup(event.x_root, event.y_root)
 
     def _select(self, _e=None) -> str | None:
         item = self.tree.focus()

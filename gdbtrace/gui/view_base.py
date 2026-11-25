@@ -167,6 +167,9 @@ class ViewManager:
 
     # ---- diffusion d'événements
     def refresh_all(self) -> None:
+        s = getattr(self.app, "session", None)
+        if s is not None and s.non_stop:        # non-stop : les vues lisent le thread suivi
+            self.app.safe(s.select_focus)
         for v in list(self.views):
             self.app.safe_refresh(v.refresh)
 

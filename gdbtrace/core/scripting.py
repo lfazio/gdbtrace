@@ -567,16 +567,27 @@ class ScriptAPI:
                   f"{t.state:<8} {core:>4}  {where}")
         return ths
 
-    def thread(self, which) -> list:
-        """Le thread `which` (numéro gdb ou nom) devient le thread courant ; retourne sa pile."""
+    def _thread_id(self, which) -> str:
         ths = self.s.thread_list()
         t = next((t for t in ths if t.id == str(which) or t.name == str(which)), None)
         if t is None:
             raise ValueError(f"thread inconnu : {which} (threads : "
                              + ", ".join(f"{t.id} {t.name}" for t in ths) + ")")
-        self.s.select_thread(t.id)
+        return t.id
+
+    def thread(self, which) -> list:
+        """Le thread `which` (numéro gdb ou nom) devient le thread courant ; retourne sa pile."""
+        self.s.select_thread(self._thread_id(which))
         self.bt()
         return self.s.backtrace()
+
+    def thread_stop(self, which) -> None:
+        """Mode non-stop (--non-stop) : arrête ce thread seul (numéro gdb ou nom)."""
+        self.s.stop_thread(self._thread_id(which))
+
+    def thread_resume(self, which) -> None:
+        """Mode non-stop (--non-stop) : relance ce thread seul (numéro gdb ou nom)."""
+        self.s.resume_thread(self._thread_id(which))
 
     def queues(self) -> list[freertos.KernelObject]:
         """TASK.Objects : queues, sémaphores et mutex du registre."""

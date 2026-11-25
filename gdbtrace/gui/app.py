@@ -659,11 +659,25 @@ class App:
                                 "relancer la session")
 
     def select_thread(self, thread_id: str) -> None:
-        """Le thread devient le thread courant (vues Threads, console)."""
+        """Le thread devient le thread courant (vues Threads, console). En non-stop, il devient
+        le thread suivi, qu'il soit arrêté ou en marche."""
+        if self.session is not None and self.session.non_stop:
+            self.run_action(lambda: self.session.select_thread(thread_id))
+            return
         if not self._need("stopped"):
             self.status.set("Arrêter le programme pour changer de thread")
             return
         self.run_action(lambda: self.session.select_thread(thread_id))
+
+    def stop_thread(self, thread_id: str) -> None:
+        """Non-stop : ce thread seul s'arrête (vue Threads)."""
+        if self.session is not None:
+            self.run_action(lambda: self.session.stop_thread(thread_id))
+
+    def resume_thread(self, thread_id: str) -> None:
+        """Non-stop : ce thread seul repart (vue Threads)."""
+        if self.session is not None:
+            self.run_action(lambda: self.session.resume_thread(thread_id))
 
     def halt(self) -> None:
         if self._need("running"):

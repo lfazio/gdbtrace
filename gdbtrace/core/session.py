@@ -159,6 +159,9 @@ class Session:
         self.target: TargetServer | None = None
         self.elf: str | None = None
         self.state = "disconnected"  # disconnected | stopped | running | exited
+        self.non_stop = False                    # programme natif en mode non-stop
+        self.focus: str | None = None            # non-stop : thread suivi (celui des vues)
+        self.thread_states: dict[str, str] = {}  # non-stop : état de chaque thread
         self.stop_reason: dict = {}
         #: programme natif terminé : code de sortie (None : tué par un signal, ou pas fini)
         self.exit_code: int | None = None
@@ -195,6 +198,82 @@ class Session:
         self._pty: tuple[int, int, str] | None = None   # programme natif : (maître, esclave, nom)
 
     # ------------------------------------------------------------------ événements
+    # ------------------------------------------------------------------ non-stop
+    # Programme natif en mode non-stop (`NativeTarget.non_stop`) : chaque thread s'arrête et
+    # repart seul, les autres continuent. gdb envoie un *running / *stopped par thread.
+    # L'état de la session est celui du thread **suivi** (`focus`, celui que montrent les vues) :
+    # arrêté si lui l'est ; un thread qui s'arrête pendant que le suivi tourne devient le suivi
+    # (« stopped ») ; les autres changements ne sont que des événements « threads ». gdb ne
+    # change pas son thread courant quand un autre s'arrête : `select_focus()` le fait (vues,
+    # wait_stopped). Go et Break valent pour tous les threads (--all), les pas pour le suivi.
+
+    def _on_mi_nonstop(self, msg: str, payload: dict) -> None:
+        ids = payload.get("stopped-threads") if msg == "stopped" else None
+        tid = str(payload.get("thread-id", "all"))
+        if msg == "running":
+            if tid == "all":
+                for k in list(self.thread_states):
+                    self.thread_states[k] = "running"
+            else:
+                self.thread_states[tid] = "running"
+            if tid == "all" or tid == self.focus or self.focus is None:
+                if self.state != "running":
+                    self.state = "running"
+                    self._stopped.clear()
+                    self._emit("running", payload)
+                return
+            self._emit("threads", {"event": "thread-running", "id": tid})
+            return
+        stopped = ([str(x) for x in ids] if isinstance(ids, list)
+                   else list(self.thread_states) if ids == "all" else [tid])
+        for k in stopped:
+            self.thread_states[k] = "stopped"
+        with self._lock:
+            requested, self._halt_requested = self._halt_requested, False
+        if self.state == "running" or tid == self.focus or self.focus is None:
+            if tid != "all":
+                self.focus = tid
+            self.state = "stopped"
+            self.stop_reason = payload
+            self._emit("stopped", payload)
+            self._stopped.set()
+        else:
+            self._emit("threads", {"event": "thread-stopped", "id": tid, "requested": requested})
+
+    def select_focus(self) -> None:
+        """Non-stop : le thread courant de gdb devient le thread suivi (après son arrêt)."""
+        if self.non_stop and self.focus and self.thread_states.get(self.focus) == "stopped":
+            try:
+                self.gdb.command(f"-thread-select {self.focus}")
+            except GdbError:
+                pass
+
+    def stop_thread(self, thread_id: str) -> None:
+        """Non-stop : arrête ce thread seul (les autres continuent)."""
+        self._need_non_stop()
+        self.gdb.command(f"-exec-interrupt --thread {thread_id}")
+        self._reselect_focus(thread_id)
+
+    def resume_thread(self, thread_id: str) -> None:
+        """Non-stop : relance ce thread seul."""
+        self._need_non_stop()
+        if str(thread_id) == self.focus:
+            self._continuing = True
+            self._stopped.clear()
+        self._before_resume()
+        self.gdb.command(f"-exec-continue --thread {thread_id}")
+        self._reselect_focus(thread_id)
+
+    def _reselect_focus(self, used: str) -> None:
+        """`--thread` a changé le thread courant de gdb : le suivi le redevient s'il est arrêté
+        (sinon les vues liraient les registres d'un autre thread, peut-être en marche)."""
+        if str(used) != self.focus:
+            self.select_focus()
+
+    def _need_non_stop(self) -> None:
+        if not self.non_stop:
+            raise GdbError("un thread ne s'arrête ou ne repart seul qu'en mode non-stop (--non-stop)")
+
     def on_event(self, fn: EventFn) -> None:
         """fn(kind, data) avec kind ∈ stopped, running, output, breakpoints, disconnected,
         exited (programme natif terminé), threads (thread créé, terminé ou sélectionné)."""
@@ -305,6 +384,8 @@ class Session:
             self.stop_reason = payload
             self._emit("exited", payload)
             self._stopped.set()
+        elif t == "notify" and msg in ("stopped", "running") and self.non_stop:
+            self._on_mi_nonstop(msg, payload or {})
         elif t == "notify" and msg == "stopped":
             payload = payload or {}
             with self._lock:
@@ -356,6 +437,16 @@ class Session:
         elif t == "notify" and msg and msg.startswith("breakpoint-"):
             self._emit("breakpoints", payload or {})
         elif t == "notify" and msg in ("thread-created", "thread-exited", "thread-selected"):
+            if self.non_stop and msg == "thread-selected" and str((payload or {}).get("id")) != self.focus:
+                return                          # --thread d'une commande : pas un choix de l'utilisateur
+            if self.non_stop and msg != "thread-selected":
+                tid = str((payload or {}).get("id"))
+                if msg == "thread-created":
+                    self.thread_states[tid] = "running" if self.state == "running" else "stopped"
+                else:
+                    self.thread_states.pop(tid, None)
+                    if tid == self.focus:
+                        self.focus = None
             self._emit("threads", {"event": msg, **(payload or {})})
         elif t == "notify" and msg == "gdb-exited":
             self.state = "disconnected"
@@ -377,8 +468,16 @@ class Session:
         target.start()
         self.gdb.add_listener(self._on_mi)
         self.gdb.start()
+        self.non_stop = bool(getattr(target, "non_stop", False))
+        if self.non_stop:                         # avant tout lancement du programme
+            self.gdb.command("-gdb-set mi-async on")
+            self.gdb.command("-gdb-set non-stop on")
         self.gdb.command(f'-file-exec-and-symbols "{elf}"')
-        if target.native:
+        if target.native and getattr(target, "remote_native", False):
+            self._connect_remote_native(target)  # programme natif servi par un gdbserver
+        elif target.native and getattr(target, "attach_pid", None):
+            self._attach(target.attach_pid)      # processus déjà lancé (--pid)
+        elif target.native:
             self._run(start=True)                # programme natif : arrêté au début de main
         else:
             self.gdb.command(f"-target-select extended-remote {target.remote}", timeout=20)
@@ -398,6 +497,13 @@ class Session:
                 try:
                     self.halt()
                 except (GdbError, TimeoutError):   # cible ou gdb qui ne répond plus : on ferme quand même
+                    pass
+            if getattr(self.target, "attach_pid", None) and self.state in ("stopped", "running"):
+                try:                            # processus attaché : il continue sans nous
+                    if self.state == "running":
+                        self.halt()
+                    self.gdb.command("-target-detach", timeout=10)
+                except (GdbError, TimeoutError):
                     pass
             self.gdb.stop()
         finally:
@@ -491,7 +597,11 @@ class Session:
     def _run(self, start: bool = True, timeout: float = 30.0) -> None:
         """Lance (ou relance) le programme natif ; `start` : arrêt au début de `main`."""
         t = self.target
-        self._inferior_tty()
+        if getattr(t, "preloaded", False):
+            raise GdbError("programme lancé par le gdbserver lui-même : relancer le serveur "
+                           "(ou le lancer avec --multi pour que GdbTrace relance le programme)")
+        if not getattr(t, "remote_native", False):   # la sortie d'un programme distant reste
+            self._inferior_tty()                     # sur le terminal du gdbserver
         self.gdb.command("-exec-arguments " + shlex.join(t.args))
         if t.cwd:
             self.cli(f"set cwd {t.cwd}")
@@ -503,6 +613,43 @@ class Session:
         if start:
             self.wait_stopped(timeout)
         t.pid = self.inferior_pid()
+
+    def _connect_remote_native(self, t) -> None:
+        """gdbserver : avec un programme déjà chargé (`gdbserver :port prog`), jusqu'au début
+        de `main` ; sinon (`--multi`), lancé par gdb, arrêté au début de `main`."""
+        self.gdb.command(f"-target-select extended-remote {t.remote}", timeout=20)
+        self.state = "stopped"
+        self._stopped.set()
+        pid = self.inferior_pid()
+        if pid:                                  # chargé par le serveur, arrêté à l'entrée
+            t.preloaded, t.pid = True, pid
+            self.gdb.command("-break-insert -t main")
+            self._continuing = False
+            self._stopped.clear()
+            self.gdb.command("-exec-continue")
+            self.wait_stopped(30)
+            return
+        self.cli(f"set remote exec-file {t.exec_file or self.elf}")
+        self._run(start=True)
+
+    def _attach(self, pid: int) -> None:
+        """S'attache au processus `pid` (déjà lancé, même utilisateur ou CAP_SYS_PTRACE) :
+        gdb l'arrête là où il en est."""
+        try:
+            self.gdb.command(f"-target-attach {pid}", timeout=30)
+        except GdbError as exc:
+            hint = ""
+            try:
+                with open("/proc/sys/kernel/yama/ptrace_scope") as fh:
+                    if fh.read().strip() != "0":
+                        hint = (" ; ptrace restreint (kernel.yama.ptrace_scope ≠ 0) : seul un "
+                                "parent ou CAP_SYS_PTRACE peut s'attacher")
+            except OSError:
+                pass
+            raise GdbError(f"attachement au processus {pid} impossible : {exc}{hint}") from None
+        self.state = "stopped"
+        self._stopped.set()
+        self.target.pid = pid
 
     def _inferior_tty(self) -> None:
         """Terminal propre au programme natif. Sinon il hériterait de celui de gdb, c'est-à-dire
@@ -539,6 +686,9 @@ class Session:
         """Programme natif : relancé depuis le début, arrêté au début de `main`
         (le processus en cours, s'il y en a un, est tué)."""
         self._need_native()
+        if getattr(self.target, "attach_pid", None):
+            raise GdbError("processus attaché (--pid) : GdbTrace ne l'a pas lancé, il ne le "
+                           "relance pas")
         if self.state == "running":
             self.halt()
         self._run(start=True)
@@ -560,13 +710,15 @@ class Session:
     # ------------------------------------------------------------------ run-control
     def go(self) -> None:
         self._continuing = True
+        if self.state == "exited" and getattr(self.target, "attach_pid", None):
+            raise GdbError("le processus attaché est terminé : GdbTrace ne le relance pas")
         if self.state == "exited":              # programme natif terminé : relancé
             self._need_native()
             self._run(start=False)
             return
         self._stopped.clear()
         self._before_resume()
-        self.gdb.command("-exec-continue")
+        self.gdb.command("-exec-continue --all" if self.non_stop else "-exec-continue")
 
     def halt(self, wait: float = 5.0) -> None:
         with self._lock:
@@ -588,7 +740,7 @@ class Session:
             return
         if not internal:
             try:
-                self.gdb.command("-exec-interrupt")
+                self.gdb.command("-exec-interrupt --all" if self.non_stop else "-exec-interrupt")
             except GdbError:
                 if self.state != "running":     # arrêtée entre-temps (ex. point d'arrêt)
                     return
@@ -754,6 +906,7 @@ class Session:
     def wait_stopped(self, timeout: float = 10.0) -> dict:
         if not self._stopped.wait(timeout):
             raise TimeoutError("la cible ne s'est pas arrêtée")
+        self.select_focus()
         return self.stop_reason
 
     # ------------------------------------------------------------------ breakpoints
@@ -1067,6 +1220,12 @@ class Session:
         """Le thread devient le thread courant : registres, pile, variables locales et pas à
         pas portent désormais sur lui."""
         res = self.gdb.command(f"-thread-select {thread_id}")
+        if self.non_stop:                         # le thread choisi devient le suivi
+            self.focus = str(thread_id)
+            st = self.thread_states.get(self.focus, "stopped")
+            if st != self.state and self.state in ("stopped", "running"):
+                self.state = st
+                (self._stopped.set if st == "stopped" else self._stopped.clear)()
         self._emit("threads", {"event": "thread-selected", "id": str(thread_id)})
         f = res.get("frame")
         if not f or not f.get("addr"):

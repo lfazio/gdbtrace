@@ -535,6 +535,7 @@ Un ELF de l'hôte (x86-64, AArch64…) est exécuté par gdb lui-même et s'arr�
 |---|---|
 | `threads()` | affiche et renvoie les threads : numéro, nom (`pthread_setname_np`), LWP, état, cœur, position ; `*` = thread courant |
 | `thread(nom ou numéro)` | ce thread devient le thread courant (registres, pile, pas à pas portent sur lui) ; affiche et renvoie sa pile |
+| `thread_stop(nom ou n°)`, `thread_resume(nom ou n°)` | mode non-stop (`--non-stop`) : ce thread seul s'arrête, ou repart ; les autres continuent |
 | `session.send_input(texte)` | écrit sur l'entrée standard du programme (il a son propre terminal) |
 
 Chaque élément de `threads()` a les champs `id`, `name`, `lwp`, `state`, `core`, `frame` et
@@ -868,6 +869,7 @@ gdbtrace.cov.export("couverture.html")
 | `rtos()`, `tasks()`, `queues()`, `task(nom)` | FreeRTOS |
 | `task_times(top=20, unit="us")`, `task_timeline(n=30)` | temps par tâche mesuré par l'ITM |
 | `threads()`, `thread(nom ou n°)`, `session.send_input(texte)` | threads d'un programme natif, thread courant, entrée du programme |
+| `thread_stop(nom ou n°)`, `thread_resume(nom ou n°)` | non-stop : un thread seul s'arrête ou repart |
 
 ### Programmation
 

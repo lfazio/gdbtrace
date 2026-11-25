@@ -19,7 +19,7 @@ Interface en **tkinter**.
 | 9. MTB et ETM par SWO | Trace MTB des Cortex-M0+ (décodage validé sur chemins QEMU, démo M0+, MTB simulée) ; ETM d'un M3/M4 par la broche SWO, sans sonde de trace | ✅ (à valider sur carte) |
 | 10. ETMv4 (Cortex-M7) | Trace d'instructions de l'ETM-M7 (ETMv4.0) : décodage validé contre QEMU, OpenCSD et une vraie capture par SWO sur Nucleo-F746ZG ; version de l'ETM détectée ; ETM simulé v4 sous QEMU (`mps2-an500`) ; cycle-accurate (durées mesurées, validées contre DWT_CYCCNT sur F746 et N6) et horodatage | ✅ |
 | 11. Trace ciblée et débogage avancé | Filtres de l'ETM (plages, start/stop) ; trace de données du DWT ; temps par tâche RTOS par ITM ; breakpoints à action et à compteur, Go.Till, Step.Change | ✅ |
-| 12. Programmes natifs | Un ELF de l'hôte (x86-64, AArch64…) débogué sous gdb : arrêt au début de `main`, vue Threads (pthreads nommés, thread courant, changement de thread), mémoire lue en marche dans `/proc/<pid>/mem`, fin et relance du programme | ✅ |
+| 12. Programmes natifs | Un ELF de l'hôte (x86-64, AArch64…) débogué sous gdb : arrêt au début de `main`, vue Threads (pthreads nommés, thread courant, changement de thread), mémoire lue en marche dans `/proc/<pid>/mem`, fin et relance du programme ; attachement à un processus lancé (`--pid`), programme servi par gdbserver, mode non-stop | ✅ |
 | 13. ST-LINK_gdbserver et STM32N6 (Cortex-M55) | ST-LINK_gdbserver piloté derrière un relais RSP (mémoire en direct, reset système), image exécutée en RAM ; ITM par le SWO de la sonde ; ETMv4.5 écrit en RAM par l'ETR, lu en continu par le relais ; décodage ARMv8.1-M (boucles à faible coût, Helium) ; DWT de l'ARMv8-M ; validé sur Nucleo-N657X0-Q | ✅ |
 | 14. Cortex-M0 et M0+ (STM32G0, STM32F0) | Nucleo-G070RB (M0+) et Nucleo-F072RB (M0) par OpenOCD : cœur ARMv6-M reconnu (CPUID), traces ITM, SWO et ETM refusées en le disant (console, vues de trace) ; profil par `DWT_PCSR` ; FreeRTOS port ARM_CM0 V11.3 (son cadre de pile), validé sous QEMU `microbit` ; test sur carte | 🚧 (à valider sur carte) |
 | 15. Configurations de session | Menu Configuration et `--config FICHIER.yaml` : cible (chemin de l'ELF, SVD), serveur (QEMU, OpenOCD, ST-LINK_gdbserver, gdb pour un programme de l'hôte, serveur déjà lancé), OS (vues RTOS, Temps des tâches ou Threads selon l'OS), script et couverture, trace ; une configuration = une ligne de commande ; exemples dans `configs/`, sessions des tests sur carte | ✅ |
@@ -241,6 +241,25 @@ peut pas se mêler aux échanges avec gdb).
 
 Démo : `examples/native/pthreads.c` (producteur, consommateur et moniteur nommés, file
 protégée par mutex et variables de condition ; `./pthreads N` s'arrête après N tours).
+
+**Processus déjà lancé** (`--pid PID`, ELF par défaut `/proc/PID/exe`) : gdb s'y attache et
+l'arrête là où il en est ; Reset et la relance sont refusés (GdbTrace ne l'a pas lancé) ; à la
+déconnexion, il est détaché et continue. Il faut avoir le droit de le tracer (même
+utilisateur, et `kernel.yama.ptrace_scope` à 0, sinon CAP_SYS_PTRACE) : GdbTrace le dit.
+
+**Programme servi par gdbserver** (`--remote HOST:PORT` avec un ELF de l'hôte) : avec
+`gdbserver --multi HOST:PORT`, GdbTrace lance le programme (`--remote-exec` : son chemin côté
+serveur, l'ELF par défaut ; `--args`, `--cwd`) et le relance ; avec `gdbserver HOST:PORT prog
+…`, il est déjà chargé, GdbTrace va jusqu'à `main` (pas de relance). Arrêt au début de `main`
+dans les deux cas. GdbTrace ne sonde pas le port : gdbserver prendrait la sonde pour son
+client. Mémoire en marche par `/proc/<pid>/mem` si le serveur est sur cette machine.
+
+**Mode non-stop** (`--non-stop`) : un thread s'arrête et repart seul, les autres continuent
+(un breakpoint n'arrête que le thread qui l'atteint). Les vues suivent un thread, en gras dans
+la vue Threads : arrêté, il est inspecté et avance en pas à pas pendant que les autres
+tournent. Go et Break valent pour tous les threads ; clic droit dans la vue Threads › Arrêter
+ce thread / Relancer ce thread ; `gdbtrace.thread_stop("producer")`,
+`gdbtrace.thread_resume(…)`. Les breakpoints à action y sont des arrêts ordinaires.
 
 ### Vue RTOS (FreeRTOS)
 

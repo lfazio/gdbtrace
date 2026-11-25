@@ -64,6 +64,7 @@ mais avec son firmware de test.
 `App` (GUI), `ScriptAPI` (objet `gdbtrace` de la console et des scripts), mode `--batch`
 (`__main__.py`).
 
+
 - `GdbMI` : un thread lecteur ; chaque commande porte un jeton et attend sa réponse dans une
   queue. Les abonnés sont appelés **dans le thread lecteur** et ne doivent jamais bloquer.
   `console()` capture la sortie CLI sans la diffuser (commandes internes `ptype`,
@@ -90,7 +91,15 @@ mais avec son firmware de test.
   `NativeTarget` (`target.native`) : programme de l'hôte exécuté par gdb lui-même
   (`-exec-run --start`, arrêt à `main`), dans son propre pseudo-terminal (sinon il partage
   les tubes MI de gdb), état `exited` à sa fin, `restart()`. `live_memory()` fournit le canal
-  mémoire latéral (natif : `/proc/<pid>/mem`), ou `None`.
+  mémoire latéral (natif : `/proc/<pid>/mem`), ou `None`. `attach_pid` (`--pid`) :
+  `-target-attach`, pas de relance, détaché à la déconnexion. `NativeRemoteTarget` (programme
+  natif derrière gdbserver) : ne jamais sonder le port (gdbserver garde la sonde comme client) ;
+  préchargé (`gdbserver :port prog`) → jusqu'à `main`, sinon `--multi` → `set remote exec-file`.
+- Non-stop (`non_stop`, natif) : `-gdb-set non-stop on` avant tout lancement ; un *running /
+  *stopped par thread (`Session._on_mi_nonstop`, `thread_states`). L'état de la session est
+  celui du thread **suivi** (`focus`) ; gdb ne change pas de thread courant quand un autre
+  s'arrête, et `--thread` le change : `select_focus()` avant tout rafraîchissement des vues
+  (`ViewManager.refresh_all`) et dans `wait_stopped`. Go / Break : `--all`.
 - `StLinkTarget` : ST-LINK_gdbserver (lancé `-e -g`, prêt quand il écrit « Waiting for
   debugger connection » : ne jamais sonder son port, une connexion arrête le cœur) derrière
   `RspRelay` (`core/rsp_relay.py`), auquel gdb se connecte. Le relais glisse ses propres
