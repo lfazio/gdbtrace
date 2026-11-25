@@ -7,6 +7,10 @@ gdb lui-même, arrêté au début de `main` ; `--args` lui passe ses arguments.
 Programmation : `--program [ELF]` écrit l'ELF dans la cible à la connexion (reset, load,
 vérification, reset) ; avec `--batch` et sans script, gdbtrace programme puis quitte
 (code de retour 1 si la vérification échoue), `--go` laisse alors le programme tourner.
+
+Configuration : `--config FICHIER.yaml` (core/config.py) donne la base de la session ; les
+options de la ligne de commande l'emportent (une liste s'ajoute à la sienne, un serveur
+remplace le sien).
 """
 from __future__ import annotations
 
@@ -271,43 +275,119 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--script", help="script Python exécuté après connexion (objet `gdbtrace`)")
     p.add_argument("--batch", action="store_true", help="sans GUI : exécute --script puis quitte")
     p.add_argument("--layout", default="gdbtrace-layout.json", help="fichier de layout des fenêtres")
+    p.add_argument("--config", metavar="FICHIER.yaml",
+                   help="configuration de session (menu Configuration) : cible, serveur, OS, script, "
+                        "trace ; les autres options l'emportent sur elle")
+    p.add_argument("--os", choices=("aucun", "freertos", "pthread"),
+                   help="OS de la cible : vues RTOS et Temps des tâches (freertos), Threads (pthread), "
+                        "aucune des trois (aucun) ; sans --os, toutes les vues")
     return p
 
 
-def main(argv: list[str] | None = None) -> int:
-    p = build_parser()
-    args = p.parse_args(argv)
-    if args.program:
-        if args.elf and os.path.abspath(args.elf) != os.path.abspath(args.program):
-            p.error("deux ELF différents : l'ELF de la ligne de commande et celui de --program")
-        args.elf = args.program
+def validate(args) -> list[str]:
+    """Règles entre options, communes à la ligne de commande et aux configurations : la liste
+    des erreurs (vide si tout va bien)."""
+    errors = []
     if not args.etm_config:              # options de programmation de l'ETM : sinon ignorées
         stray = [opt for opt, on in ((f"--etm-port {args.etm_port}", args.etm_port != "parallel"),
                                      ("--etm-stall", args.etm_stall), ("--stm32", args.stm32),
                                      ("--etm-width", args.etm_width != 4)) if on]
         if stray:
-            p.error(f"{', '.join(stray)} : avec --etm-config (programmer l'ETM)")
+            errors.append(f"{', '.join(stray)} : avec --etm-config (programmer l'ETM)")
     if (args.etm_filter or args.etm_start or args.etm_stop) and not (
             args.etm_sim or args.etm_config or args.trace or args.trace_file
             or ((args.swo or args.swo_file) and args.swo_formatter)):
-        p.error("--etm-filter / --etm-start / --etm-stop : avec une trace ETM (--etm-sim sous QEMU ; "
-                "--etm-config sur matériel, ou une capture --trace / --trace-file)")
+        errors.append("--etm-filter / --etm-start / --etm-stop : avec une trace ETM (--etm-sim sous "
+                      "QEMU ; --etm-config sur matériel, ou une capture --trace / --trace-file)")
     if args.var_trace and not (args.swo or args.swo_file or args.swo_config or args.trace
                                or args.trace_file or (args.etm_config and args.etm_port == "swo")):
-        p.error("--var-trace : avec une capture SWO ou de trace (--swo-config, --swo, --swo-file, "
-                "--etm-config --etm-port swo, --trace)")
+        errors.append("--var-trace : avec une capture SWO ou de trace (--swo-config, --swo, "
+                      "--swo-file, --etm-config --etm-port swo, --trace)")
     etm_swo = args.etm_config and args.etm_port in ("swo", "etr")
     swo_etm = (args.swo or args.swo_file) and args.swo_formatter     # flux formaté : ETM ID 2
     if args.coverage and not (args.etm_sim or args.trace or args.trace_file or args.coverage_merge
                               or etm_swo or swo_etm or args.mtb is not None or args.mtb_sim is not None):
-        p.error("--coverage : pas de trace d'instructions (--etm-sim / --mtb-sim sous QEMU ; "
-                "--etm-config --etm-port swo ou etr, --trace / --trace-file ou --mtb sur matériel)")
+        errors.append("--coverage : pas de trace d'instructions (--etm-sim / --mtb-sim sous QEMU ; "
+                      "--etm-config --etm-port swo ou etr, --trace / --trace-file ou --mtb sur matériel)")
     if args.etr_buffer and not (args.etm_config and args.etm_port == "etr"):
-        p.error("--etr-buffer : avec --etm-config --etm-port etr")
+        errors.append("--etr-buffer : avec --etm-config --etm-port etr")
     if (args.stlink_ap or args.ram_boot) and args.stlink is None:
-        p.error("--stlink-ap / --ram-boot : avec --stlink")
+        errors.append("--stlink-ap / --ram-boot : avec --stlink")
     if args.mtb_autohalt and args.mtb is None and args.mtb_sim is None:
-        p.error("--mtb-autohalt : avec --mtb (cible) ou --mtb-sim (QEMU)")
+        errors.append("--mtb-autohalt : avec --mtb (cible) ou --mtb-sim (QEMU)")
+    if args.os in ("freertos", "pthread"):
+        explicit = args.qemu or args.openocd is not None or args.remote or args.stlink is not None
+        native = args.native or (not explicit and bool(args.elf) and os.path.isfile(args.elf)
+                                 and is_native_elf(args.elf))
+        if args.os == "pthread" and not native:
+            errors.append("--os pthread : un programme de l'hôte (serveur gdb, --native)")
+        if args.os == "freertos" and native:
+            errors.append("--os freertos : une cible Cortex-M, pas un programme de l'hôte")
+    return errors
+
+
+SERVER_DESTS = ("qemu", "openocd", "stlink", "remote", "native")
+#: options propres à un serveur : retirées de la configuration quand la ligne de commande en
+#: donne un autre
+SERVER_OPTION_DESTS = ("machine", "rtos", "stlink_ap", "ram_boot", "args", "cwd", "tcl")
+
+
+def parse_command_line(argv: list[str] | None = None):
+    """(analyseur, arguments, configuration ou None). Avec `--config`, la configuration donne la
+    base et les options écrites sur la ligne de commande l'emportent : une valeur remplace la
+    sienne, une liste (--var-trace, --coverage…) s'ajoute à la sienne. Un serveur d'un autre
+    type remplace le sien avec ses options propres (--stlink-ap, --machine…) ; du même type
+    (`--stlink SN` sur une configuration ST-LINK), il ne change que ce qui est écrit."""
+    p = build_parser()
+    args = p.parse_args(argv)
+    if not args.config:
+        return p, args, None
+    from .core.config import ConfigError, SessionConfig
+    try:
+        cfg = SessionConfig.load(args.config)
+    except ConfigError as exc:
+        p.error(str(exc))
+    explicit = vars(_explicit_parser().parse_args(argv))
+    kinds = {"qemu": "qemu", "openocd": "openocd", "stlink": "stlink", "remote": "remote",
+             "native": "gdb"}
+    cli_server = next((kinds[d] for d in SERVER_DESTS if d in explicit), None)
+    other_server = cli_server is not None and cli_server != cfg.server
+    merged = p.parse_args(cfg.to_argv(server=not other_server))
+    if other_server:
+        defaults = vars(p.parse_args([]))
+        for dest in SERVER_DESTS + SERVER_OPTION_DESTS:
+            setattr(merged, dest, defaults[dest])
+    lists = {a.dest for a in p._actions if type(a).__name__ == "_AppendAction"}
+    for dest, value in explicit.items():
+        if dest in lists:
+            setattr(merged, dest, getattr(merged, dest) + value)
+        else:
+            setattr(merged, dest, value)
+    return p, merged, cfg
+
+
+def _explicit_parser():
+    """Analyseur qui ne garde que les options écrites (aucune valeur par défaut)."""
+    p = build_parser()
+    for a in p._actions:
+        if a.dest != "help":
+            a.default = argparse.SUPPRESS
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    p, args, config = parse_command_line(argv)
+    if args.program:
+        if args.elf and os.path.abspath(args.elf) != os.path.abspath(args.program):
+            p.error("deux ELF différents : l'ELF de la ligne de commande et celui de --program")
+        args.elf = args.program
+    errors = validate(args)
+    if errors:
+        p.error(errors[0])
+    svd_warning = None
+    if args.svd:                         # nom seul : cherché dans STM32CubeIDE
+        from .core.svd import locate
+        args.svd, svd_warning = locate(args.svd)
     program = args.program is not None
     verify = not args.no_verify
     if args.elf is None and (args.batch or program):
@@ -324,6 +404,8 @@ def main(argv: list[str] | None = None) -> int:
         from .core.session import Session
         from .core import svd
         from .trace.manager import TraceManager
+        if svd_warning:
+            print(svd_warning, file=sys.stderr)
         device = svd.parse(args.svd) if args.svd else None
         s = Session(args.gdb)
         s.on_event(_print_action)                # messages des breakpoints à action
@@ -357,6 +439,7 @@ def main(argv: list[str] | None = None) -> int:
         api.symbols = symbols
         api.cpu_hz = args.cpu_hz
         api.on_program = lambda e: trace.retarget(e, api._symbols(), args.etm_cycle_accurate)
+        api._config = config.data if config is not None else None
         try:
             setup_trace(args, trace, s, target)
             for path in args.coverage_merge:
@@ -381,6 +464,25 @@ def main(argv: list[str] | None = None) -> int:
 
     from .gui.app import App
     app = App(layout_file=args.layout)
+    if config is not None:                  # titre, vues selon l'OS, récentes ; puis connexion
+        app.apply_config(config, load_svd=False)
+    if svd_warning:
+        app.report_error(svd_warning)
+    start_gui_session(app, args)
+    app.mainloop()
+    return 0
+
+
+def start_gui_session(app, args) -> None:
+    """Session du GUI décrite par `args` (ligne de commande, ou configuration traduite par
+    `SessionConfig.to_argv`) : réglages de l'App, SVD, connexion (et programmation), puis
+    mise en route de la trace, couverture fusionnée, script (couverture exportée à sa fin) et
+    Go. Commun au lancement et à Configuration › Connecter."""
+    program = args.program is not None
+    verify = not args.no_verify
+    elf = os.path.abspath(args.elf) if args.elf else None
+    target = build_target(args, elf) if elf else None
+    load = False if (args.no_load or program) else None
     app.cpu_hz = args.cpu_hz
     app.etm_cycle_accurate = args.etm_cycle_accurate
     app.gdb_path = args.gdb
@@ -389,27 +491,37 @@ def main(argv: list[str] | None = None) -> int:
     app.target_factory = lambda e: build_target(args, e)     # Fichier › Programmer un ELF…
     # valeurs initiales de Trace › ETM par SWO…
     app.swo_hz, app.swo_port, app.etm_stall, app.stm32 = args.swo_hz, args.swo_port, args.etm_stall, args.stm32
-    if args.svd:
+    if args.svd and args.svd != app.svd_path:
         app.safe(lambda: app.load_svd(args.svd, background=True))
+
+    def log(line: str) -> None:
+        app.write_console(line + "\n", "gdb")
+
+    def export_coverage(_more=False) -> None:
+        for path in args.coverage:          # fin du script : couverture écrite
+            log(f"couverture : {app.api.cov.export(path)}")
 
     def after_connect(_res=None) -> None:
         # journal de la mise en route de la trace dans la console (pas sur le terminal)
-        app.safe(setup_trace, args, app.trace, app.session, app.session.target or target,
-                 lambda line: app.write_console(line + "\n", "gdb"))
+        app.safe(setup_trace, args, app.trace, app.session, app.session.target or target, log)
+        for path in args.coverage_merge:
+            app.safe(app.api.cov.load, path)
+            log(f"couverture fusionnée : {path}")
         if args.script:
-            app.run_script(args.script)
+            app.run_script(args.script, then=lambda more: app.pump.post(
+                app.safe, export_coverage) if args.coverage else None)
         if args.go:
             app.go()
     if elf is None:
         app.status.set("Pas d'ELF : Fichier › Programmer un ELF… (Ctrl+O) lance la cible")
+    elif not os.path.isfile(elf):
+        app.report_error(f"ELF introuvable : {elf}")
     elif program:
         app.connect(elf, target, args.gdb, load,
                     then=lambda: app.program_elf(elf, verify, then=after_connect))
     else:
         app._remember_elf(elf)
         app.connect(elf, target, args.gdb, load, then=after_connect)
-    app.mainloop()
-    return 0
 
 
 if __name__ == "__main__":

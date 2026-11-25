@@ -158,6 +158,15 @@ class ScriptAPI:
         #: COVerage : couverture de code depuis la trace ETM
         self.cov = CoverageAPI(self)
         self._until: str | None = None      # breakpoint temporaire de go(until=…)
+        self._config: dict | None = None    # configuration de session (menu Configuration)
+
+    @property
+    def config(self) -> dict | None:
+        """Configuration de la session (menu Configuration, `--config`) : le contenu du YAML
+        (sections `cible`, `serveur`, `os`, `script`, `couverture`, `trace`), une copie en
+        lecture seule ; None sans configuration."""
+        import copy
+        return copy.deepcopy(self._config)
 
     def program(self, elf: str | None = None, verify: bool = True, quiet: bool = False):
         """FLASH.ReProgram : programme `elf` dans la cible (par défaut l'ELF courant, par ex.

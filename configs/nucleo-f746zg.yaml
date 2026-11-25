@@ -1,0 +1,19 @@
+# Configuration GdbTrace : Nucleo-F746ZG (Cortex-M7), démo FreeRTOS à 16 MHz, par OpenOCD.
+# ETMv4 et ITM par la broche SWO (stall), une variable tracée par le DWT. C'est la session
+# du test sur carte (tests/test_board_f746.py). Plusieurs sondes : STLINK_SERIAL=<numéro>.
+gdbtrace: 1
+nom: Nucleo-F746ZG
+cible:
+  elf: ../examples/nucleo-f746/nucleo-f746.elf
+  svd: STM32F746.svd
+  cpu-hz: 16000000
+  programmer: true
+serveur:
+  type: openocd
+  openocd: [nucleo-f746zg.cfg]
+os: freertos
+trace:
+  etm-config: true
+  etm-port: swo
+  etm-stall: true
+  var-trace: [produced:write]

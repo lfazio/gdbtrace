@@ -14,6 +14,40 @@ from dataclasses import dataclass, field
 
 READ_ONLY, WRITE_ONLY, READ_WRITE = "read-only", "write-only", "read-write"
 
+#: dossiers des SVD de ST livrés avec STM32CubeIDE
+CUBEIDE_SVD_GLOB = ("/opt/st/stm32cubeide*/plugins/*productdb.debug*/resources/cmsis/"
+                    "STMicroelectronics_CMSIS_SVD")
+
+
+def find_svd(name: str) -> str | None:
+    """SVD donné par son seul nom (`STM32G070.svd`) : cherché dans les dossiers de
+    STM32CubeIDE, ou dans `GDBTRACE_SVD_DIR`. None s'il n'y est pas."""
+    import glob
+    import os
+    dirs = [os.environ["GDBTRACE_SVD_DIR"]] if os.environ.get("GDBTRACE_SVD_DIR") else \
+        sorted(glob.glob(CUBEIDE_SVD_GLOB) + glob.glob(os.path.expanduser("~/st/stm32cubeide*/plugins/"
+                                                                         "*productdb.debug*/resources/cmsis/"
+                                                                         "STMicroelectronics_CMSIS_SVD")))
+    for d in dirs:
+        if os.path.exists(os.path.join(d, name)):
+            return os.path.join(d, name)
+    return None
+
+
+def locate(path: str) -> tuple[str | None, str | None]:
+    """(chemin du SVD, avertissement) : le fichier s'il existe ; un nom seul cherché dans
+    STM32CubeIDE (`find_svd`) ; sinon (None, raison) : la session continue sans SVD."""
+    import os
+    if os.path.isfile(path):
+        return os.path.abspath(path), None
+    if os.sep not in path and "/" not in path:
+        found = find_svd(path)
+        if found:
+            return found, None
+        return None, (f"SVD {path} introuvable (ni dans le dossier courant, ni dans STM32CubeIDE ; "
+                      "GDBTRACE_SVD_DIR pour un autre dossier) : vue Périphériques vide")
+    return None, f"SVD introuvable : {path} (vue Périphériques vide)"
+
 
 _SCALE = {"k": 1 << 10, "m": 1 << 20, "g": 1 << 30, "t": 1 << 40}
 

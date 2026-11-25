@@ -1,0 +1,9 @@
+# Configuration GdbTrace : démo FreeRTOS sous QEMU (mps2-an385), sans carte.
+gdbtrace: 1
+nom: FreeRTOS sous QEMU
+cible:
+  elf: ../examples/freertos/freertos.elf
+  svd: ../examples/svd/mps2-an385.svd
+serveur:
+  type: qemu
+os: freertos

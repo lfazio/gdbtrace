@@ -1,0 +1,14 @@
+# Configuration GdbTrace : Nucleo-F072RB (STM32F072RB, Cortex-M0), démo FreeRTOS à 8 MHz,
+# par OpenOCD. Ni ITM, ni SWO, ni ETM sur ce cœur. C'est la session du test sur carte
+# (tests/test_board_m0.py -k f072). Plusieurs sondes : STLINK_SERIAL=<numéro>.
+gdbtrace: 1
+nom: Nucleo-F072RB
+cible:
+  elf: ../examples/nucleo-f072/nucleo-f072.elf
+  svd: STM32F072.svd
+  cpu-hz: 8000000
+  programmer: true
+serveur:
+  type: openocd
+  openocd: [nucleo-f072rb.cfg]
+os: freertos

@@ -1,0 +1,9 @@
+# Configuration GdbTrace : programme de l'hôte (pthreads), exécuté par gdb lui-même.
+gdbtrace: 1
+nom: Programme de l'hôte (pthreads)
+cible:
+  elf: ../examples/native/pthreads
+serveur:
+  type: gdb
+  args: '100000'
+os: pthread

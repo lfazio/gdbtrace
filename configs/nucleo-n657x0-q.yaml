@@ -1,0 +1,21 @@
+# Configuration GdbTrace : Nucleo-N657X0-Q (STM32N6, Cortex-M55), démo FreeRTOS à 64 MHz,
+# chargée en RAM par ST-LINK_gdbserver (cavalier JP2 en 2-3). ITM par le SWO de la sonde, ETM
+# écrit en RAM par l'ETR, une variable tracée. C'est la session du test sur carte
+# (tests/test_board_n6.py). Plusieurs sondes : --stlink <numéro> sur la ligne de commande.
+gdbtrace: 1
+nom: Nucleo-N657X0-Q
+cible:
+  elf: ../examples/nucleo-n6/nucleo-n6.elf
+  svd: STM32N657.svd
+  cpu-hz: 64000000
+  programmer: true
+serveur:
+  type: stlink
+  stlink-ap: 1
+  ram-boot: true
+os: freertos
+trace:
+  swo-config: true
+  etm-config: true
+  etm-port: etr
+  var-trace: [produced:write]

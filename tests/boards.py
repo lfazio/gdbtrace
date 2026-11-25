@@ -137,12 +137,9 @@ def find_board(spec: BoardSpec) -> str | None:
 
 def find_svd(name: str) -> str | None:
     """SVD de ST livré avec STM32CubeIDE (`GDBTRACE_SVD_DIR` pour un autre dossier)."""
-    dirs = [os.environ["GDBTRACE_SVD_DIR"]] if os.environ.get("GDBTRACE_SVD_DIR") else glob.glob(
-        "/opt/st/stm32cubeide*/plugins/*productdb.debug*/resources/cmsis/STMicroelectronics_CMSIS_SVD")
-    for d in dirs:
-        if os.path.exists(os.path.join(d, name)):
-            return os.path.join(d, name)
-    return None
+    sys.path.insert(0, ROOT)
+    from gdbtrace.core.svd import find_svd as find
+    return find(name)
 
 
 # ====================================================================== relevé des vues

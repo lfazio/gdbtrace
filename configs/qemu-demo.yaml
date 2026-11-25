@@ -1,0 +1,12 @@
+# Configuration GdbTrace : démo Cortex-M3 sous QEMU (mps2-an385), sans carte.
+# SVD de démo et trace ETM simulée (QEMU n'a pas d'ETM : son journal d'exécution est converti).
+gdbtrace: 1
+nom: Démo QEMU (Cortex-M3)
+cible:
+  elf: ../examples/firmware/demo.elf
+  svd: ../examples/svd/mps2-an385.svd
+serveur:
+  type: qemu
+os: aucun
+trace:
+  etm-sim: true

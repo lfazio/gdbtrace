@@ -10,6 +10,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Callable
 
 from ..core import svd
+from ..core.config import ConfigError, SessionConfig
 from ..core.live import LiveMemory, LivePoller
 from ..core.scripting import Console, ScriptAPI, stop_summary
 from ..core.session import Breakpoint, Frame, Session
@@ -42,6 +43,10 @@ def view_classes() -> dict[str, type[View]]:
                TaskTimeView]
     return {c.kind: c for c in classes}
 
+
+#: vues qui suivent l'OS de la configuration (Configuration › Ouvrir…)
+OS_VIEWS = {"freertos": {"rtos", "tasktime"}, "pthread": {"threads"}, "aucun": set()}
+ALL_OS_VIEWS = set().union(*OS_VIEWS.values())
 
 DEFAULT_LAYOUT = [
     {"kind": "files", "where": "left"},
@@ -116,6 +121,14 @@ class App:
         self.target_factory: Callable[[str], TargetServer] | None = None
         self.verify_program = True
         self.recent_elfs: list[str] = []
+        # configuration de session (menu Configuration) : courante, récentes, et vues fermées
+        # parce que son OS ne les utilise pas
+        self.config: SessionConfig | None = None
+        self.recent_configs: list[str] = []
+        self.os_hidden: set[str] = set()
+        self._start_token = 0                   # Connecter en attente (annulé par Fermer)
+        #: question « Enregistrer la configuration ? » : True, False, ou None (annuler)
+        self.ask_save: Callable[[str, str], bool | None] = messagebox.askyesnocancel
         # description des périphériques (CMSIS-SVD)
         self.device: svd.Device | None = None
         self.svd_path: str | None = None
@@ -150,6 +163,20 @@ class App:
         m.add_command(label="Déconnecter", command=self.disconnect)
         m.add_command(label="Quitter", command=self.quit)
         mb.add_cascade(label="Fichier", menu=m)
+
+        c = tk.Menu(mb, tearoff=False)
+        c.add_command(label="Nouvelle…", command=self.new_config)
+        c.add_command(label="Ouvrir…", command=self._ask_open_config)
+        self.recent_config_menu = tk.Menu(c, tearoff=False, postcommand=self._fill_recent_configs)
+        c.add_cascade(label="Récentes", menu=self.recent_config_menu)
+        c.add_command(label="Modifier…", command=self.edit_config)
+        c.add_separator()
+        c.add_command(label="Enregistrer", command=self.save_config, accelerator="Ctrl+S")
+        c.add_command(label="Enregistrer sous…", command=lambda: self.save_config(ask=True))
+        c.add_separator()
+        c.add_command(label="Connecter", command=self.connect_config)
+        c.add_command(label="Fermer", command=self.close_config)
+        mb.add_cascade(label="Configuration", menu=c)
 
         r = tk.Menu(mb, tearoff=False)
         for label, fn, key in [("Go", self.go, "F5"), ("Break", self.halt, "F8"),
@@ -218,7 +245,7 @@ class App:
     def _bind_keys(self) -> None:
         keys = {"<F5>": self.go, "<F8>": self.halt, "<F11>": self.step, "<F10>": self.over,
                 "<Shift-F11>": self.out, "<F7>": self.stepi, "<Control-o>": self._ask_program,
-                "<Control-r>": self.reprogram}
+                "<Control-r>": self.reprogram, "<Control-s>": self.save_config}
         for k, fn in keys.items():
             self.root.bind_all(k, lambda _e, f=fn: (f(), "break")[1])
 
@@ -228,6 +255,7 @@ class App:
         self.session = session
         self.api = ScriptAPI(session)
         self.api.cpu_hz = self.cpu_hz
+        self.api._config = self.config.data if self.config is not None else None
         self.console = Console(self.api, lambda s: self.pump.post(self.write_console, s, ""))
         session.on_event(lambda kind, data: self.pump.post(self._on_event, kind, data))
         self.api.device = self.device
@@ -364,6 +392,8 @@ class App:
             self.pump.background(s.disconnect)
 
     def quit(self) -> None:
+        if not self._confirm_discard():           # configuration modifiée : enregistrer ?
+            return
         try:
             self.save_layout()
         except Exception:  # noqa: BLE001
@@ -444,6 +474,18 @@ class App:
             self.pump.background(svd.parse, path, then=lambda dev: self._svd_loaded(dev, path))
             return
         self._svd_loaded(svd.parse(path), path)
+
+    def unload_svd(self) -> None:
+        """Plus de SVD (configuration fermée, ou sans SVD) : vue Périphériques vide."""
+        if self.device is None:
+            return
+        self.device = None
+        self.svd_path = None
+        if self.api:
+            self.api.device = None
+        for v in list(self.views.views):
+            if hasattr(v, "on_svd_loaded"):
+                self.safe(v.on_svd_loaded)
 
     def _svd_loaded(self, device, path: str) -> None:
         self.device = device
@@ -558,11 +600,14 @@ class App:
         # LIVE vert : canal mémoire latéral disponible (vues rafraîchies en marche)
         self.live_label.configure(bg="#208020" if self.live is not None else "#aaaaaa")
         fr = self.current_frame
+        title = "gdbtrace"
+        if self.config is not None:
+            title += f" — [{self.config.name}{'*' if self.config.modified else ''}]"
         if fr and state == "stopped":
             where = f"{fr.func or '??'}  {os.path.basename(fr.file or '')}:{fr.line or ''}"
-            self.root.title(f"gdbtrace — {self._elf_name()}{where}  PC={fr.pc:#010x}")
+            self.root.title(f"{title} — {self._elf_name()}{where}  PC={fr.pc:#010x}")
         else:
-            self.root.title(f"gdbtrace — {self._elf_name()}".rstrip(" —:"))
+            self.root.title(f"{title} — {self._elf_name()}".rstrip(" —:"))
 
     # ================================================================== actions
     def run_action(self, fn: Callable[[], Any], then: Callable[[Any], None] | None = None) -> None:
@@ -802,15 +847,197 @@ class App:
             v.write(text, tag)
         self._pending_output.clear()
 
-    def run_script(self, path: str) -> None:
+    def run_script(self, path: str, then: Callable[[bool], None] | None = None) -> None:
+        """Exécute un script dans la console ; `then` est appelé à sa fin (fil de la console)."""
         if self.console:
             self.write_console(f"# script {path}\n", "cmd")
-            self.console.run_file(path)
+            self.console.run_file(path, then)
 
     def _ask_script(self) -> None:
         path = filedialog.askopenfilename(filetypes=[("Python", "*.py"), ("Tous", "*")])
         if path:
             self.run_script(path)
+
+    # ================================================================== configuration
+    def apply_config(self, config: SessionConfig, load_svd: bool = True) -> None:
+        """Ouvre une configuration **sans connecter** : titre, réglages (fréquence, options du
+        menu Trace), SVD, vues selon l'OS, configurations récentes. Configuration › Connecter
+        lance ensuite la session."""
+        args = config.parse()
+        self.config = config
+        if config.path:
+            self._remember_config(config.path)
+        self.cpu_hz = args.cpu_hz
+        self.etm_cycle_accurate = args.etm_cycle_accurate
+        self.swo_hz, self.swo_port, self.etm_stall, self.stm32 = (args.swo_hz, args.swo_port,
+                                                                  args.etm_stall, args.stm32)
+        self.verify_program = not args.no_verify
+        self.verify_var.set(self.verify_program)
+        if self.api:
+            self.api.cpu_hz = self.cpu_hz
+            self.api._config = config.data
+        self.apply_os_views(config.os)
+        if load_svd:
+            if args.svd:
+                path, warning = svd.locate(args.svd)
+                if warning:
+                    self.report_error(warning)
+                if path and path != self.svd_path:
+                    self.safe(lambda: self.load_svd(path, background=True))
+            else:
+                self.unload_svd()
+        self.update_status()
+        self.status.set(f"Configuration {config.name} : Configuration › Connecter lance la session")
+
+    def apply_os_views(self, os_name: str | None) -> None:
+        """Vues selon l'OS : FreeRTOS → RTOS et Temps des tâches ; Pthread → Threads ; aucun →
+        aucune des trois ; None (sans configuration) → toutes, à leur place par défaut."""
+        wanted = ALL_OS_VIEWS if os_name is None else OS_VIEWS.get(os_name, set())
+        classes = view_classes()
+        place = {e["kind"]: e["where"] for e in DEFAULT_LAYOUT}
+        selected = {name: nb.select() for name, nb in self.views.notebooks.items()}
+        for kind in sorted(ALL_OS_VIEWS):
+            view = self.views.find(classes[kind])
+            if kind in wanted and view is None:
+                self.views.open(classes[kind], place[kind])
+            elif kind not in wanted and view is not None:
+                view.destroy()
+        for name, nb in self.views.notebooks.items():      # onglet affiché inchangé
+            if selected[name] and selected[name] in nb.tabs():
+                nb.select(selected[name])
+        self.os_hidden = ALL_OS_VIEWS - wanted
+
+    def new_config(self) -> None:
+        if not self._confirm_discard():
+            return
+        self._edit(SessionConfig({"gdbtrace": 1}), "Nouvelle configuration")
+
+    def edit_config(self) -> None:
+        if self.config is None:
+            self.new_config()
+            return
+        self._edit(self.config.copy(), f"Configuration — {self.config.name}")
+
+    def _edit(self, config: SessionConfig, title: str):
+        from .config_dialog import ConfigEditor
+        return ConfigEditor(self.root, config, on_ok=lambda cfg: self.safe(self.apply_config, cfg),
+                            title=title)
+
+    def open_config(self, path: str) -> bool:
+        """Configuration › Ouvrir… / Récentes : charge le YAML et l'applique, sans connecter."""
+        if not self._confirm_discard():
+            return False
+        try:
+            config = SessionConfig.load(path)
+        except ConfigError as exc:
+            self.report_error(f"configuration {os.path.basename(path)} : {exc}")
+            return False
+        self.apply_config(config)
+        return True
+
+    def _ask_open_config(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Ouvrir une configuration",
+            initialdir=os.path.dirname(self.recent_configs[0]) if self.recent_configs else os.getcwd(),
+            filetypes=[("Configurations GdbTrace", "*.yaml *.yml"), ("Tous", "*")])
+        if path:
+            self.open_config(path)
+
+    def save_config(self, ask: bool = False) -> bool:
+        """Configuration › Enregistrer (Ctrl+S) / Enregistrer sous… ; False si annulé."""
+        if self.config is None:
+            self.status.set("Pas de configuration : Configuration › Nouvelle…")
+            return False
+        path = self.config.path
+        if ask or not path:
+            path = filedialog.asksaveasfilename(
+                title="Enregistrer la configuration", defaultextension=".yaml",
+                initialfile=f"{self.config.name}.yaml",
+                initialdir=os.path.dirname(path) if path else os.getcwd(),
+                filetypes=[("Configurations GdbTrace", "*.yaml *.yml")])
+            if not path:
+                return False
+        try:
+            self.config.save(path)
+        except (OSError, ConfigError) as exc:
+            self.report_error(f"configuration non enregistrée : {exc}")
+            return False
+        self._remember_config(self.config.path)
+        self.update_status()
+        self.status.set(f"Configuration enregistrée : {self.config.path}")
+        return True
+
+    def connect_config(self) -> None:
+        """Configuration › Connecter : la session décrite par la configuration (la session en
+        cours est d'abord déconnectée)."""
+        if self.config is None:
+            self.status.set("Pas de configuration : Configuration › Ouvrir… ou Nouvelle…")
+            return
+        try:
+            args = self.config.parse()
+        except ConfigError as exc:
+            self.report_error(str(exc))
+            return
+        if not args.elf:
+            self.report_error(f"configuration {self.config.name} : pas d'ELF (onglet Cible)")
+            return
+        self.start_session(args)
+
+    def start_session(self, args) -> None:
+        """Lance la session `args` ; la session en cours est d'abord déconnectée. Une
+        configuration fermée entre-temps annule ce lancement."""
+        from ..__main__ import start_gui_session
+        self._start_token += 1
+        token = self._start_token
+
+        def start(_r=None) -> None:
+            if token == self._start_token:
+                start_gui_session(self, args)
+        s = self.session
+        if s is not None and s.state != "disconnected":
+            self.status.set("Déconnexion de la session en cours…")
+            self.pump.background(s.disconnect, then=start)
+        else:
+            start()
+
+    def close_config(self) -> None:
+        """Configuration › Fermer : déconnecte, retire la configuration et son SVD, rouvre les
+        vues fermées par son OS."""
+        if not self._confirm_discard():
+            return
+        self._start_token += 1                  # un Connecter en attente n'aura pas lieu
+        s = self.session
+        if s is not None and s.state != "disconnected":
+            self.pump.background(s.disconnect)
+        self.config = None
+        if self.api:
+            self.api._config = None
+        self.unload_svd()
+        self.apply_os_views(None)
+        self.update_status()
+        self.status.set("Configuration fermée")
+
+    def _confirm_discard(self) -> bool:
+        """Configuration modifiée et pas enregistrée : la question est posée. False = annulé."""
+        cfg = self.config
+        if cfg is None or not cfg.modified:
+            return True
+        answer = self.ask_save("Configuration modifiée",
+                               f"Enregistrer la configuration « {cfg.name} » ?")
+        if answer is None:
+            return False
+        return self.save_config() if answer else True
+
+    def _remember_config(self, path: str) -> None:
+        path = os.path.abspath(path)
+        self.recent_configs = [path] + [p for p in self.recent_configs if p != path][:7]
+
+    def _fill_recent_configs(self) -> None:
+        self.recent_config_menu.delete(0, "end")
+        if not self.recent_configs:
+            self.recent_config_menu.add_command(label="(aucune)", state="disabled")
+        for path in self.recent_configs:
+            self.recent_config_menu.add_command(label=path, command=lambda p=path: self.open_config(p))
 
     # ================================================================== erreurs
     def safe(self, fn: Callable, *args: Any) -> Any:
@@ -846,6 +1073,7 @@ class App:
                     data = json.load(fh)
                 layout = list(data.get("views", DEFAULT_LAYOUT))
                 self.recent_elfs = [p for p in data.get("recent_elfs", []) if isinstance(p, str)]
+                self.recent_configs = [p for p in data.get("recent_configs", []) if isinstance(p, str)]
                 # vues apparues depuis la sauvegarde : ajoutées à leur place par défaut
                 known = set(data.get("known_kinds", [e.get("kind") for e in layout]))
                 layout += [e for e in DEFAULT_LAYOUT if e["kind"] not in known]
@@ -865,8 +1093,11 @@ class App:
     def save_layout(self) -> None:
         if not self.layout_file:
             return
+        # les vues fermées par l'OS de la configuration ne sont pas « connues » : un lancement
+        # sans configuration les rouvre à leur place par défaut
         data = {"geometry": self.root.geometry(), "views": self.views.layout(),
-                "known_kinds": sorted(view_classes()), "recent_elfs": self.recent_elfs}
+                "known_kinds": sorted(set(view_classes()) - self.os_hidden),
+                "recent_elfs": self.recent_elfs, "recent_configs": self.recent_configs}
         with open(self.layout_file, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2)
 

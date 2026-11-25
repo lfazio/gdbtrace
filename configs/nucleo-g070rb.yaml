@@ -1,0 +1,14 @@
+# Configuration GdbTrace : Nucleo-G070RB (STM32G070RB, Cortex-M0+), démo FreeRTOS à 16 MHz,
+# par OpenOCD. Ni ITM, ni SWO, ni ETM sur ce cœur : profil par DWT_PCSR. C'est la session du
+# test sur carte (tests/test_board_m0.py -k g070). Plusieurs sondes : STLINK_SERIAL=<numéro>.
+gdbtrace: 1
+nom: Nucleo-G070RB
+cible:
+  elf: ../examples/nucleo-g070/nucleo-g070.elf
+  svd: STM32G070.svd
+  cpu-hz: 16000000
+  programmer: true
+serveur:
+  type: openocd
+  openocd: [nucleo-g070rb.cfg]
+os: freertos

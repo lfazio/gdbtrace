@@ -714,6 +714,140 @@ def test_mtb_autohalt_views(m0_elf, tmp_path):
         close_app(a)
 
 
+def os_kinds(app) -> set[str]:
+    return {v.kind for v in app.views.views} & {"rtos", "tasktime", "threads"}
+
+
+def test_configuration_open_connect_close(rtos_elf, tmp_path):
+    """Configuration › Ouvrir… charge sans connecter (titre, SVD, vues selon l'OS) ;
+    Connecter lance la session décrite ; Fermer déconnecte et rouvre les vues de l'OS."""
+    import json
+
+    from conftest import ROOT
+    from gdbtrace.gui.app import App
+    from gdbtrace.views.rtos import RtosView
+    path = os.path.join(ROOT, "configs", "qemu-freertos.yaml")
+    a = App(layout_file=str(tmp_path / "layout.json"))
+    try:
+        assert a.open_config(path)
+        assert os_kinds(a) == {"rtos", "tasktime"}               # FreeRTOS : pas de Threads
+        assert "[FreeRTOS sous QEMU]" in a.root.title() and a.session is None
+        assert pump(a, lambda: a.device is not None and a.device.name == "MPS2_AN385")
+        a.connect_config()
+        assert pump(a, lambda: a.session is not None and a.session.state == "stopped"
+                    and a.current_frame is not None, timeout=30)
+        assert a.api.config["os"] == "freertos"
+        a.go()
+        pump(a, lambda: False, timeout=0.5)
+        a.halt()
+        rv = a.views.find(RtosView)
+        assert pump(a, lambda: a.session.state == "stopped" and len(rv.tasks.get_children()) >= 7,
+                    timeout=20)
+        first = a.session
+        a.connect_config()                                        # reconnexion : session remplacée
+        assert pump(a, lambda: a.session is not first and a.session.state == "stopped"
+                    and a.current_frame is not None, timeout=30)
+        assert first.state == "disconnected"
+        a.close_config()
+        assert pump(a, lambda: a.session.state == "disconnected", timeout=20)
+        # Fermer pendant qu'un Connecter attend la déconnexion : la session ne démarre pas
+        a.open_config(path)
+        a.connect_config()
+        assert pump(a, lambda: a.session.state == "stopped" and a.current_frame is not None, timeout=30)
+        second = a.session
+        a.connect_config()
+        a.close_config()
+        pump(a, lambda: False, timeout=3)
+        assert a.session is second and second.state == "disconnected"
+        assert a.config is None and a.device is None and a.api.config is None
+        assert os_kinds(a) == {"rtos", "tasktime", "threads"}
+        assert a.root.title() == "gdbtrace — freertos.elf"
+        a.save_layout()
+        data = json.load(open(tmp_path / "layout.json"))
+        assert data["recent_configs"][0] == path and {"rtos", "threads"} <= set(data["known_kinds"])
+    finally:
+        close_app(a)
+
+
+def test_configuration_os_views_and_layout(tmp_path):
+    """OS « aucun » : ni RTOS, ni Temps des tâches, ni Threads ; le layout enregistré ne les
+    oublie pas : relancé sans configuration, GdbTrace les rouvre."""
+    from conftest import ROOT
+    from gdbtrace.gui.app import App
+    layout = str(tmp_path / "layout.json")
+    a = App(layout_file=layout)
+    try:
+        assert a.open_config(os.path.join(ROOT, "configs", "qemu-demo.yaml"))
+        assert os_kinds(a) == set()
+        assert a.open_config(os.path.join(ROOT, "configs", "native-pthreads.yaml"))
+        assert os_kinds(a) == {"threads"}
+        a.apply_os_views("aucun")
+        a.save_layout()
+    finally:
+        close_app(a)
+    b = App(layout_file=layout)
+    try:
+        assert os_kinds(b) == {"rtos", "tasktime", "threads"} and b.config is None
+        assert len(b.recent_configs) == 2
+    finally:
+        close_app(b)
+
+
+def test_configuration_dialog(tmp_path):
+    """La boîte de dialogue : champs → configuration ; une erreur reste affichée sans fermer ;
+    OK applique ; configuration modifiée : la question d'enregistrement à la fermeture."""
+    import yaml
+
+    from gdbtrace.core.config import SessionConfig
+    from gdbtrace.gui.app import App
+    a = App(layout_file=str(tmp_path / "layout.json"))
+    try:
+        ed = a._edit(SessionConfig({}), "essai")
+        ed.vars[("", "nom")].set("Carte X")
+        ed.vars[("cible", "elf")].set(str(tmp_path / "fw.elf"))
+        ed.vars[("cible", "cpu-hz")].set("16000000")
+        ed.vars[("cible", "programmer")].set(True)
+        ed.server_var.set("stlink")
+        ed._show_server()
+        ed.vars[("serveur", "stlink-ap")].set("1")
+        ed.vars[("serveur", "ram-boot")].set(True)
+        ed.os_var.set("pthread")                                   # incohérent avec ST-LINK
+        assert not ed.ok() and "--os pthread" in ed.error_var.get()
+        ed.os_var.set("freertos")
+        ed.vars[("trace", "etm-port")].set("etr")                   # sans --etm-config : refusé
+        assert not ed.ok() and "--etm-port etr" in ed.error_var.get()
+        ed.vars[("trace", "etm-config")].set(True)
+        ed.texts[("trace", "var-trace")].insert("1.0", "produced:write\ncounter:rw+pc")
+        ed.vars[("trace", "swo-config")].set(True)
+        ed.texts[("couverture", "exporter")].insert("1.0", "cov.html")
+        assert ed.ok()
+        cfg = a.config
+        assert cfg.name == "Carte X" and cfg.modified and "[Carte X*]" in a.root.title()
+        assert cfg.data["serveur"] == {"type": "stlink", "stlink-ap": 1, "ram-boot": True}
+        assert cfg.data["trace"] == {"swo-config": True, "var-trace": ["produced:write", "counter:rw+pc"],
+                                     "etm-config": True, "etm-port": "etr"}
+        assert cfg.data["cible"] == {"elf": str(tmp_path / "fw.elf"), "cpu-hz": 16_000_000,
+                                     "programmer": True}
+        assert os_kinds(a) == {"rtos", "tasktime"} and a.cpu_hz == 16_000_000
+        # la boîte rouverte sur cette configuration retrouve chaque valeur
+        ed2 = a._edit(cfg.copy(), "relue")
+        assert ed2.get_config().data == cfg.data
+        ed2.cancel()
+        # fermeture : annuler garde tout ; non : ferme sans enregistrer ; oui : enregistre
+        a.ask_save = lambda title, msg: None
+        a.close_config()
+        assert a.config is cfg
+        cfg.path = str(tmp_path / "x.yaml")
+        a.ask_save = lambda title, msg: True
+        a.close_config()
+        assert a.config is None and (tmp_path / "x.yaml").exists()
+        saved = yaml.safe_load(open(tmp_path / "x.yaml"))
+        assert saved["cible"]["elf"] == "fw.elf" and saved["couverture"] == {"exporter": ["cov.html"]}
+        assert a.recent_configs[0] == str(tmp_path / "x.yaml")
+    finally:
+        close_app(a)
+
+
 def test_cortex_m0_trace_views_say_why(m0_elf, tmp_path):
     """Cortex-M0 sans MTB (QEMU microbit) : ni ITM, ni SWO, ni ETM. Chaque vue de trace le
     dit (cœur reconnu à la connexion), au lieu d'attendre une capture qui ne viendra pas."""
