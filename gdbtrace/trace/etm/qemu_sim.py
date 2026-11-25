@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 import tempfile
 
-from .cycles import annotate
+from .cycles import CORTEX_M3, annotate
 from .encoder import Etm3Encoder
 from .qemu_log import LOG_ITEMS, parse
 
@@ -32,6 +32,8 @@ class QemuEtmSim:
         self.truncated = False
         #: filtre de l'ETM (EtmFilter effectif) appliqué au chemin de QEMU, comme le matériel
         self.filter = None
+        #: modèle de cycles du cœur simulé (TraceManager le choisit d'après le CPUID)
+        self.model = CORTEX_M3
 
     def start_run(self) -> None:
         self.runs += 1
@@ -79,7 +81,7 @@ class QemuEtmSim:
         return list(parse(text.splitlines()))
 
     def _convert(self, events: list, end_pc: int | None) -> int:
-        events = annotate(events, self.image)        # cycles du modèle (QEMU n'en a pas)
+        events = annotate(events, self.image, self.model)   # cycles du modèle (QEMU n'en a pas)
         if self.filter is not None:                  # ce que l'ETM filtré aurait tracé
             events = self.filter.apply(events)
         if getattr(self.etm, "version", 3) == 4:

@@ -683,7 +683,7 @@ def test_mtb_simulated_views(mtb_app):
     tm = app.views.show(TimingView)
     tm.analyze()
     assert pump(app, lambda: tm.result is not None and not tm._busy, timeout=30)
-    assert "MTB simulée" in tm.info.cget("text") and "estimé" in tm.info.cget("text")
+    assert "estimé (modèle Cortex-M0, MTB simulée)" in tm.info.cget("text")   # QEMU microbit : un M0
 
 
 def test_mtb_autohalt_views(m0_elf, tmp_path):

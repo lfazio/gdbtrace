@@ -165,7 +165,7 @@ class TraceManager:
                                 autohalt=mtb_sim.autohalt)
         if mtb is not None and self.etm is not None:
             mtb.retarget(self.etm.image)
-            self.etm.timing_label = "estimé (modèle de cycles, MTB)"
+        self._apply_cycle_model()
         for fn in list(self.etm_listeners):
             fn()
         return msg
@@ -177,7 +177,27 @@ class TraceManager:
             self.core = (session.read_u32(CPUID) >> 4) & 0xFFF
         except Exception:  # noqa: BLE001 - cible qui ne répond pas : cœur inconnu
             self.core = None
+        self._apply_cycle_model()
         return self.core
+
+    def _apply_cycle_model(self) -> None:
+        """Modèle de cycles des durées estimées, d'après le cœur détecté : Cortex-M0 / M0+
+        pour un ARMv6-M (QEMU microbit : Cortex-M0), Cortex-M3/M4 sinon. Une vraie MTB est
+        celle d'un Cortex-M0+. Le libellé de la vue Timing nomme le modèle."""
+        from .etm.cycles import CORTEX_M0P, model_for
+        if self.mtb is not None:
+            self.mtb.model = model_for(self.core, CORTEX_M0P)
+        for sim in (self.etm_sim, self.mtb_sim):
+            if sim is not None:
+                sim.model = model_for(self.core)
+        if self.etm is None:
+            return
+        if self.mtb is not None:
+            self.etm.timing_label = f"estimé (modèle {self.mtb.model.name}, MTB)"
+        elif self.mtb_sim is not None:
+            self.etm.timing_label = f"estimé (modèle {self.mtb_sim.model.name}, MTB simulée)"
+        elif self.etm_sim is not None and self.etm_sim.model.name != "Cortex-M3/M4":
+            self.etm.timing_label = f"estimé (modèle {self.etm_sim.model.name}, ETM simulé)"
 
     @property
     def core_name(self) -> str | None:
@@ -250,6 +270,7 @@ class TraceManager:
             self.etm.simulated = True            # cycles du modèle : durées estimées
             self.etm_sim = QemuEtmSim(qmp, self.etm.image, self.etm)
             self.etm_sim.filter = self.etm_filter
+            self._apply_cycle_model()
 
     # ------------------------------------------------------------------ MTB (Cortex-M0+)
     def enable_mtb_sim(self, qmp, size: int = 1024, session=None, autohalt: bool = False) -> None:
@@ -259,7 +280,7 @@ class TraceManager:
         from .mtb_capture import QemuMtbSim
         if self.etm is not None:
             self.mtb_sim = QemuMtbSim(qmp, self.etm.image, self.etm, size, autohalt=autohalt)
-            self.etm.timing_label = "estimé (modèle de cycles, MTB simulée)"
+            self._apply_cycle_model()
             if session is not None:
                 self.mtb_sim.last_pc = session.register("pc")
                 if autohalt:
@@ -273,7 +294,7 @@ class TraceManager:
         if self.etm is None:
             raise RuntimeError("trace d'instructions indisponible (capstone requis)")
         self.mtb = MtbCapture(session, self.etm.image, base, buffer, size, autohalt=autohalt)
-        self.etm.timing_label = "estimé (modèle de cycles, MTB)"
+        self._apply_cycle_model()
         self.attach_session(session)
         if autohalt:
             session.set_stop_interceptor(self._intercept)

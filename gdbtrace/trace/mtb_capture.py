@@ -7,7 +7,7 @@ pas les cycles : les durées viennent du modèle de cycles (`etm/cycles.py`), «
 """
 from __future__ import annotations
 
-from .etm.cycles import annotate
+from .etm.cycles import CORTEX_M0P, annotate
 from .etm.qemu_sim import QemuEtmSim
 from .mtb import MtbDecoder, MtbState, configure, encode, last, read_packets, restart
 
@@ -42,6 +42,7 @@ class MtbCapture:
         self.wraps = 0
         self.autohalts = 0           # arrêts du cœur demandés par la MTB (tampon plein)
         self.halted = False          # le dernier arrêt venait de la MTB
+        self.model = CORTEX_M0P      # la MTB est celle d'un Cortex-M0+
 
     def retarget(self, image) -> None:
         self.decoder = MtbDecoder(image)
@@ -55,7 +56,7 @@ class MtbCapture:
         events = self.decoder.decode(packets, end_pc=pc, start_pc=None if st.wrapped else self.last_pc)
         restart(self.s.write_u32, self.base, st)
         self.last_pc, self.last_packets = pc, packets
-        return annotate(events, self.decoder.image)
+        return annotate(events, self.decoder.image, self.model)
 
     def peek(self) -> list:
         """Paquets du tampon, sans le remettre à zéro."""
@@ -148,7 +149,8 @@ class QemuMtbSim(QemuEtmSim):
         errors = self.decoder.stats.errors
         decoded = self.decoder.decode(kept, end_pc=end_pc,
                                       start_pc=None if wrapped else self.last_pc)
-        self.etm.feed_events(annotate(decoded, self.image), errors=self.decoder.stats.errors - errors)
+        self.etm.feed_events(annotate(decoded, self.image, self.model),
+                             errors=self.decoder.stats.errors - errors)
         self.last_pc, self.last_packets = end_pc, kept
         return 8 * len(kept)
 
