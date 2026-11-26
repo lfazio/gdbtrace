@@ -26,6 +26,7 @@ Interface en **tkinter**.
 | 16. Serveur MCP | Un agent (Claude Code…) pilote une session sans interface par le protocole MCP sur stdio : connexion avec les options de la ligne de commande, run-control, breakpoints, données (relues en marche), trace, couverture, timing, code Python avec l'objet `gdbtrace` | ✅ |
 | 17. Nucleo-F446RE (Cortex-M4, ETMv3) | ETMv3 matériel par SWO validé : décodage identique à OpenCSD sur une vraie capture, tours de boucle exacts sur 440 appels ; stall effectif (ETMFFLR), options refusées par l'ETM signalées (pas de cycle-accurate sur un ETM-M4), filtre par le DWT avec ses trous de latence comblés ; alignement TPIU retrouvé sans synchro ; test sur carte | ✅ |
 | 18. Mesure du temps sans trace | Chrono entre deux arrêts (SysTick et compte des ticks sur un Cortex-M0/M0+ et sous QEMU, `DWT_CYCCNT` au-delà) ; temps des tâches sans ITM par un journal en RAM (`gdbtrace_task_log`) lu en marche ; modèles de cycles Cortex-M0 et M0+ (manuels ARM) pour la MTB | 🚧 (à valider sur carte) |
+| 19. Débogage de tous les jours | Vue Faute (CFSR, HFSR, SFSR décodés, cadre empilé, ligne fautive ; cause déduite sur un Cortex-M0/M0+) et arrêt sur faute ; outils mémoire (enregistrer, charger, remplir, chercher, comparer) ; images HEX, S-record, binaire à programmer ; symboles d'autres ELF ; navigateur de symboles ; vue Terminal (semihosting, RTT) ; recherche et export CSV dans la trace | 🚧 (RTT en marche et vector catch à valider sur carte) |
 
 ## Installation
 
@@ -778,6 +779,25 @@ d'instructions décodées égal à celui exécuté par QEMU, couverture identiqu
 illimité. À confirmer sur carte : le signal d'arrêt que rapporte la sonde (SIGINT attendu
 avec OpenOCD, comme un Break).
 
+### Fautes, mémoire, symboles, terminal (jalon 19)
+
+- **Vue Faute** : arrêtée dans HardFault, BusFault…, la cible est analysée (cause en clair,
+  adresse fautive, instruction et ligne fautives, cadre empilé, EXC_RETURN). Un Cortex-M0/M0+
+  n'a pas de CFSR : la cause est déduite de l'instruction fautive. **Run › Arrêt sur faute**
+  (`--break-on-fault`) arrête la cible à l'entrée de toute faute (vector catch ; sous QEMU,
+  breakpoints sur les gestionnaires). Démo : `examples/faults`.
+- **Outils mémoire** (menu Outils de la vue Mémoire, `mem_save`, `mem_load`, `mem_fill`,
+  `mem_find`, `mem_compare`) : Data.SAVE en binaire, Intel HEX ou S-record, Data.LOAD,
+  Data.Set, Data.Find, Data.ComPare.
+- **Images** : `--program fw.hex` (ou `.srec`, `fw.bin@0x08000000`) programme une image, les
+  symboles restant ceux de l'ELF ; `--add-symbols boot.elf[@DÉCALAGE]` (Fichier › Ajouter des
+  symboles…) ajoute ceux d'un autre ELF, que voient aussi profil, trace et couverture.
+- **Vue Symboles** (sYmbol.Browse, `sym_list`) : fonctions et variables filtrées par nom.
+- **Vue Terminal** : semihosting servi par QEMU ou OpenOCD (`--semihosting`), RTT lu en marche
+  par le canal mémoire (`--rtt`, bloc d'exemple `examples/common/gdbtrace_rtt.c`).
+- **Trace** : Chercher (adresse, fonction, exception, texte), Tout trouver, Exporter… en CSV
+  (`trace_find`, `trace_export`).
+
 ### Console
 
 | Saisie | Effet |
@@ -809,7 +829,12 @@ avec OpenOCD, comme un Break).
 | `gdbtrace.etm_swo(cpu_hz=216_000_000, stall=True)` | ETM par SWO : TPIU formaté, capture servie par OpenOCD, ETM (comme `--etm-config --etm-port swo`) |
 | `gdbtrace.mtb(20)`, `gdbtrace.mtb_probe()` | paquets MTB bruts du dernier arrêt, symbolisés ; composants CoreSight de la cible |
 | `gdbtrace.mtb_stats()` | compteurs MTB : paquets, instructions, arrêts AUTOHALT, débordements, erreurs |
-| `gdbtrace.program("fw.elf")`, `gdbtrace.program()` | FLASH.ReProgram : écrit, vérifie et reset (ELF courant par défaut) |
+| `gdbtrace.program("fw.elf")`, `gdbtrace.program()`, `program("fw.hex")` | FLASH.ReProgram : écrit, vérifie et reset (ELF courant par défaut ; une image HEX, S-record, binaire garde les symboles) |
+| `gdbtrace.fault()`, `gdbtrace.break_on_fault()` | analyse de la faute en cours ; arrêt à l'entrée de toute faute |
+| `gdbtrace.mem_save("sensors", None, "s.hex")`, `mem_find(0x20000000, 0x1000, "abc")` | Data.SAVE, Data.Find (aussi `mem_load`, `mem_fill`, `mem_compare`) |
+| `gdbtrace.sym_list("sensor")`, `gdbtrace.add_symbols("boot.elf")` | sYmbol.List ; symboles d'un autre ELF |
+| `gdbtrace.terminal()`, `gdbtrace.terminal_send("go\n")` | texte du semihosting et du RTT ; envoi au programme |
+| `gdbtrace.trace_find("exception SysTick")`, `gdbtrace.trace_export("t.csv")` | Trace.FindAll ; listing en CSV |
 | `gdbtrace.timing(20, unit="us")`, `gdbtrace.timeline(30)` | durées par fonction / derniers appels (trace ETM) |
 | `!info breakpoints` | Commande CLI gdb brute |
 | `mon reset halt` | Commande `monitor` vers OpenOCD |

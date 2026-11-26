@@ -133,6 +133,8 @@ En ligne de commande, `--config FICHIER.yaml` lance la session de la configurati
 
 La vérification compare les sections par CRC (`compare-sections`). Avec ST-LINK_gdbserver, elle relit les sections et les compare à l'ELF : le CRC de ce serveur est faux sur un STM32N6.
 
+- **Image HEX, S-record ou binaire** : Programmer… et `--program` l'acceptent aussi ; un binaire brut demande son adresse (`fw.bin@0x08000000`). L'image est écrite par le serveur gdb comme un ELF, vérifiée par relecture, et les symboles restent ceux de l'ELF de la session.
+- **Fichier › Ajouter des symboles…** (`--add-symbols ELF[@DÉCALAGE]`) : les symboles d'un autre ELF (bootloader, image chargée à part) s'ajoutent à ceux de la session ; Source, Pile, profil, trace et couverture les connaissent. Ils restent après une programmation.
 - **Reprogrammer l'ELF courant** (`Ctrl+R`) : après une recompilation.
 - **ELF récents** : les 8 derniers.
 - Sans ELF sur la ligne de commande, l'interface démarre sans cible : choisir l'ELF lance la cible puis la programme.
@@ -140,7 +142,8 @@ La vérification compare les sections par CRC (`compare-sections`). Avec ST-LINK
 
 | Option | Effet |
 | --- | --- |
-| `--program [ELF]` | programme l'ELF à la connexion |
+| `--program [ELF]` | programme l'ELF à la connexion ; ou une image HEX, S-record, binaire (`fw.bin@0x08000000`) |
+| `--add-symbols ELF[@DÉCALAGE]` | symboles d'un autre ELF en plus ; répétable |
 | `--no-verify` | sans vérification |
 | `--go` | lance le programme ensuite |
 
@@ -155,7 +158,7 @@ La vérification compare les sections par CRC (`compare-sections`). Avec ST-LINK
 
 ## 3. L'interface
 
-La fenêtre principale range 19 vues en quatre zones à onglets, sous un menu, une barre d'outils et au-dessus d'une barre d'état. Chaque vue se détache ou se déplace, et la disposition est gardée d'une session à l'autre.
+La fenêtre principale range 22 vues en quatre zones à onglets, sous un menu, une barre d'outils et au-dessus d'une barre d'état. Chaque vue se détache ou se déplace, et la disposition est gardée d'une session à l'autre.
 
 ### Run-control
 
@@ -172,9 +175,9 @@ La fenêtre principale range 19 vues en quatre zones à onglets, sous un menu, u
 
 ### Menus
 
-- **Fichier** : Programmer un ELF… (`Ctrl+O`), Reprogrammer l'ELF courant (`Ctrl+R`), ELF récents, Exécuter un script…, Charger un SVD…, Enregistrer le layout, Déconnecter, Quitter.
+- **Fichier** : Programmer un ELF… (`Ctrl+O`, aussi une image HEX, S-record ou binaire), Reprogrammer l'ELF courant (`Ctrl+R`), ELF récents, Exécuter un script…, Charger un SVD…, Ajouter des symboles…, Enregistrer le layout, Déconnecter, Quitter.
 - **Configuration** : Nouvelle…, Ouvrir…, Récentes, Modifier…, Enregistrer (`Ctrl+S`), Enregistrer sous…, Connecter, Fermer (section 2).
-- **Run** : les commandes ci-dessus, Go.Till, Step.Till / Step.Change, Remettre le chrono à zéro.
+- **Run** : les commandes ci-dessus, Go.Till, Step.Till / Step.Change, Arrêt sur faute, Remettre le chrono à zéro.
 - **Trace** : ETM par SWO…, ETM par l'ETR (RAM, STM32N6), Filtre de trace ETM…, Arrêter la capture.
 - **Vues** : ouvre n'importe quelle vue dans une nouvelle fenêtre.
 
@@ -182,14 +185,15 @@ La fenêtre principale range 19 vues en quatre zones à onglets, sous un menu, u
 
 | Zone | Vues |
 | --- | --- |
-| Gauche | Fichiers |
+| Gauche | Fichiers, Symboles |
 | Code | Source, Désassemblage, Trace, Timing, Couverture |
-| Données | Registres, Watch, Périphériques, RTOS, Threads, Pile, Breakpoints |
-| Bas | Console, Mémoire, ITM, Profil, Variables tracées, Temps des tâches |
+| Données | Registres, Watch, Périphériques, RTOS, Threads, Pile, Breakpoints, Faute |
+| Bas | Console, Mémoire, Terminal, ITM, Profil, Variables tracées, Temps des tâches |
 
 Chaque zone est un jeu d'onglets ; le menu Vues ouvre n'importe quelle vue dans une fenêtre à part.
 
 - **Fichiers** : les sources du programme par dossier, dépliées sur leurs fonctions ; le fichier où s'est arrêté le PC est en gras. Double-clic : la source s'ouvre.
+- **Symboles** (sYmbol.Browse) : les fonctions et variables globales de l'ELF (et des ELF ajoutés), filtrées par nom (sous-chaîne, ou motif avec `*` et `?`), avec adresse, taille, fichier et ligne. Double-clic : la source d'une fonction, la mémoire d'une variable ; clic droit : Ajouter au Watch, Désassembler, Afficher en mémoire, Type (`ptype`, cible arrêtée).
 - **Source** et **Désassemblage** suivent le PC. Le désassemblage intercale chaque ligne C avant ses instructions (source mêlée). Un double-clic dans la marge pose ou retire un breakpoint.
 - Les autres vues sont décrites dans les sections 4 à 7.
 
@@ -200,7 +204,7 @@ Elle montre de gauche à droite :
 - l'état de la cible : ARRÊTÉ, RUNNING, TERMINÉ (programme natif fini) ou DÉCONNECTÉ ;
 - le voyant LIVE, allumé quand des vues se rafraîchissent cible en marche ;
 - la tâche RTOS courante ;
-- le dernier message : raison de l'arrêt, bilan d'un Step.Change, erreur.
+- le dernier message : raison de l'arrêt, bilan d'un Step.Change, faute en cours (« Faute : BusFault : … »), erreur.
 
 ### Disposition
 
@@ -278,6 +282,20 @@ Cible arrêtée, toutes les données passent par gdb. Cible en marche, GdbTrace 
 - **Registres** : les registres du cœur en hexadécimal et en décimal, avec le décodage de xPSR ; tous les autres sur demande. Les registres modifiés depuis l'arrêt précédent sont en rouge.
 - **Mémoire** : un dump hexadécimal et ASCII à partir d'une adresse ou d'un symbole. Elle part de 0x20000000 (la SRAM d'un Cortex-M3/M4/M7). Pour un programme natif, ou un firmware dont la RAM est ailleurs (STM32N6), elle part de sa première variable globale.
 
+### Outils mémoire
+
+Le menu **Outils** de la vue Mémoire travaille sur une plage « adresse taille » (une variable seule : sa taille) :
+
+| Outil | Effet | Cible |
+| --- | --- | --- |
+| Enregistrer la plage… (Data.SAVE) | écrit la plage en binaire (`.bin`), Intel HEX (`.hex`) ou S-record (`.srec`) | arrêtée, ou en marche par le canal mémoire |
+| Charger une image en RAM… (Data.LOAD) | écrit une image HEX, S-record, ELF, ou un binaire à l'adresse demandée | arrêtée |
+| Remplir la plage… (Data.Set) | motif répété : octets (`de ad be ef`), nombre (`0x1234`, petit-boutiste), texte (`"abc"`) | arrêtée |
+| Chercher… (Data.Find) | les adresses du motif ; la vue saute à la première | arrêtée, ou en marche |
+| Comparer à une image… (Data.ComPare) | octets différents entre une image et la mémoire ; la vue saute au premier | arrêtée, ou en marche |
+
+La flash ne s'écrit pas ainsi : elle se programme (section 2). Dans un script : `mem_save`, `mem_load`, `mem_fill`, `mem_find`, `mem_compare`.
+
 ### Périphériques
 
 La vue **Périphériques** décode les registres et leurs champs, avec leurs énumérations, d'après un fichier CMSIS-SVD (`--svd`, ou Fichier › Charger un SVD…). Le fichier est lu en tâche de fond : celui d'un STM32N6 fait 22 Mo et demande environ une seconde, pendant laquelle l'interface reste utilisable.
@@ -301,6 +319,21 @@ Le voyant **LIVE** est vert quand le canal est disponible. Chaque vue a une case
 - **Mémoire** suit la cible ; les octets modifiés sont en rouge.
 - **Watch** décode en marche les globales et les statiques : entiers, `char`, `bool`, flottants, pointeurs, énumérations. Les locales, les champs de bits et les objets de plus de 4 Kio restent grisés, avec leur valeur du dernier arrêt.
 - **Périphériques** et **RTOS** se rafraîchissent aussi en marche.
+
+### Fautes (vue Faute)
+
+Arrêtée dans un gestionnaire de faute (HardFault, MemManage, BusFault, UsageFault, SecureFault), la cible est analysée : la barre d'état et la console disent la cause, et la vue **Faute** passe au premier plan.
+
+- **Causes en clair**, d'après le CFSR, le HFSR et, en ARMv8-M, le SFSR. Pour une faute montée en HardFault (`FORCED`), la cause d'origine est donnée : « HardFault (escaladée) : instruction indéfinie ».
+- **Adresse fautive** (BFAR, MMFAR, SFAR), quand le cœur l'a enregistrée.
+- **Instruction fautive**, sa fonction et sa ligne (le PC empilé) ; **Aller à la ligne fautive** ouvre la source. Pour un saut vers une adresse paire, la vue dit d'où venait l'appel.
+- **Cadre empilé** (r0-r3, r12, lr, pc, xPSR) et EXC_RETURN : mode, pile (MSP ou PSP), contexte flottant. La vue Pile déroule aussi à travers l'exception (« signal handler called »).
+
+Un Cortex-M0 ou M0+ n'a pas de registre de cause : tout monte en HardFault. La cause est alors **déduite** de l'instruction fautive et du cadre : bit Thumb à 0, instruction indéfinie, accès non aligné ou à une adresse sans mémoire (adresse calculée avec les registres de l'instant).
+
+**Arrêt sur faute** (Run › Arrêt sur faute, case de la vue, `--break-on-fault`) : la cible s'arrête à l'entrée de toute faute, avant que le gestionnaire ne touche à rien. GdbTrace se sert du vector catch du cœur (DEMCR, ou `cortex_m vector_catch` d'OpenOCD) ; QEMU ne l'émule pas, et GdbTrace pose alors des breakpoints sur les gestionnaires de la table des vecteurs.
+
+Démo : `examples/faults` (`make -C examples/faults`), un Cortex-M3 sous `mps2-an385` et un Cortex-M0 sous `microbit` ; écrire 1 à 6 dans `fault_kind` déclenche une faute différente. Dans un script : `gdbtrace.fault()`.
 
 ## 6. RTOS et threads
 
@@ -395,6 +428,20 @@ La capture vient de trois sources :
 
 La vue **ITM** montre le texte UTF-8 de chaque port (port 0 par défaut), les autres ports en hexadécimal, avec filtre de ports et horodatage. Quand le décodage prend du retard sur le flux, le retard et les octets perdus sont affichés. Un octet perdu sur le fil compte comme une erreur dans le bilan de la capture, sans décaler les ports.
 
+### Terminal (semihosting, RTT)
+
+La vue **Terminal** montre ce que le programme écrit, et une ligne lui envoie du texte.
+
+| Source | Option | Serveurs | Comment |
+| --- | --- | --- | --- |
+| Semihosting (BKPT 0xAB : `SYS_WRITE0`, `SYS_WRITE`, `SYS_READC`) | `--semihosting` | QEMU, OpenOCD | le serveur traite les appels et sert les entrées-sorties sur une socket |
+| RTT (bloc de contrôle « SEGGER RTT » en RAM) | `--rtt [ADRESSE]` (défaut : le symbole `_SEGGER_RTT`) | tous | lu en marche par le canal mémoire (OpenOCD, relais ST-LINK), et par gdb à chaque arrêt |
+
+- Le RTT lit le canal montant 0 et écrit le descendant 0 (la ligne d'envoi). Il faut écrire en marche pour avancer l'index de lecture : QEMU ne le sait pas par QMP, son RTT est donc lu aux arrêts seulement.
+- Un programme qui appelle le semihosting sans débogueur qui le traite s'arrête sur le BKPT : ne l'appeler que si le serveur le sert.
+- `examples/common/gdbtrace_rtt.c` est un bloc RTT minimal (1 Ko montant, 16 octets descendant) ; la démo FreeRTOS écrit par lui les lignes « consumer: commande N ». `examples/terminal` (QEMU) écrit par les deux, et renvoie en écho ce qu'il reçoit par le RTT.
+- Dans un script : `gdbtrace.terminal()` (texte arrivé depuis l'appel précédent), `gdbtrace.terminal_send("texte")`.
+
 ### Profil
 
 La vue **Profil** donne le pourcentage de temps CPU par fonction, par ligne (double-clic : la source) et par tâche FreeRTOS, sans instrumenter le code. « Auto » prend les échantillons de PC du SWO si une capture tourne, sinon la lecture du PC en marche (`DWT_PCSR` par OpenOCD, ou le PC de QEMU). L'onglet **Exceptions** compte les entrées dans chaque exception et, avec l'horodatage ITM, le temps passé dedans.
@@ -427,6 +474,8 @@ La vue **Trace** montre :
 
 - **Listing** : les N dernières instructions avant l'arrêt, avec fonction, désassemblage, ligne source, exceptions et retours ;
 - **Appels** : appels, retours et exceptions, indentés par profondeur.
+
+**Chercher** (Trace.Find) dans le listing : une adresse (`0x8000120`), un nom de fonction (chaque entrée dans la fonction), `exception` ou `exception SysTick` (ou son numéro), sinon du texte (instruction, fonction, fichier). ◀ et ▶ passent d'une occurrence à l'autre, **Tout trouver** les surligne toutes. **Exporter…** écrit le listing en CSV (index, type, adresse, fonction, instruction, fichier, ligne). Dans un script : `trace_find`, `trace_export`.
 
 En capture continue, Trace et Timing se redessinent à l'arrêt, et la Couverture ne met à jour que son résumé en marche : l'interface reste fluide.
 
@@ -885,6 +934,14 @@ inconnue, cible en marche) est un résultat d'erreur ; la session continue.
 | `--etm-filter PLAGE` | ne tracer que cette fonction, ce fichier ou ces adresses ; répétable |
 | `--etm-start LIEU`, `--etm-stop LIEU` | démarrer, arrêter la trace sur un lieu |
 
+### Fautes et terminal
+
+| Option | Effet |
+| --- | --- |
+| `--break-on-fault` | arrêter la cible à l'entrée de toute faute (vector catch, sinon breakpoints sur les gestionnaires) |
+| `--semihosting` | semihosting servi par QEMU ou OpenOCD, dans la vue Terminal |
+| `--rtt [ADRESSE]` | RTT : bloc de contrôle à cette adresse (défaut : `_SEGGER_RTT`), dans la vue Terminal |
+
 ### MTB et couverture
 
 | Option | Effet |
@@ -929,7 +986,7 @@ trace:
 
 | Section | Clés | Équivalent en ligne de commande |
 | --- | --- | --- |
-| `cible` | `elf`, `svd`, `cpu-hz`, `programmer`, `verifier`, `go` | l'ELF, `--svd`, `--cpu-hz`, `--program`, `--no-verify` (si `false`), `--go` |
+| `cible` | `elf`, `svd`, `cpu-hz`, `programmer` (`true`, ou le chemin d'une image HEX, S-record, binaire), `verifier`, `go`, `break-on-fault`, `add-symbols` (liste) | l'ELF, `--svd`, `--cpu-hz`, `--program`, `--no-verify` (si `false`), `--go`, `--break-on-fault`, `--add-symbols` |
 | `serveur` | `type` : `qemu`, `openocd`, `stlink`, `gdb`, `remote` | `--qemu`, `--openocd`, `--stlink`, `--native`, `--remote` |
 | `serveur`, QEMU | `machine` | `--machine` |
 | `serveur`, OpenOCD | `openocd` (liste de `.cfg`), `rtos` | `--openocd CFG…`, `--rtos` |
@@ -940,7 +997,7 @@ trace:
 | `os` | `aucun`, `freertos`, `pthread` | `--os` |
 | `script` | chemin | `--script` |
 | `couverture` | `fusionner`, `exporter` (listes) | `--coverage-merge`, `--coverage` |
-| `trace` | toute option de trace : `swo-config`, `swo-hz`, `etm-config`, `etm-port`, `var-trace`, `etm-filter`, `etm-sim`, `mtb`… | la même option |
+| `trace` | toute option de trace et du terminal : `swo-config`, `swo-hz`, `etm-config`, `etm-port`, `var-trace`, `etm-filter`, `etm-sim`, `mtb`, `semihosting`, `rtt`… | la même option |
 
 - Une option sans valeur s'écrit `true` ; une option répétable s'écrit en liste.
 - Un chemin relatif l'est au fichier YAML. Exceptions : un fichier `.cfg` qui n'est pas à côté du YAML est cherché par OpenOCD dans son dossier de scripts (`board/st_nucleo_f4.cfg`), et un SVD donné par son seul nom est cherché dans STM32CubeIDE (`GDBTRACE_SVD_DIR` pour un autre dossier).
@@ -988,7 +1045,9 @@ Quand une capture ne démarre pas, GdbTrace le dit : le journal de mise en route
   - Nucleo-N657X0-Q (Cortex-M55, ST-LINK_gdbserver) : vues en marche par le relais, image en RAM, ITM par le SWO de la sonde, ETMv4.5 par l'ETR (boucles à faible coût comprises), trace de données du DWT de l'ARMv8-M, vues RTOS et temps des tâches ;
   - Nucleo-F446RE (Cortex-M4F, OpenOCD) : ETMv3 et ITM par SWO, filtres de l'ETMv3 (plage et start/stop), trace de données du DWT, profil par SWO, vues RTOS et temps des tâches ;
   - Nucleo-F072RB (Cortex-M0, OpenOCD) : run-control (breakpoints à compteur et à message, Go.Till par le DWT), vues en marche, RTOS (en marche : état de chaque tâche lu dans son TCB), profil par `DWT_PCSR`.
-- **Pas encore validé sur carte** : Nucleo-G070RB (Cortex-M0+, OpenOCD ; test prêt : `tests/test_board_m0.py -k g070`), port de trace parallèle, MTB d'un vrai M0+, `--rtos` d'OpenOCD ; le chrono (SysTick gelé pendant l'arrêt sur un Cortex-M0, `DWT_CYCCNT` au-delà) et le journal des tâches en RAM lu en marche (tests sur carte prêts).
+- **Pas encore validé sur carte** : Nucleo-G070RB (Cortex-M0+, OpenOCD ; test prêt : `tests/test_board_m0.py -k g070`), port de trace parallèle, MTB d'un vrai M0+, `--rtos` d'OpenOCD ; le chrono (SysTick gelé pendant l'arrêt sur un Cortex-M0, `DWT_CYCCNT` au-delà), le journal des tâches en RAM et le RTT lus en marche (tests sur carte prêts) ; le vector catch de l'arrêt sur faute et le semihosting d'OpenOCD.
+- **Fautes** : un Cortex-M0/M0+ n'enregistre pas la cause, elle est déduite de l'instruction (une faute dans le gestionnaire lui-même, ou sur un cadre corrompu, peut tromper la déduction). Le cadre empilé vient du déroulement de gdb ; sans informations de débogage du gestionnaire, il est retrouvé par lr et MSP/PSP, au prix d'une base approximative.
+- **Terminal** : semihosting servi par QEMU et OpenOCD seulement (pas ST-LINK_gdbserver) ; RTT sous QEMU lu aux arrêts seulement ; un tampon RTT montant plein perd la suite (le bloc d'exemple n'attend jamais le débogueur).
 - **Chrono** : sans compteur de ticks connu (`xTickCount`, `uwTick`), la durée n'est connue qu'à une période de SysTick près. Lire `SYST_CSR` peut effacer son drapeau COUNTFLAG pour le logiciel (selon la sonde) : un firmware qui l'attend en boucle peut en manquer un.
 - **Modèles de cycles M0/M0+** : d'après les tables des manuels de référence ARM (mémoire sans attente, multiplieur rapide) ; la sortie d'exception et l'enchaînement, non documentés, sont estimés.
 - **Cortex-M0/M0+** : ni ITM, ni SWO, ni ETM. Sur les STM32G0 et STM32F0, 4 breakpoints matériels et 2 watchpoints, que Go.Till partage avec les watchpoints posés.

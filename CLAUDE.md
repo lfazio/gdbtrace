@@ -139,6 +139,22 @@ mais avec son firmware de test.
   Pthread : threads) et `os_hidden` retiré de `known_kinds` du layout ; un Connecter en
   attente est annulé par Fermer (`_start_token`). Boîte de dialogue : `gui/config_dialog.py`
   (`ConfigEditor`, non bloquante, `on_ok`).
+- Fautes (`core/fault.py`) : cadre empilé et EXC_RETURN pris au pseudo-cadre « <signal handler
+  called> » de gdb (`$sp` = base, `$pc` = EXC_RETURN, MI `--thread --frame`) ; ARMv6-M et
+  ARMv8-M Baseline (CPUID) : jamais lire CFSR/HFSR (zone réservée), cause déduite de
+  l'instruction. `FaultCatch` : vector catch (DEMCR, `cortex_m vector_catch` d'OpenOCD), sinon
+  breakpoints sur les gestionnaires de la table des vecteurs (QEMU : DEMCR lu à 0). Vue Faute,
+  `App.report_fault` à chaque arrêt (une lecture d'ICSR hors faute).
+- Images et symboles ajoutés : `core/memtools.py` (HEX, S-record, binaire `f.bin@adr`, ELF par
+  ses segments, outils Data.*) ; `Session.program` d'une image = `load` gdb d'un Intel HEX
+  temporaire, vérifié par relecture, symboles inchangés ; `Session.add_symbols`
+  (`extra_symbols`, rejoués après `-file-exec-and-symbols`) ; `SymbolTable(elf, extra)` et
+  `CodeImage(elf, extra)` réunissent les ELF ajoutés (profil, trace, couverture).
+- Terminal (`core/terminal.py`, `ScriptAPI.term`) : semihosting servi par le serveur sur une
+  socket (`TcpSource` : QEMU `-semihosting-config target=native,chardev`, OpenOCD
+  `arm semihosting_redirect tcp`) ; RTT (`RttChannel`) lu par le canal mémoire en marche s'il
+  écrit (`LiveMemory.can_write` : OpenOCD TCL, relais ST-LINK ; pas QMP), par gdb à l'arrêt.
+  `setup_terminal` (`__main__.py`), commun aux deux chemins comme `setup_trace`.
 - Programme natif PIE : les adresses de `SymbolTable` (ELF) ne sont pas celles de l'exécution
   (relocation) ; demander l'adresse à gdb (`address_of_expr`). La trace ETM et le Cortex-M
   (SVD, RTOS, reset par vecteurs) ne s'appliquent pas (`App.native`).
@@ -221,7 +237,9 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
   paraît inconditionnel ; `Instr.op` = mnémonique sans condition) → `trace.py` (historique, couverture,
   appels). Les événements `Step` / `ExcEntry` / `ExcReturn` portent des cycles mesurés
   (cycle-accurate) ou estimés par `cycles.py` ; `trace/timing.py` en tire le temps brut/net
-  par fonction et par exception (vue Timing).
+  par fonction et par exception (vue Timing). `listing.py` : les lignes de Trace.List
+  (`TraceRow`), communes à la vue, à `trace_list`/`trace_find`/`trace_export` et au MCP ;
+  `find_rows` (adresse, entrées de fonction, exceptions, texte), export CSV.
 - ETMv4 (Cortex-M7, Cortex-M55) : `etm4.py` (paquets) → `flow4.py` (file de spéculation,
   parcours du code entre points de passage) ; `encoder4.py` pour les tests et l'ETM simulé.
   MAXSPEC (TRCIDR8 : M7 1, M55 0) et COMMOPT (TRCIDR0) passent au décodeur
@@ -317,6 +335,9 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
 
 ## Limites connues (ne pas « corriger » côté gdbtrace)
 
+- QEMU n'émule pas le vector catch (DEMCR lu à 0 : arrêt sur faute par breakpoints) et QMP
+  n'écrit pas en mémoire (RTT lu aux arrêts). Démos : `Reset_Handler` remet la `.bss` à zéro,
+  une variable de commande (`fault_kind`, `semihosting_on`) s'écrit après l'arrivée dans `main`.
 - Le gdbstub de QEMU 8.2 ignore les écritures du débogueur dans les périphériques (RAM/ROM
   seulement ; QEMU 11.1 les applique) ; QEMU n'émule ni ITM ni SWO.
 - QEMU (8.2) sous charge : environ un pas à pas sur quelques centaines revient sans avoir

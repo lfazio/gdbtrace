@@ -441,6 +441,32 @@ print(hexdump(gdbtrace.read(adr, 24), adr))
 gdbtrace.var_watch("sensors", "hex")                    # GUI : vue Watch ; --batch : valeur affichée
 ```
 
+### Outils mémoire
+
+Une plage se donne par une adresse et une taille, ou par le nom d'un objet (sa taille par
+défaut) ; les images se lisent et s'écrivent en binaire (`.bin`), Intel HEX (`.hex`) ou
+S-record (`.srec`), d'après l'extension.
+
+| Appel | Effet |
+|---|---|
+| `mem_save(adr, n, fichier)` | Data.SAVE : la plage dans un fichier (aussi cible en marche) |
+| `mem_load(fichier, adr=None)` | Data.LOAD : une image en RAM (HEX, S-record et ELF portent leurs adresses ; un binaire prend `adr`) |
+| `mem_fill(adr, n, motif)` | Data.Set : motif répété (entier petit-boutiste, `bytes`, texte) |
+| `mem_find(adr, n, motif, limit=100, align=1)` | Data.Find : adresses du motif (aussi cible en marche) |
+| `mem_compare(fichier, adr=None)` | Data.ComPare : différences entre une image et la mémoire |
+
+<!-- test -->
+```python
+gdbtrace.go(until="animate"); gdbtrace.wait(5)
+gdbtrace.mem_save("sensors", None, "sensors.hex")       # 48 octets, Intel HEX
+gdbtrace.mem_fill("sensors", None, 0)                   # remis à zéro
+assert not gdbtrace.mem_compare("sensors.hex").same
+gdbtrace.mem_load("sensors.hex")                        # rechargés
+assert gdbtrace.mem_compare("sensors.hex").same
+gdbtrace.w32(0x20001000, 0xC0FFEE)
+assert gdbtrace.mem_find(0x20000000, 0x2000, 0xC0FFEE) == [0x20001000]
+```
+
 ## 7. Cible en marche
 
 En mode all-stop, gdb ne lit rien pendant que la cible tourne. GdbTrace ouvre donc un
@@ -482,11 +508,53 @@ L'appel renvoie un `ProgramResult` : `size` (octets écrits), `seconds`, `verifi
 (`True`, `False` ou `None` si non vérifié), `mismatched` (sections différentes) et
 `summary()`.
 
+Une image **HEX, S-record ou binaire** (`"fw.bin@0x08000000"`) se programme de même : elle
+est vérifiée par relecture, et les symboles restent ceux de l'ELF de la session.
+`add_symbols(elf, offset=0)` ajoute les symboles d'un autre ELF (bootloader, image chargée à
+part) ; le profil, la trace et la couverture les connaissent aussi.
+
 <!-- test -->
 ```python
 res = gdbtrace.program()                        # affiche « demo.elf programmé : … vérifié »
 assert res.verified and not res.mismatched
 print(f"{res.size} octets en {res.seconds:.1f} s, pc = {gdbtrace.reg('pc'):#x}")
+```
+
+### Fautes
+
+`fault()` analyse la faute en cours (cible arrêtée dans un gestionnaire) et rend un `dict` :
+`exception`, `en_faute`, `causes` (bits du CFSR/HFSR/SFSR et leur sens ; sur un Cortex-M0/M0+,
+causes déduites, `deduit` vrai), `adresse` fautive, `pc`, `fonction`, `fichier`, `ligne`,
+`instruction`, `cadre` (r0-r3, r12, lr, pc, xpsr, EXC_RETURN). `break_on_fault()` arrête la
+cible à l'entrée de toute faute (`--break-on-fault` sur la ligne de commande).
+
+<!-- test: examples/faults/faults-m3.elf -->
+```python
+gdbtrace.break_on_fault()                       # QEMU : breakpoints sur les gestionnaires
+gdbtrace.go(until="main"); gdbtrace.wait()      # .bss remise à zéro avant main
+gdbtrace.set("fault_kind", 1)                   # lecture à une adresse sans mémoire
+gdbtrace.go(); gdbtrace.wait()
+r = gdbtrace.fault()                            # « BusFault : erreur de bus précise … »
+assert r["exception"] == "BusFault" and r["adresse"] == 0x30000000 and r["fonction"] == "read_at"
+```
+
+### Terminal
+
+Avec `--semihosting` ou `--rtt`, `terminal()` rend le texte écrit par le programme depuis
+l'appel précédent (le RTT est relu d'abord), et `terminal_send(texte)` lui envoie du texte
+(canal descendant du RTT, ou entrée du semihosting). `term.text("rtt")` garde tout le texte
+d'une source.
+
+<!-- test: examples/terminal/terminal.elf --rtt -->
+```python
+import time
+gdbtrace.go(until="main"); gdbtrace.wait()
+gdbtrace.go(); time.sleep(0.5); gdbtrace.halt(); gdbtrace.wait()
+assert "ligne 0" in gdbtrace.terminal()         # RTT, lu par gdb à l'arrêt sous QEMU
+gdbtrace.terminal_send("?")
+gdbtrace.go(); time.sleep(0.3); gdbtrace.halt(); gdbtrace.wait()
+gdbtrace.terminal()
+assert "écho : ?" in gdbtrace.term.text("rtt")
 ```
 
 ## 9. Périphériques et RTOS
@@ -886,6 +954,9 @@ gdbtrace.cov.export("couverture.html")
 | `var_watch(expr, fmt="natural")` | vue Watch (GUI) ; sans GUI, affiche la valeur |
 | `reg(nom)`, `addr(symbole)` | registre, adresse (entiers) |
 | `read(adr, n)`, `write(adr, octets)`, `u32(adr)`, `w32(adr, v)` | mémoire |
+| `mem_save`, `mem_load`, `mem_fill`, `mem_find`, `mem_compare` | outils mémoire (Data.SAVE, LOAD, Set, Find, ComPare) |
+| `fault()`, `break_on_fault(enable=True)`, `fault_catch_method()` | analyse de faute ; arrêt sur faute |
+| `sym_list(motif="", kind="tout", show=50)` | sYmbol.List : fonctions, variables |
 | `d(adr ou symbole, n=64)`, `r()`, `bt()` | dump, registres, pile (à l'écran) |
 
 ### Cible en marche, périphériques, RTOS
@@ -904,7 +975,8 @@ gdbtrace.cov.export("couverture.html")
 
 | Appel | Rôle |
 |---|---|
-| `program(elf=None, verify=True)` | programme, vérifie, reset → `ProgramResult` |
+| `program(elf=None, verify=True)` | programme (ELF, ou image HEX, S-record, `fw.bin@adresse`), vérifie, reset → `ProgramResult` |
+| `add_symbols(elf, offset=0)` | symboles d'un autre ELF en plus |
 
 ### Trace et mesures
 
@@ -919,6 +991,7 @@ gdbtrace.cov.export("couverture.html")
 | `etm_config(**options)` | ETM et TPIU parallèle |
 | `etm_filter(*plages, start=(), stop=())` | filtre de la trace ETM ; sans argument : tout le code |
 | `trace_list(n=30)`, `calls(n=40)` | Trace.List, flot d'appels |
+| `trace_find(requête, n=50000, show=20)`, `trace_export(fichier, n=100000)` | Trace.FindAll (adresse, fonction, « exception SysTick », texte) ; listing en CSV |
 | `timing(top=20, unit="us", n=None, kind=None)`, `timeline(n=30, unit="us")` | durées |
 | `cov.summary()`, `cov.list(top, file=None)`, `cov.files()` | couverture |
 | `cov.save(f)`, `cov.load(f, merge=True)`, `cov.export(f)`, `cov.reset()` | campagnes, rapports |
@@ -930,6 +1003,7 @@ gdbtrace.cov.export("couverture.html")
 | Appel | Rôle |
 |---|---|
 | `gdb(cli)`, `monitor(cmd)` | commandes gdb et `monitor` brutes |
+| `terminal()`, `terminal_send(texte)`, `term` | texte du semihosting et du RTT, envoi ; l'objet `Terminal` |
 | `run_script(chemin)` | exécute un autre script |
 | `symbols` | table des symboles de l'ELF (pyelftools), chargée à la demande |
 | `config` | configuration de la session (dict, copie en lecture seule), ou `None` |
