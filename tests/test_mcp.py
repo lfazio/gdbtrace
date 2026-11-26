@@ -1,14 +1,18 @@
 """Serveur MCP (gdbtrace/mcp.py) : protocole JSON-RPC sur stdio, outils sur QEMU et en natif."""
+import csv
+import inspect
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 
 import pytest
-from conftest import ROOT, needs_qemu
+from conftest import ROOT, SVD, needs_qemu
 
+from gdbtrace import mcp
 from gdbtrace.mcp import TOOLS, GdbTraceMcp
 
 
@@ -38,11 +42,24 @@ def test_protocol_without_session():
         sch = t["inputSchema"]
         assert sch["type"] == "object" and t["description"]
         assert set(sch.get("required", [])) <= set(sch["properties"])
-        assert hasattr(srv, f"tool_{t['name']}")
+        fn = getattr(srv, f"tool_{t['name']}")
+        assert set(inspect.signature(fn).parameters) == set(sch["properties"]), t["name"]
+        ann = t["annotations"]                                 # titre et annotations MCP
+        assert t["title"] and ann["title"] == t["title"] and ann["openWorldHint"] is False
+        assert ann["readOnlyHint"] or "destructiveHint" in ann, t["name"]
+    ann = {t["name"]: t["annotations"] for t in tools}
+    assert all(ann[n]["readOnlyHint"] for n in ("status", "evaluate", "memory", "disassemble",
+                                                  "trace_list", "memory_find", "check"))
+    assert all(ann[n]["destructiveHint"] for n in ("memory_write", "memory_fill", "program",
+                                                     "python", "gdb"))
+    assert not ann["go"]["readOnlyHint"] and not ann["go"]["destructiveHint"]
 
     def call(name, **args):
         return _handle(srv, "tools/call", {"name": name, "arguments": args})["result"]
 
+    check = call("check")                                     # bilan : sans session
+    assert not check["isError"] and "répertoire du projet" in check["content"][0]["text"]
+    assert "gdb-multiarch" in check["content"][0]["text"]
     assert "pas de session" in call("status")["content"][0]["text"]
     res = call("go")
     assert res["isError"] and "connect" in res["content"][0]["text"]
@@ -71,13 +88,59 @@ def test_serve_reads_lines_and_survives_bad_json():
     assert replies[1]["error"]["code"] == -32700 and "tools" in replies[2]["result"]
 
 
+def _expand(text, env):
+    """Développement « ${VAR} » / « ${VAR:-défaut} » de Claude Code dans le .mcp.json."""
+    return re.sub(r"\$\{(\w+)(?::-([^}]*))?\}",
+                  lambda m: env.get(m.group(1)) or (m.group(2) or ""), text)
+
+
+def test_project_mcp_json():
+    """Le .mcp.json du dépôt : le Python du venv du projet, et --root sur le projet, que
+    Claude Code pose CLAUDE_PROJECT_DIR ou non."""
+    with open(os.path.join(ROOT, ".mcp.json"), encoding="utf-8") as fh:
+        conf = json.load(fh)
+    server = conf["mcpServers"]["gdbtrace"]
+    for env, root in (({"CLAUDE_PROJECT_DIR": "/proj"}, "/proj"), ({}, ".")):
+        cmd = _expand(server["command"], env)
+        args = [_expand(a, env) for a in server["args"]]
+        assert cmd == f"{root}/.venv/bin/python"
+        assert args == ["-m", "gdbtrace.mcp", "--root", root]
+    assert mcp.build_parser().parse_args(["--root", "/proj"]).root == "/proj"
+
+
+def test_main_check_and_root(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    rc = mcp.main(["--root", ROOT, "--check"])                 # sans lire stdin
+    out = capsys.readouterr().out
+    assert os.getcwd() == ROOT and f"répertoire du projet : {ROOT}" in out
+    assert rc == (0 if shutil.which("gdb-multiarch") or shutil.which("gdb") else 1)
+    assert "qemu-system-arm" in out and "ST-LINK_gdbserver" in out and "module capstone" in out
+    assert "examples/firmware/demo.elf" in out
+    monkeypatch.chdir(tmp_path)                                # CLAUDE_PROJECT_DIR sans --root
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", ROOT)
+    mcp.main(["--check"])
+    assert os.getcwd() == ROOT
+    assert mcp.main(["--root", str(tmp_path / "absent"), "--check"]) == 2
+    assert "introuvable" in capsys.readouterr().err
+
+
+def test_pattern_and_address_parsing():
+    assert mcp._pattern("0x55") == 0x55 and mcp._pattern("1234") == 1234
+    assert mcp._pattern("de ad be ef") == b"\xde\xad\xbe\xef"
+    assert mcp._pattern('"1234"') == "1234" and mcp._pattern("gdbtrace") == "gdbtrace"
+    assert mcp._is_address("0x100") and mcp._is_address("*&buf[2]") and not mcp._is_address("main")
+    assert mcp._strings("fib, main") == ["fib", "main"] and mcp._strings(None) == []
+
+
 class Client:
     """Serveur lancé comme Claude Code le lance : `python -m gdbtrace.mcp`, stdio."""
 
-    def __init__(self):
-        self.p = subprocess.Popen([sys.executable, "-m", "gdbtrace.mcp"], cwd=ROOT, text=True,
-                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE)
+    def __init__(self, cwd=ROOT, args=()):
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"}
+        self.p = subprocess.Popen([sys.executable, "-m", "gdbtrace.mcp", *args], cwd=cwd,
+                                  text=True, env=env, stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.n = 0
         init = self.rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
                                        "clientInfo": {"name": "pytest", "version": "0"}})
@@ -95,10 +158,10 @@ class Client:
         assert reply["id"] == self.n
         return reply
 
-    def __call__(self, name, ok=True, **args):
-        res = self.rpc("tools/call", {"name": name, "arguments": args})["result"]
+    def __call__(self, tool, /, ok=True, **args):         # `name` : argument d'outil possible
+        res = self.rpc("tools/call", {"name": tool, "arguments": args})["result"]
         text = res["content"][0]["text"]
-        assert res["isError"] is not ok, f"{name} {args} : {text}"
+        assert res["isError"] is not ok, f"{tool} {args} : {text}"
         return text
 
     def close(self):
@@ -171,6 +234,132 @@ def test_debug_session_on_qemu(client, elf):
     assert "arrêtée" in c("status")
     assert "fermée" in c("disconnect")
     assert "pas de session" in c("status")
+
+
+@needs_qemu
+def test_data_tools_from_project_root(elf, faults_elfs, tmp_path):
+    """Serveur lancé ailleurs que dans le projet (`--root`) : chemins relatifs au projet ;
+    outils run-control, données, mémoire, SVD, symboles ajoutés, échantillonnage."""
+    c = Client(cwd="/", args=["--root", ROOT])
+    try:
+        out = c("connect", args="examples/firmware/demo.elf")
+        assert "arrêtée" in out
+        out = c("go_till", condition="counter > 3")
+        assert "watchpoint" in out
+        assert int(c("evaluate", expression="counter").split("=")[1]) == 4
+        out = c("step_until", change="counter")
+        assert "Step.Change counter" in out and "4 → 5" in out
+        assert "Step.Till" in c("step_until", condition="$pc == $pc", asm=True)
+        assert "l'un des deux" in c("step_until", ok=False)
+
+        # breakpoint désactivé : non atteint ; réactivé : atteint
+        num = c("break", location="update_sensor").split()[1]
+        assert "désactivé" in c("enable", number=num, on=False)
+        assert "toujours en marche" in c("go", wait=0.5)
+        c("halt")
+        assert "désactivé" not in c("enable", number=num)
+        assert "update_sensor" in c("go")
+        c("delete", number=num)
+
+        dis = c("disassemble", location="fib")
+        assert "<fib+0>" in dis and dis.count("\n") > 5
+        here = c("disassemble")                                # fonction courante, PC marqué
+        assert "=>" in here and "<update_sensor+" in here
+        start = int(dis.split()[0], 16)
+        assert len(c("disassemble", location=f"{start:#x}", count=3).splitlines()) == 3
+        assert "<fib+" in c("disassemble", location=f"{start:#x}..{start + 8:#x}")
+        t = c("type", expression="sensors[0]")
+        assert "struct sensor" in t and "uint8_t status" in t and "sizeof = 12" in t
+
+        # mémoire : écrire, relire, remplir, chercher, fichiers
+        assert "01 00 00 00" not in c("memory_write", address="&sensors[3].value",
+                                      value="0x12345678")
+        assert "78 56 34 12" in c("memory", address="&sensors[3].value", length=4)
+        out = c("memory_write", address="&sensors[3].value", data="de ad be ef")
+        assert "de ad be ef" in out
+        assert "l'un des deux" in c("memory_write", ok=False, address="0x20000000")
+        c("memory_fill", address="sensors[2]", pattern="0xa5")
+        assert "a5 a5 a5 a5" in c("memory", address="&sensors[2]", length=12)
+        found = c("memory_find", address="sensors", pattern="de ad be ef")
+        assert "1 occurrence(s)" in found
+        c("memory_write", address="&sensors[1]", data="4f 4b 21 21")      # « OK!! »
+        assert "1 occurrence(s)" in c("memory_find", address="sensors", pattern='"OK!!"')
+        dump = tmp_path / "sensors.bin"
+        c("memory_file", action="save", path=str(dump), address="sensors")
+        assert dump.stat().st_size == 48
+        c("memory_fill", address="sensors", pattern="0")
+        assert "différent(s) sur 48" in c("memory_file", action="compare", path=str(dump),
+                                          address="sensors")
+        c("memory_file", action="load", path=str(dump), address="sensors")
+        assert "identique" in c("memory_file", action="compare", path=str(dump),
+                                address="sensors").lower()
+
+        # périphériques d'après le SVD, chemin relatif au projet
+        svd = os.path.relpath(SVD, ROOT)
+        listing = c("peripheral", svd=svd)
+        assert "TIMER0" in listing and "SysTick" in listing
+        assert "RELOAD" in c("peripheral", name="TIMER0")
+        assert "proches : TIMER0" in c("peripheral", ok=False, name="TIMER")
+
+        # symboles d'un autre ELF
+        extra = os.path.relpath(faults_elfs["m3"], ROOT)
+        assert "ajoutés" in c("add_symbols", path=extra, offset="0x100000")
+        assert "read_at" in c("symbols", pattern="read_at")
+
+        # échantillonnage sans trace, valeurs par var_samples
+        c("snoop", expr="ticks", period_ms=5)
+        c("go", wait=0)
+        import time
+        time.sleep(0.5)
+        c("halt")
+        samples = c("var_samples", expression="ticks", n=5)
+        assert "5 valeur(s)" in samples and "sample" in samples
+        assert "pas tracée" in c("var_samples", ok=False, expression="counter")
+    finally:
+        c.close()
+
+
+@needs_qemu
+def test_trace_tools(client, elf, tmp_path):
+    """Trace ETM simulée : filtre, export CSV, rapport et remise à zéro de la couverture."""
+    c = client
+    c("connect", args=f"{os.path.relpath(elf, ROOT)} --etm-sim")
+    c("break", location="update_sensor")
+    c("go")
+    flt = c("etm_filter", ranges=["fib"])
+    lo, hi = (int(x, 16) for x in re.search(r"\((0x[0-9a-f]+)–(0x[0-9a-f]+)\)", flt).groups())
+    c("go")
+    path = tmp_path / "trace.csv"
+    assert "lignes de trace écrites" in c("trace_export", path=str(path))
+    with open(path, encoding="utf-8") as fh:
+        rows = list(csv.reader(fh, delimiter=";"))
+    assert rows[0][:3] == ["index", "type", "adresse"] and len(rows) > 100
+    # l'historique garde la première exécution ; la dernière n'a que la plage effective
+    # (blocs alignés du DWT : fib et le début d'update_sensor)
+    tail = [r for r in rows[1:] if r[1] == "instruction"][-30:]
+    assert all(lo <= int(r[2], 16) < hi for r in tail) and "fib" in {r[3] for r in tail}
+    c("etm_filter")                                           # tout le code de nouveau
+    report = tmp_path / "cov.html"
+    c("coverage", export=str(report))
+    assert report.stat().st_size > 0
+    assert "remise à zéro" in c("coverage", reset=True)
+
+
+@needs_qemu
+def test_rtos_tools(client, rtos_elf):
+    """FreeRTOS : temps par tâche (journal en RAM), contexte d'une tâche, objets du noyau."""
+    import time
+    c = client
+    c("connect", args=os.path.relpath(rtos_elf, ROOT))
+    c("go", wait=0)
+    time.sleep(0.8)
+    c("halt")
+    times = c("task_times")
+    assert "journal des tâches en RAM" in times and "worker" in times
+    assert "#0" in c("task", name="sleeper")
+    q = c("queues")
+    assert "cmd_queue" in q and "data_mutex" in q
+    assert "inconnue" in c("task", ok=False, name="personne")
 
 
 @pytest.mark.skipif(not (shutil.which("cc") and shutil.which("gdb-multiarch")),
