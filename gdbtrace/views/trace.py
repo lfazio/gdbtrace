@@ -10,10 +10,9 @@ from __future__ import annotations
 
 import os
 import tkinter as tk
-from tkinter import ttk
+from tkinter import filedialog, ttk
 
-from ..trace.etm.qemu_log import CycleMark, ExcEntry, ExcReturn, Step, TimeMark, TraceGap
-from ..trace.itm import exception_name
+from ..trace.etm.listing import export_csv, find_rows, listing_rows
 from ..gui.view_base import View
 from .profile import _source_line
 
@@ -39,6 +38,20 @@ class TraceView(View):
         self.info = ttk.Label(bar, text="")
         self.info.pack(side="left", padx=6)
 
+        ttk.Button(bar, text="Exporter…", command=self._export).pack(side="right")
+        find = ttk.Frame(self)
+        find.pack(fill="x")
+        ttk.Label(find, text="Chercher :").pack(side="left")
+        self.find_var = tk.StringVar(value="")
+        fe = ttk.Entry(find, textvariable=self.find_var, width=28)
+        fe.pack(side="left", padx=2)
+        fe.bind("<Return>", lambda _e: self.find_next(1))
+        ttk.Button(find, text="◀", width=3, command=lambda: self.find_next(-1)).pack(side="left")
+        ttk.Button(find, text="▶", width=3, command=lambda: self.find_next(1)).pack(side="left")
+        ttk.Button(find, text="Tout trouver", command=self.find_all).pack(side="left", padx=2)
+        self.find_info = ttk.Label(find, text="adresse, fonction, « exception SysTick », texte")
+        self.find_info.pack(side="left", padx=6)
+
         self.tabs = ttk.Notebook(self)
         self.tabs.pack(fill="both", expand=True)
         f_list, f_flow = ttk.Frame(self.tabs), ttk.Frame(self.tabs)
@@ -49,6 +62,7 @@ class TraceView(View):
                                   ("#", 70), stretch="src")
         self.listing.tag_configure("exc", foreground="#a05000")
         self.listing.tag_configure("func", foreground="#3050a0")
+        self.listing.tag_configure("hit", background="#fff1a8")
         self.listing.bind("<Double-1>", lambda _e: self._goto(self.listing))
         self.flow = self._tree(f_flow, [("func", "Fonction", 320), ("addr", "Adresse", 90)],
                                ("#", 70), stretch="func")
@@ -56,6 +70,10 @@ class TraceView(View):
         self.flow.bind("<Double-1>", lambda _e: self._goto(self.flow))
 
         self._locs: dict[str, tuple[str, int]] = {}
+        self.rows = []                    # lignes du listing (TraceRow), dans l'ordre affiché
+        self._row_iids: list[str] = []
+        self._hits: list[int] = []
+        self._hit_pos = -1
         self._generation = -1
         app.trace.etm_listeners.append(self._on_new_trace)
         self.render(force=True)
@@ -150,44 +168,81 @@ class TraceView(View):
     def _render_listing(self, events) -> None:
         tv = self.listing
         tv.delete(*tv.get_children())
-        sym = self.app.symbols
-        total = len(events)
+        self.rows = listing_rows(events, self.etm.image, self.app.symbols)
+        self._row_iids = []
+        self._hits, self._hit_pos = [], -1
         prev_func = None
-        for i, e in enumerate(events):
-            idx = str(i - total)
-            if isinstance(e, ExcEntry):
-                tv.insert("", "end", text=idx, tags=("exc",), values=(
-                    f"{e.handler:08x}", f"── exception {exception_name(e.number)} ({e.number}) ──", "", ""))
-                prev_func = None
+        for r in self.rows:
+            if r.kind != "instruction":
+                label = r.text if r.kind != "exception" else f"{r.text} ──"
+                values = (f"{r.addr:08x}" if r.addr is not None else "", f"── {label}" + (
+                    "" if r.kind == "exception" else " ──"), "", "")
+                self._row_iids.append(tv.insert("", "end", text=str(r.index), tags=("exc",), values=values))
+                if r.kind != "horodatage":
+                    prev_func = None
                 continue
-            if isinstance(e, ExcReturn):
-                tv.insert("", "end", text=idx, tags=("exc",), values=("", "── retour d'exception ──", "", ""))
-                prev_func = None
-                continue
-            if isinstance(e, TraceGap):
-                tv.insert("", "end", text=idx, tags=("exc",),
-                          values=("", "── trace interrompue ──", "", ""))
-                prev_func = None
-                continue
-            if isinstance(e, CycleMark):
-                continue
-            if isinstance(e, TimeMark):
-                tv.insert("", "end", text=idx, tags=("exc",),
-                          values=("", f"── horodatage {e.value} ──", "", ""))
-                continue
-            ins = self.etm.image.instr(e.addr)
-            f = sym.function_at(e.addr) if sym else None
-            name = f.name if f else ""
-            loc = self._source_of(e.addr)
-            src = f"{os.path.basename(loc[0])}:{loc[1]}  {_source_line(*loc)}" if loc else ""
-            iid = tv.insert("", "end", text=idx, tags=("func",) if name != prev_func else (), values=(
-                f"{e.addr:08x}", name if name != prev_func else "", ins.text if ins else "?", src))
+            loc = (r.file, r.line) if r.file else None
+            src = f"{os.path.basename(r.file)}:{r.line}  {_source_line(*loc)}" if loc else ""
+            iid = tv.insert("", "end", text=str(r.index), tags=("func",) if r.func != prev_func else (), values=(
+                f"{r.addr:08x}", r.func if r.func != prev_func else "", r.text, src))
+            self._row_iids.append(iid)
             if loc:
                 self._locs[iid] = loc
-            prev_func = name
+            prev_func = r.func
         kids = tv.get_children()
         if kids:
             tv.see(kids[-1])
+
+    # ------------------------------------------------------------------ Trace.Find
+    def _search(self) -> list[int]:
+        query = self.find_var.get()
+        hits = find_rows(self.rows, query)
+        for i in self._hits:
+            if i < len(self._row_iids):
+                tags = [t for t in self.listing.item(self._row_iids[i], "tags") if t != "hit"]
+                self.listing.item(self._row_iids[i], tags=tags)
+        self._hits = hits
+        return hits
+
+    def find_next(self, step: int = 1) -> int | None:
+        """Trace.Find : occurrence suivante (ou précédente) dans le listing ; rend sa position."""
+        if not self._hits or self._hits != find_rows(self.rows, self.find_var.get()):
+            self._search()
+            self._hit_pos = -1 if step > 0 else len(self._hits)
+        if not self._hits:
+            self.find_info.configure(text="aucune occurrence" if self.find_var.get().strip() else "")
+            return None
+        self._hit_pos = (self._hit_pos + step) % len(self._hits)
+        pos = self._hits[self._hit_pos]
+        iid = self._row_iids[pos]
+        self.tabs.select(0)
+        self.listing.selection_set(iid)
+        self.listing.focus(iid)
+        self.listing.see(iid)
+        self.find_info.configure(text=f"{self._hit_pos + 1} / {len(self._hits)} (index {self.rows[pos].index})")
+        return pos
+
+    def find_all(self) -> list[int]:
+        """Trace.FindAll : toutes les occurrences surlignées ; la première choisie."""
+        hits = self._search()
+        for i in hits:
+            iid = self._row_iids[i]
+            self.listing.item(iid, tags=tuple(self.listing.item(iid, "tags")) + ("hit",))
+        self._hit_pos = -1
+        if hits:
+            self.find_next(1)
+        self.find_info.configure(text=f"{len(hits)} occurrence(s)" if hits else "aucune occurrence")
+        return hits
+
+    def _export(self) -> None:
+        if not self.rows:
+            self.app.status.set("rien à exporter : la trace est vide")
+            return
+        path = filedialog.asksaveasfilename(parent=self, title="Exporter la trace (CSV)",
+                                            defaultextension=".csv", filetypes=[("CSV", "*.csv")])
+        if path:
+            n = export_csv(self.rows, path)
+            self.app.status.set(f"{n} lignes de trace exportées dans {os.path.basename(path)}")
 
     def _render_flow(self, rows) -> None:
         tv = self.flow

@@ -109,6 +109,9 @@ TOOLS = [
           {"n": _I}),
     _tool("coverage", "Couverture de code par la trace : résumé et fonctions les moins "
           "couvertes (`top`, défaut 20).", {"top": _I}),
+    _tool("trace_find", "Cherche dans la trace d'instructions (les `n` derniers événements, défaut "
+          "50000) : adresse 0x…, nom de fonction (chaque entrée), « exception » ou « exception "
+          "SysTick », ou texte ; `top` lignes (défaut 20).", {"query": _S, "n": _I, "top": _I}, ("query",)),
     _tool("timing", "Durées par fonction et par exception d'après la trace (brut, net, "
           "min/max/moyenne) : `top` lignes (défaut 20).", {"top": _I}),
     _tool("chrono", "Temps du cœur pendant la dernière exécution (de la reprise à l'arrêt : go "
@@ -496,6 +499,10 @@ class GdbTraceMcp:
     def tool_timing(self, top: int = 20) -> str:
         self._settle()
         self.api.timing(top)
+        return ""
+
+    def tool_trace_find(self, query: str, n: int = 50_000, top: int = 20) -> str:
+        self.api.trace_find(query, n, top)
         return ""
 
     def tool_chrono(self, reset: bool = False) -> str:

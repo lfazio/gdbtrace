@@ -394,6 +394,31 @@ class ScriptAPI:
                 print(f"{idx:>6}  {e.addr:08x}  {f.name if f else '':<22} {ins.text if ins else '?':<28} {loc}")
         return events
 
+    def trace_find(self, query: str, n: int = 50_000, show: int = 20) -> list[dict]:
+        """Trace.FindAll : dans les `n` derniers événements de la trace, les lignes qui
+        répondent à `query` : adresse (0x…), nom de fonction (chaque entrée), « exception » ou
+        « exception SysTick » / numéro, ou texte (instruction, fonction, fichier). Affiche les
+        `show` premières ; rend [{index, type, adresse, fonction, instruction, fichier, ligne}]."""
+        from ..trace.etm.listing import find_rows, listing_rows
+        etm = self._etm()
+        rows = listing_rows(etm.last(n), etm.image, self._symbols())
+        hits = [rows[i] for i in find_rows(rows, query)]
+        for r in hits[:show]:
+            where = f"  {r.file.rsplit('/', 1)[-1]}:{r.line}" if r.file else ""
+            addr = f"{r.addr:08x}" if r.addr is not None else " " * 8
+            print(f"{r.index:>7}  {addr}  {r.func:<22} {r.text}{where}")
+        print(f"{len(hits)} occurrence(s) sur {len(rows)} lignes")
+        return [r.as_dict() for r in hits]
+
+    def trace_export(self, path: str, n: int = 100_000) -> int:
+        """Exporte les `n` derniers événements de la trace en CSV (index, type, adresse,
+        fonction, instruction, fichier, ligne) ; rend le nombre de lignes."""
+        from ..trace.etm.listing import export_csv, listing_rows
+        etm = self._etm()
+        count = export_csv(listing_rows(etm.last(n), etm.image, self._symbols()), path)
+        print(f"{count} lignes de trace écrites dans {path}")
+        return count
+
     def coverage(self, top: int | None = 20):
         """Couverture de code par fonction d'après la trace ETM (voir aussi `gdbtrace.cov`)."""
         return self.cov.list(top)

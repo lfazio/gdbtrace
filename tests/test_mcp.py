@@ -143,6 +143,7 @@ def test_debug_session_on_qemu(client, elf):
     assert "watchpoint" in c("watch", expression="counter")
     out = c("go")
     assert "watchpoint-trigger" in out and "1 → 2" in out
+    assert "occurrence(s)" in c("trace_find", query="fib")
     trace = c("trace_list", n=8)
     assert trace.count("\n") == 7 and "main" in trace
     assert "fonction" in c("coverage", top=5)
