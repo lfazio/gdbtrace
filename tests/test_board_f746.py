@@ -45,7 +45,8 @@ def run(request, tmp_path_factory):
     try:
         return boards.run_gui(argv, "f746", ready=lambda app: app.trace.etm_swo, cleanup=cleanup,
                               extra=lambda app: {"chrono": boards.chrono_passes(app),
-                                                 "rtt": boards.rtt_live(app)})
+                                                 "rtt": boards.rtt_live(app),
+                                                 "compteurs": boards.counters_passes(app)})
     finally:
         if old is None:
             os.environ.pop("STLINK_SERIAL", None)
@@ -190,6 +191,12 @@ def test_coverage(run):
         covered, total = (int(x) for x in rows[f][3].split("/"))
         assert 0 < covered <= total, (f, rows[f])
     assert "capture ETM" in view(run, "apres", "coverage")["info"]
+
+
+def test_counters_of_the_dwt(run):
+    """Compteurs du DWT entre deux passages par worker_step (avec la capture SWO : les tours
+    des compteurs de 8 bits sont rattrapés, les instructions déduites)."""
+    boards.counters_checks(run["extra"]["compteurs"], "DWT")
 
 
 def test_rtt_read_live_by_openocd(run):

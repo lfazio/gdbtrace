@@ -60,6 +60,8 @@ class TraceManager:
         self.source: SwoSource | None = None
         self.text = ItmTextSink(text_ports={0}, on_line=self._line)
         self.exceptions = ExceptionStats()
+        from ..core.counters import EventCounterTally
+        self.counter_tally = EventCounterTally()   # débordements des compteurs du DWT (ITM)
         from .datatrace import DataTraceSink
         from .tasktrace import TaskTraceSink
         self.datatrace = DataTraceSink()     # trace de données du DWT (Var.TRACE)
@@ -973,6 +975,7 @@ class TraceManager:
                                     on_gap=self._swo_gap)
         self.session.add_sink(lambda pkts: [self.text.add(p) for p in pkts])
         self.session.add_sink(self.exceptions)
+        self.session.add_sink(self.counter_tally)
         self.session.add_sink(self.datatrace)
         if self._task_from_log:             # l'ITM prend le relais : pas de mélange des sources
             self.tasktrace.reset()

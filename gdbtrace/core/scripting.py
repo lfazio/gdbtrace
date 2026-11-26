@@ -164,6 +164,13 @@ class ScriptAPI:
         self._chrono = Chrono(session, core=lambda: self.trace.core if self.trace is not None else None)
         session.add_resume_hook(self._chrono.start)
         self._fault_catch = None            # arrêt sur faute (FaultCatch)
+        #: BMC : compteurs de performance (DWT, PMU), armés à la demande
+        from .counters import Counters
+        self._counters = Counters(
+            session, core=lambda: self.trace.core if self.trace is not None else None,
+            tally=lambda: self.trace.counter_tally if self.trace is not None else None,
+            capturing=lambda: bool(self.trace is not None and self.trace.active))
+        session.add_resume_hook(self._counters.start)
         #: TERM : semihosting et RTT (vue Terminal, `terminal()`)
         from .terminal import Terminal
         self.term = Terminal()
@@ -205,6 +212,44 @@ class ScriptAPI:
         """TERM : envoie du texte au programme (canal descendant du RTT, ou entrée du
         semihosting) ; rend où il est parti."""
         return self.term.send(text)
+
+    # compteurs de performance
+    def counters(self, enable: bool = True, quiet: bool = False) -> dict | None:
+        """BMC : compteurs de performance du cœur pendant la dernière exécution (Go jusqu'à un
+        breakpoint, pas…) : cycles et compteurs du DWT (CPI, EXC, SLEEP, LSU, FOLD,
+        instructions déduites, IPC) ou de la PMU d'un Cortex-M55 (instructions, défauts de
+        cache, exceptions). Le premier appel les arme (`enable`), la mesure vient à
+        l'exécution suivante. None sans mesure."""
+        c = self._counters
+        if not c.enabled:
+            self._need_stopped()
+            msg = c.enable(enable)
+            if not quiet:
+                print(msg)
+            return None
+        m = c.stop() if self.s.state == "stopped" else c.last
+        if m is None:
+            if not quiet:
+                print("pas encore de mesure : reprendre puis arrêter la cible (Go, pas)")
+            return None
+        if not quiet:
+            print(f"compteurs ({m.source}) de la dernière exécution" + (f" — {m.note}" if m.note else ""))
+            for v in m.values:
+                val = "?" if v.delta is None else f"{v.delta:,}".replace(",", " ")
+                print(f"  {v.name:<18} {val:>14}{'' if v.exact else ' ≈'}  {v.label}"
+                      + (f" ({v.note})" if v.note else ""))
+            if m.instructions is not None:
+                print(f"  {'instructions':<18} {m.instructions:>14,}".replace(",", " ")
+                      + (f"   IPC {m.ipc:.2f}" if m.ipc is not None else ""))
+        return m.as_dict()
+
+    def counters_reset(self) -> None:
+        """Remet à zéro le cumul des compteurs."""
+        self._counters.reset()
+
+    def counters_off(self) -> None:
+        """Désarme les compteurs (et coupe les paquets de débordement du DWT)."""
+        print(self._counters.enable(False))
 
     # fautes
     def fault(self, quiet: bool = False) -> dict:

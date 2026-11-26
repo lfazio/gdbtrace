@@ -306,7 +306,8 @@ def test_itm_view_with_fake_swo_server(rtos_app, rtos_elf):
     pv = app.views.find(ProfileView)
     pv.render()
     rows = {pv.excs.item(i, "text"): pv.excs.item(i, "values") for i in pv.excs.get_children()}
-    assert rows["SysTick (15)"] == ("2", "200", "100")
+    tick = rows["SysTick (15)"]                    # entrées, total, min, max (horodatage ITM)
+    assert tick[:2] == ("2", "200") and tick[3] == "100"
     # filtre de ports : seul le port 1
     iv.clear()
     iv.ports_var.set("1")
@@ -904,7 +905,7 @@ def test_cortex_m0_trace_views_say_why(m0_elf, tmp_path):
     from gdbtrace.views.itm import ItmView
     from gdbtrace.views.tasktime import TaskTimeView
     from gdbtrace.views.trace import TraceView
-    from gdbtrace.views.vartrace import VarTraceView
+    from gdbtrace.views.vartrace import DWT, SAMPLED, VarTraceView
     a = App(layout_file=str(tmp_path / "layout.json"))
     try:
         s = Session()
@@ -920,7 +921,10 @@ def test_cortex_m0_trace_views_say_why(m0_elf, tmp_path):
             labels[cls.kind] = getattr(v, attr)
         assert pump(a, lambda: all(why in w.cget("text") for w in labels.values())), \
             {k: w.cget("text") for k, w in labels.items()}
-        a.views.find(VarTraceView).trace_expr("counter", "write", False)   # refusé, en le disant
+        vt = a.views.find(VarTraceView)
+        assert vt.source_var.get() == SAMPLED            # sans ITM : échantillonné par défaut
+        vt.source_var.set(DWT)
+        vt.trace_expr("counter", "write", False)         # trace du DWT refusée, en le disant
         assert why in a.status.get() and not a.trace.datatrace.vars
     finally:
         close_app(a)

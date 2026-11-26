@@ -134,6 +134,10 @@ TOOLS = [
     _tool("terminal", "Texte écrit par le programme (semihosting, RTT : --semihosting, --rtt) depuis "
           "l'appel précédent ; `send` : texte envoyé au programme d'abord (RTT descendant, entrée "
           "du semihosting).", {"send": _S}),
+    _tool("counters", "Compteurs de performance du cœur pendant la dernière exécution : cycles, "
+          "compteurs du DWT (CPI, EXC, SLEEP, LSU, FOLD, instructions, IPC) ou PMU du Cortex-M55. "
+          "Le premier appel les arme (mesure à l'exécution suivante) ; `reset` : remet le cumul "
+          "à zéro ; `off` : les désarme.", {"reset": _B, "off": _B}),
     _tool("fault", "Analyse de la faute en cours (cible arrêtée dans HardFault, BusFault…) : "
           "cause en clair, adresse et instruction fautives, fonction et ligne, cadre empilé. "
           "`catch` : true pose l'arrêt à l'entrée de toute faute, false le retire.", {"catch": _B}),
@@ -547,6 +551,16 @@ class GdbTraceMcp:
             out = f"envoyé par {self.api.terminal_send(send)}\n"
         text = self.api.terminal(quiet=True)
         return out + (text or "(rien de nouveau)")
+
+    def tool_counters(self, reset: bool = False, off: bool = False) -> str:
+        if off:
+            self.api.counters_off()
+            return ""
+        if reset:
+            self.api.counters_reset()
+            return "cumul des compteurs remis à zéro"
+        self.api.counters()
+        return ""
 
     def tool_fault(self, catch: bool | None = None) -> str:
         if catch is not None:

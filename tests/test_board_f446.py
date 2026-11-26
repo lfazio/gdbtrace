@@ -96,7 +96,7 @@ def run(request, tmp_path_factory):
     os.environ["STLINK_SERIAL"] = serial
     try:
         return boards.run_gui(argv, "f446", ready=lambda app: app.trace.etm_swo, cleanup=cleanup,
-                              extra=worker_loops)
+                              extra=lambda app: {**worker_loops(app), "compteurs": boards.counters_passes(app)})
     finally:
         if old is None:
             os.environ.pop("STLINK_SERIAL", None)
@@ -299,3 +299,8 @@ def test_etm3_range_filter_by_dwt_on_board(request, tmp_path, run):
     it = iter(healed)
     assert all(a in it for a in theirs)                          # sous-suite, dans l'ordre
     assert len(healed) > len(theirs) and flow.stats.healed > 0
+
+
+def test_counters_of_the_dwt(run):
+    """Compteurs du DWT d'un Cortex-M4 entre deux passages par worker_step."""
+    boards.counters_checks(run["extra"]["compteurs"], "DWT")

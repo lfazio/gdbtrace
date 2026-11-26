@@ -185,6 +185,36 @@ def chrono_passes(app) -> list[dict]:
     return out
 
 
+# ====================================================================== compteurs
+def counters_passes(app) -> dict:
+    """Compteurs de performance (DWT ou PMU) armés, puis deux passages par worker_step : la
+    mesure de la seconde exécution (cible arrêtée au retour)."""
+    s, api = app.session, app.api
+    msg = api._counters.enable(True)
+    bp = s.break_("worker_step")
+    try:
+        s.go()
+        s.wait_stopped(10)
+        s.go()
+        s.wait_stopped(10)
+        m = api._counters.stop()
+    finally:
+        s.delete_break(bp.number)
+        api._counters.enable(False)
+    return {"armement": msg, "mesure": m.as_dict() if m is not None else None}
+
+
+def counters_checks(passed: dict, source: str) -> None:
+    """Cycles mesurés, et des instructions plausibles (IPC entre 0 et 1,5) quand elles sont
+    connues (compteurs exacts)."""
+    m = passed["mesure"]
+    assert m is not None and m["source"] == source, passed
+    cyc = m["compteurs"]["CYC"]["valeur"]
+    assert cyc and cyc > 1000, m
+    if m["instructions"] is not None:
+        assert 0 < m["ipc"] <= 1.5, m
+
+
 # ====================================================================== RTT
 def rtt_live(app, seconds: float = 2.0) -> dict:
     """RTT lu en marche par le canal mémoire (OpenOCD TCL, relais ST-LINK) : la tâche
