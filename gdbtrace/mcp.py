@@ -115,6 +115,9 @@ TOOLS = [
           "jusqu'à un breakpoint, pas…) et cumul, mesuré par la cible sans trace : SysTick et "
           "compteur de ticks (Cortex-M0/M0+, QEMU), DWT_CYCCNT au-delà. `reset` : remet le "
           "cumul à zéro.", {"reset": _B}),
+    _tool("fault", "Analyse de la faute en cours (cible arrêtée dans HardFault, BusFault…) : "
+          "cause en clair, adresse et instruction fautives, fonction et ligne, cadre empilé. "
+          "`catch` : true pose l'arrêt à l'entrée de toute faute, false le retire.", {"catch": _B}),
     _tool("profile", "Profil statistique (PERF) pendant `seconds` (défaut 1) : la cible tourne, "
           "puis revient à son état.", {"seconds": _N}),
     _tool("itm", "Texte reçu sur un port ITM (`port`, défaut 0) par la capture SWO.",
@@ -494,6 +497,12 @@ class GdbTraceMcp:
             self.api.chrono_reset()
             return "cumul du chrono remis à zéro"
         self.api.chrono()
+        return ""
+
+    def tool_fault(self, catch: bool | None = None) -> str:
+        if catch is not None:
+            return self.api.break_on_fault(catch)
+        self.api.fault()
         return ""
 
     def tool_profile(self, seconds: float = 1.0) -> str:

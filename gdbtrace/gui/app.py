@@ -38,9 +38,10 @@ def view_classes() -> dict[str, type[View]]:
     from ..views.trace import TraceView
     from ..views.vartrace import VarTraceView
     from ..views.tasktime import TaskTimeView
+    from ..views.fault import FaultView
     classes = [FilesView, SourceView, DisasmView, TraceView, TimingView, CoverageView, RegistersView, WatchView, PeripheralsView,
-               RtosView, ThreadsView, StackView, BreakpointsView, MemoryView, ConsoleView, ItmView, ProfileView, VarTraceView,
-               TaskTimeView]
+               RtosView, ThreadsView, StackView, BreakpointsView, FaultView, MemoryView, ConsoleView, ItmView, ProfileView,
+               VarTraceView, TaskTimeView]
     return {c.kind: c for c in classes}
 
 
@@ -62,6 +63,7 @@ DEFAULT_LAYOUT = [
     {"kind": "threads", "where": "data"},
     {"kind": "stack", "where": "data"},
     {"kind": "breakpoints", "where": "data"},
+    {"kind": "fault", "where": "data"},
     {"kind": "console", "where": "bottom"},
     {"kind": "memory", "where": "bottom"},
     {"kind": "itm", "where": "bottom"},
@@ -156,6 +158,7 @@ class App:
         self.recent_menu = tk.Menu(m, tearoff=False, postcommand=self._fill_recent_menu)
         m.add_cascade(label="ELF récents", menu=self.recent_menu)
         self.verify_var = tk.BooleanVar(value=True)
+        self.fault_catch_var = tk.BooleanVar(value=False)      # Run › Arrêt sur faute
         m.add_checkbutton(label="Vérifier après programmation", variable=self.verify_var,
                           command=lambda: setattr(self, "verify_program", self.verify_var.get()))
         m.add_separator()
@@ -191,6 +194,8 @@ class App:
         r.add_command(label="Go.Till (jusqu'à une condition)…", command=self._ask_go_till)
         r.add_command(label="Step.Till / Step.Change…", command=self._ask_step_loop)
         r.add_separator()
+        r.add_checkbutton(label="Arrêt sur faute", variable=self.fault_catch_var,
+                          command=self.toggle_fault_catch)
         r.add_command(label="Remettre le chrono à zéro", command=self.reset_chrono)
         mb.add_cascade(label="Run", menu=r)
 
@@ -551,6 +556,7 @@ class App:
             if reason == "signal-received":
                 reason = f"signal {data.get('signal-name', '')}"
             self.status.set(f"Arrêt : {stop_summary(data) if 'what' in data else reason}")
+            self.report_fault()
         elif kind == "running":
             self.current_frame = None
             self.views.running_all()
@@ -583,6 +589,7 @@ class App:
                 self.write_console(text, tag)
         elif kind == "disconnected":
             self.current_frame = None
+            self.fault_catch_var.set(False)
             self.views.disconnected_all()
             self.trace.close()
             self._rtos_layout = None
@@ -898,6 +905,45 @@ class App:
         path = filedialog.askopenfilename(filetypes=[("Python", "*.py"), ("Tous", "*")])
         if path:
             self.run_script(path)
+
+    # ================================================================== fautes
+    def report_fault(self) -> None:
+        """Arrêt dans un gestionnaire de faute : la cause dans la barre d'état et la console,
+        la vue Faute au premier plan. Hors faute, une seule lecture (ICSR)."""
+        if self.native or self.session is None or self.session.state != "stopped":
+            return
+        from ..core import fault
+        from ..views.fault import FaultView
+        view = self.views.find(FaultView)
+        report = view.report if view is not None and view.report_stop == self.session.stop_count else None
+        try:
+            if report is None:
+                if not fault.in_fault(self.session):
+                    return
+                report = fault.analyze(self.session)
+        except Exception:  # noqa: BLE001 - registres illisibles : pas d'analyse
+            return
+        if not report.in_fault:
+            return
+        self.status.set(f"Faute : {report.summary()}")
+        self.write_console(report.text() + "\n", "err")
+        if view is not None:
+            self.views.show(FaultView, "data")
+
+    def toggle_fault_catch(self) -> None:
+        """Run › Arrêt sur faute (aussi la case de la vue Faute, `--break-on-fault`)."""
+        want = self.fault_catch_var.get()
+        if self.api is None or self.native:
+            self.fault_catch_var.set(False)
+            return
+        if self.session.state != "stopped":
+            self.fault_catch_var.set(not want)
+            self.report_error("arrêt sur faute : arrêter la cible d'abord")
+            return
+        msg = self.safe(self.api.break_on_fault, want)
+        if msg:
+            self.write_console(msg + "\n", "gdb")
+        self.fault_catch_var.set(self.api.fault_catch_method() is not None)
 
     # ================================================================== chrono
     def update_chrono(self) -> None:

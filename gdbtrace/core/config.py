@@ -51,7 +51,7 @@ SERVER_KEYS = {
     "remote": ["remote", "tcl", "remote-exec", "args", "cwd", "non-stop"],
 }
 SERVER_COMMON = ["gdb", "gdb-port", "no-load"]
-CIBLE_KEYS = ["elf", "svd", "cpu-hz", "programmer", "verifier", "go"]
+CIBLE_KEYS = ["elf", "svd", "cpu-hz", "programmer", "verifier", "go", "break-on-fault"]
 COUVERTURE_KEYS = ["fusionner", "exporter"]
 #: options de trace de la ligne de commande, dans l'ordre de --help
 TRACE_KEYS = ["swo", "swo-file", "swo-formatter", "swo-config", "swo-hz", "swo-port", "var-trace",
@@ -281,7 +281,7 @@ class SessionConfig:
             srv = {k: v for k, v in (d.get("serveur") or {}).items() if k in SERVER_COMMON}
             for key, v in srv.items():
                 argv += _option(p, "serveur", key, v)
-        for key in ("svd", "cpu-hz", "go"):
+        for key in ("svd", "cpu-hz", "go", "break-on-fault"):
             if key in cible:
                 argv += _option(p, "cible", key, cible[key])
         if cible.get("programmer"):
@@ -331,6 +331,8 @@ class SessionConfig:
             cible["verifier"] = False
         if args.go:
             cible["go"] = True
+        if args.break_on_fault:
+            cible["break-on-fault"] = True
         if cible:
             d["cible"] = cible
         srv: dict[str, Any] = {}

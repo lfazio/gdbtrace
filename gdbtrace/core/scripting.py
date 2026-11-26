@@ -163,6 +163,7 @@ class ScriptAPI:
         from .chrono import Chrono
         self._chrono = Chrono(session, core=lambda: self.trace.core if self.trace is not None else None)
         session.add_resume_hook(self._chrono.start)
+        self._fault_catch = None            # arrêt sur faute (FaultCatch)
 
     def chrono(self) -> dict | None:
         """RunTime : temps du cœur pendant la dernière exécution (de la reprise à l'arrêt :
@@ -185,6 +186,40 @@ class ScriptAPI:
     def chrono_reset(self) -> None:
         """Remet à zéro le cumul du chrono."""
         self._chrono.reset()
+
+    # fautes
+    def fault(self, quiet: bool = False) -> dict:
+        """Analyse de la faute en cours (cible arrêtée) : cause en clair (CFSR, HFSR, SFSR
+        décodés ; sur un Cortex-M0/M0+, déduite de l'instruction fautive), adresse fautive,
+        instruction, fonction et ligne fautives, cadre empilé. Affiche le rapport et le rend en
+        dictionnaire (`en_faute` faux hors d'un gestionnaire de faute)."""
+        from .fault import analyze
+        self._need_stopped()
+        report = analyze(self.s)
+        if not quiet:
+            print(report.text())
+        return report.as_dict()
+
+    def break_on_fault(self, enable: bool = True) -> str:
+        """Arrêt à l'entrée de toute faute (HardFault, MemManage, BusFault, UsageFault) : vector
+        catch de DEMCR, sinon breakpoints sur les gestionnaires de la table des vecteurs (QEMU).
+        Rend la méthode employée, en clair."""
+        from .fault import FaultCatch
+        self._need_stopped()
+        if self._fault_catch is None:
+            self._fault_catch = FaultCatch(self.s)
+        if not enable:
+            self._fault_catch.disable()
+            return "arrêt sur faute retiré"
+        return self._fault_catch.enable()
+
+    def fault_catch_method(self) -> str | None:
+        """Méthode de l'arrêt sur faute en place (« vector catch », « breakpoints »), ou None."""
+        return None if self._fault_catch is None else self._fault_catch.method
+
+    def _need_stopped(self) -> None:
+        if self.s.state != "stopped":
+            raise RuntimeError("cible en marche : arrêter d'abord (halt)")
 
     @property
     def config(self) -> dict | None:

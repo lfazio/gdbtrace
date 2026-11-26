@@ -235,8 +235,11 @@ class BatchSession:
         api._config = config.data if config is not None else None
 
     def setup(self) -> None:
-        """Captures de trace demandées par les options, couvertures à fusionner."""
+        """Captures de trace demandées par les options, couvertures à fusionner, arrêt sur
+        faute."""
         setup_trace(self.args, self.trace, self.s, self.target, self.log)
+        if self.args.break_on_fault and not self.target.native:
+            self.log(self.api.break_on_fault())
         for path in self.args.coverage_merge:
             self.api.cov.load(path)
 
@@ -369,6 +372,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="ajouter une couverture enregistrée (campagnes précédentes) ; répétable")
     g2.add_argument("--go", action="store_true",
                     help="lancer le programme après la connexion (et la programmation)")
+    g2.add_argument("--break-on-fault", action="store_true",
+                    help="arrêter la cible à l'entrée de toute faute (HardFault, BusFault…) : vector "
+                         "catch, sinon breakpoints sur les gestionnaires ; vue Faute")
     p.add_argument("--script", help="script Python exécuté après connexion (objet `gdbtrace`)")
     p.add_argument("--batch", action="store_true", help="sans GUI : exécute --script puis quitte")
     p.add_argument("--layout", default="gdbtrace-layout.json", help="fichier de layout des fenêtres")
@@ -582,6 +588,9 @@ def start_gui_session(app, args) -> None:
     def after_connect(_res=None) -> None:
         # journal de la mise en route de la trace dans la console (pas sur le terminal)
         app.safe(setup_trace, args, app.trace, app.session, app.session.target or target, log)
+        if args.break_on_fault and not app.native:
+            app.fault_catch_var.set(True)
+            app.toggle_fault_catch()
         for path in args.coverage_merge:
             app.safe(app.api.cov.load, path)
             log(f"couverture fusionnée : {path}")

@@ -74,6 +74,18 @@ def rtos_session(rtos_elf):
     s.disconnect()
 
 
+FAULTS_DIR = os.path.join(ROOT, "examples", "faults")
+
+
+@pytest.fixture(scope="session")
+def faults_elfs():
+    """Démo des fautes : {"m3": faults-m3.elf (mps2-an385), "m0": faults-m0.elf (microbit)}."""
+    if not shutil.which("arm-none-eabi-gcc"):
+        pytest.skip("arm-none-eabi-gcc absent")
+    subprocess.run(["make", "-s", "-C", FAULTS_DIR], check=True)
+    return {"m3": os.path.join(FAULTS_DIR, "faults-m3.elf"), "m0": os.path.join(FAULTS_DIR, "faults-m0.elf")}
+
+
 M0_DIR = os.path.join(ROOT, "examples", "m0plus")
 M0_ELF = os.path.join(M0_DIR, "demo.elf")
 

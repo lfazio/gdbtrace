@@ -133,6 +133,7 @@ class ConfigEditor(tk.Toplevel):
         self._row(f, 4, "Programmer l'ELF à la connexion", "cible", "programmer", "bool")
         self._row(f, 5, "Vérifier après programmation", "cible", "verifier", "bool")
         self._row(f, 6, "Lancer le programme après la connexion (Go)", "cible", "go", "bool")
+        self._row(f, 7, "Arrêt sur faute (HardFault, BusFault…)", "cible", "break-on-fault", "bool")
 
     def _build_server(self, f) -> None:
         self.server_var = tk.StringVar(value="qemu")
