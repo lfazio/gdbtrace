@@ -134,6 +134,9 @@ class ConfigEditor(tk.Toplevel):
         self._row(f, 5, "Vérifier après programmation", "cible", "verifier", "bool")
         self._row(f, 6, "Lancer le programme après la connexion (Go)", "cible", "go", "bool")
         self._row(f, 7, "Arrêt sur faute (HardFault, BusFault…)", "cible", "break-on-fault", "bool")
+        self._row(f, 8, "Image à programmer au lieu de l'ELF (HEX, S-record, binaire@adresse)",
+                  "cible", "image")
+        self._row(f, 9, "Symboles d'autres ELF (un par ligne, ELF[@décalage])", "cible", "add-symbols", "list")
 
     def _build_server(self, f) -> None:
         self.server_var = tk.StringVar(value="qemu")
@@ -253,6 +256,8 @@ class ConfigEditor(tk.Toplevel):
         for (section, key) in self.texts:
             holder = d if not section else (d.get(section) or {})
             self._set_list(section, key, holder.get(key))
+        prog = (d.get("cible") or {}).get("programmer")        # image au lieu de l'ELF
+        self.vars[("cible", "image")].set(prog if isinstance(prog, str) else "")
         srv = d.get("serveur") or {}
         self.server_var.set(srv.get("type", "qemu"))
         for key, default in (("machine", "mps2-an385"), ("gdb", "gdb-multiarch"), ("gdb-port", "0"),
@@ -277,6 +282,11 @@ class ConfigEditor(tk.Toplevel):
             d["nom"] = name
         cible: dict = {}
         for key in CIBLE_KEYS:
+            if ("cible", key) in self.texts:
+                values = self._get_list("cible", key)
+                if values:
+                    cible[key] = values
+                continue
             var = self.vars[("cible", key)]
             if isinstance(var, tk.BooleanVar):
                 if key == "verifier":
@@ -286,6 +296,9 @@ class ConfigEditor(tk.Toplevel):
                     cible[key] = True
             elif var.get().strip():
                 cible[key] = _number(var.get().strip()) if key == "cpu-hz" else var.get().strip()
+        image = self.vars[("cible", "image")].get().strip()
+        if image and cible.get("programmer"):
+            cible["programmer"] = image
         if cible:
             d["cible"] = cible
         kind = self.server_var.get()

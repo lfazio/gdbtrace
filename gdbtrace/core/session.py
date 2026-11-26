@@ -175,6 +175,8 @@ class Session:
         self.gdb = GdbMI(gdb_path)
         self.target: TargetServer | None = None
         self.elf: str | None = None
+        #: ELF dont les symboles s'ajoutent à ceux de l'ELF de la session : [(chemin, décalage)]
+        self.extra_symbols: list[tuple[str, int]] = []
         self.state = "disconnected"  # disconnected | stopped | running | exited
         self.non_stop = False                    # programme natif en mode non-stop
         self.focus: str | None = None            # non-stop : thread suivi (celui des vues)
@@ -573,13 +575,19 @@ class Session:
         """Programme `elf` dans la cible : arrêt, reset (cible arrêtée au vecteur de reset),
         écriture par le serveur gdb (`load` : flash avec OpenOCD/J-Link/pyOCD, RAM sous QEMU),
         vérification optionnelle (`compare-sections`), puis reset. gdb prend aussi les
-        symboles de cet ELF."""
+        symboles de cet ELF. Une image HEX, S-record ou binaire (`fw.bin@0x08000000`) passe
+        par `program_image` : les symboles restent ceux de l'ELF de la session."""
+        from .memtools import is_image
+        if is_image(elf):
+            return self.program_image(elf, verify)
         import time
         t0 = time.monotonic()
         if self.state == "running":
             self.halt()
         self.gdb.command(f'-file-exec-and-symbols "{elf}"')
         self.elf = elf
+        for path, offset in self.extra_symbols:  # `file` oublie les symboles ajoutés
+            self._add_symbol_file(path, offset)
         if self.target is not None:
             if hasattr(self.target, "elf"):      # QEMU : relancé plus tard avec ce firmware
                 self.target.elf = elf
@@ -610,6 +618,61 @@ class Session:
         result.seconds = time.monotonic() - t0
         self._emit("stopped", {"reason": "programmed"})
         return result
+
+    def program_image(self, spec: str, verify: bool = True) -> "ProgramResult":
+        """Programme une image HEX, S-record ou binaire (`fw.bin@0x08000000`) : comme
+        `program`, par le `load` de gdb (flash par le serveur), sur un Intel HEX écrit pour
+        l'occasion ; vérification par relecture. Les symboles ne changent pas."""
+        import tempfile
+        import time
+
+        from .memtools import compare, format_ihex, read_image
+        t0 = time.monotonic()
+        segments = read_image(spec)
+        if self.state == "running":
+            self.halt()
+        if self.target is not None and self.target.needs_load:
+            self.target.reset(self)
+        fd, tmp = tempfile.mkstemp(suffix=".hex", prefix="gdbtrace-")
+        try:
+            with os.fdopen(fd, "w", encoding="ascii") as fh:
+                fh.write(format_ihex(segments))
+            self.gdb.console(f'load "{tmp}"', timeout=300)
+        finally:
+            os.unlink(tmp)
+        result = ProgramResult(spec, sum(len(d) for _a, d in segments))
+        if verify:
+            try:
+                cmp = compare(self.read_memory, spec)
+            except GdbError as exc:
+                result.verify_error = str(exc)
+            else:
+                result.verified = cmp.same
+                if not cmp.same:
+                    result.mismatched = [cmp.summary()]
+        if self.target is not None:
+            self.target.reset(self)
+        else:
+            self.monitor("reset halt")
+        self.cli("flushregs")
+        result.seconds = time.monotonic() - t0
+        self._emit("stopped", {"reason": "programmed"})
+        return result
+
+    # ------------------------------------------------------------------ symboles ajoutés
+    def add_symbols(self, path: str, offset: int = 0) -> None:
+        """Symboles d'un autre ELF (bootloader, bibliothèque chargée à part, image non
+        sécurisée…) en plus de ceux de l'ELF de la session : `add-symbol-file` de gdb, gardés
+        après une programmation. `offset` : décalage de chargement."""
+        path = os.path.abspath(path)
+        if not os.path.isfile(path):
+            raise RuntimeError(f"ELF introuvable : {path}")
+        self._add_symbol_file(path, offset)
+        self.extra_symbols = [(p, o) for p, o in self.extra_symbols if p != path] + [(path, offset)]
+
+    def _add_symbol_file(self, path: str, offset: int) -> None:
+        opt = f" -o {offset:#x}" if offset else ""
+        self.gdb.console(f'add-symbol-file "{path}"{opt}')
 
     def verify_by_read(self, elf: str) -> list[str]:
         """Vérification par relecture (serveur dont le CRC de `compare-sections` n'est pas

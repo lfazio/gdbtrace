@@ -33,8 +33,12 @@ class LineEntry:
 
 
 class SymbolTable:
-    def __init__(self, elf_path: str):
+    """Symboles et lignes de l'ELF, et de ceux ajoutés (`extra` : [(chemin, décalage)], par
+    exemple un bootloader : `Session.add_symbols`)."""
+
+    def __init__(self, elf_path: str, extra=()):
         self.path = elf_path
+        self.extra: list[tuple[str, int]] = list(extra)
         self.functions: list[Function] = []
         self.objects: dict[str, tuple[int, int]] = {}
         self.lines: list[LineEntry] = []
@@ -52,7 +56,16 @@ class SymbolTable:
         return i >= 0 and self.mapping[i][1] == "d"
 
     def _load(self) -> None:
-        with open(self.path, "rb") as fh:
+        for path, offset in [(self.path, 0)] + self.extra:
+            self._load_elf(path, offset)
+        # à adresse égale, l'alias qui a une taille en dernier : c'est lui que trouve
+        # function_at() (ex. __aeabi_uidiv, taille 0, alias de __udivsi3)
+        self.functions.sort(key=lambda f: (f.start, f.size))
+        self.mapping.sort()
+        self.lines.sort(key=lambda e: e.address)
+
+    def _load_elf(self, path: str, offset: int) -> None:
+        with open(path, "rb") as fh:
             elf = ELFFile(fh)
             for sec in elf.iter_sections():
                 if not isinstance(sec, SymbolTableSection):
@@ -61,22 +74,19 @@ class SymbolTable:
                     kind = sym["st_info"]["type"]
                     if not sym.name or sym["st_shndx"] == "SHN_UNDEF":
                         continue
+                    value = sym["st_value"] + offset
                     if sym.name[:2] in ("$t", "$a", "$d") and (len(sym.name) == 2 or sym.name[2] == "."):
-                        self.mapping.append((sym["st_value"], sym.name[1]))
+                        self.mapping.append((value, sym.name[1]))
                         continue
                     if kind == "STT_FUNC":
                         # bit 0 = Thumb sur ARM, ce n'est pas une partie de l'adresse
-                        self.functions.append(Function(sym.name, sym["st_value"] & ~1, sym["st_size"]))
-                    elif kind == "STT_OBJECT":
-                        self.objects[sym.name] = (sym["st_value"], sym["st_size"])
-            # à adresse égale, l'alias qui a une taille en dernier : c'est lui que trouve
-            # function_at() (ex. __aeabi_uidiv, taille 0, alias de __udivsi3)
-            self.functions.sort(key=lambda f: (f.start, f.size))
-            self.mapping.sort()
+                        self.functions.append(Function(sym.name, value & ~1, sym["st_size"]))
+                    elif kind == "STT_OBJECT" and sym.name not in self.objects:
+                        self.objects[sym.name] = (value, sym["st_size"])
             if elf.has_dwarf_info():
-                self._load_lines(elf)
+                self._load_lines(elf, offset)
 
-    def _load_lines(self, elf: ELFFile) -> None:
+    def _load_lines(self, elf: ELFFile, offset: int = 0) -> None:
         dwarf = elf.get_dwarf_info()
         entries: dict[int, LineEntry] = {}
         for cu in dwarf.iter_CUs():
@@ -103,8 +113,8 @@ class SymbolTable:
                     if not os.path.isabs(base):
                         base = os.path.join(comp_dir, base)
                     name = os.path.normpath(os.path.join(base, name))
-                entries[st.address] = LineEntry(st.address, name, st.line)
-        self.lines = sorted(entries.values(), key=lambda e: e.address)
+                entries[st.address + offset] = LineEntry(st.address + offset, name, st.line)
+        self.lines.extend(entries.values())
 
     # ------------------------------------------------------------------ requêtes
     def function_at(self, addr: int) -> Function | None:

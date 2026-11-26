@@ -206,12 +206,18 @@ class BatchSession:
             raise
         self.rc = 0
         if program:
-            res = s.program(elf, verify)
+            from .core.memtools import is_image
+            image = args.program if args.program and is_image(args.program) else elf
+            res = s.program(image, verify)
             log(res.summary())
             self.rc = 1 if res.mismatched else 0
+        for spec in args.add_symbols:            # bootloader, image non sécurisée…
+            from .core.memtools import split_address
+            path, offset = split_address(spec)
+            s.add_symbols(path, offset or 0)
         self.live = live = target.live_memory()
         trace = self.trace
-        self.symbols = symbols = SymbolTable(elf)
+        self.symbols = symbols = SymbolTable(elf, s.extra_symbols)
         msg = None
         if not target.native:                    # trace d'instructions : Cortex-M seulement
             msg = trace.setup_etm(elf, symbols, cycle_accurate=args.etm_cycle_accurate)
@@ -363,7 +369,8 @@ def build_parser() -> argparse.ArgumentParser:
     g2 = p.add_argument_group("programmation")
     g2.add_argument("--program", nargs="?", const="", metavar="ELF",
                     help="programmer l'ELF dans la cible à la connexion : reset, écriture, vérification, "
-                         "reset (ELF par défaut : celui de la ligne de commande)")
+                         "reset (ELF par défaut : celui de la ligne de commande) ; aussi une image "
+                         "HEX, S-record ou binaire (FICHIER.bin@0x08000000), symboles de l'ELF"),
     g2.add_argument("--no-verify", action="store_true", help="ne pas vérifier la programmation")
     c = p.add_argument_group("couverture de code (trace ETM)")
     c.add_argument("--coverage", action="append", default=[], metavar="FICHIER",
@@ -372,6 +379,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="ajouter une couverture enregistrée (campagnes précédentes) ; répétable")
     g2.add_argument("--go", action="store_true",
                     help="lancer le programme après la connexion (et la programmation)")
+    g2.add_argument("--add-symbols", action="append", default=[], metavar="ELF[@DÉCALAGE]",
+                    help="symboles d'un autre ELF en plus (bootloader, image chargée à part) ; "
+                         "répétable")
     g2.add_argument("--break-on-fault", action="store_true",
                     help="arrêter la cible à l'entrée de toute faute (HardFault, BusFault…) : vector "
                          "catch, sinon breakpoints sur les gestionnaires ; vue Faute")
@@ -487,7 +497,12 @@ def resolve_session(p: argparse.ArgumentParser, args) -> tuple:
     """Après l'analyse (configuration comprise) : ELF (`--program`, `--pid`), règles
     (`validate`), SVD donné par son nom ; `p.error` sinon. Retourne (elf, program, verify,
     load, svd_warning). Commun à la ligne de commande et à l'outil `connect` du serveur MCP."""
-    if args.program:
+    from .core.memtools import is_image
+    if args.program and is_image(args.program):     # HEX, binaire : symboles de l'ELF
+        if not args.elf:
+            p.error("--program avec une image HEX, S-record ou binaire : l'ELF de la ligne de "
+                    "commande donne les symboles")
+    elif args.program:
         if args.elf and os.path.abspath(args.elf) != os.path.abspath(args.program):
             p.error("deux ELF différents : l'ELF de la ligne de commande et celui de --program")
         args.elf = args.program
@@ -591,6 +606,8 @@ def start_gui_session(app, args) -> None:
         if args.break_on_fault and not app.native:
             app.fault_catch_var.set(True)
             app.toggle_fault_catch()
+        for spec in args.add_symbols:
+            app.add_symbols(spec)
         for path in args.coverage_merge:
             app.safe(app.api.cov.load, path)
             log(f"couverture fusionnée : {path}")
@@ -604,8 +621,10 @@ def start_gui_session(app, args) -> None:
     elif not os.path.isfile(elf):
         app.report_error(f"ELF introuvable : {elf}")
     elif program:
+        from .core.memtools import is_image
+        image = args.program if args.program and is_image(args.program) else elf
         app.connect(elf, target, args.gdb, load,
-                    then=lambda: app.program_elf(elf, verify, then=after_connect))
+                    then=lambda: app.program_elf(image, verify, then=after_connect))
     else:
         app._remember_elf(elf)
         app.connect(elf, target, args.gdb, load, then=after_connect)

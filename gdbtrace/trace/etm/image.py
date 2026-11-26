@@ -136,7 +136,9 @@ def decode_v8m(addr: int, code: bytes) -> "Instr | None":
 class CodeImage:
     """Mémoire en lecture seule des segments PT_LOAD exécutables (et données) de l'ELF."""
 
-    def __init__(self, elf_path: str):
+    def __init__(self, elf_path: str, extra=()):
+        """`extra` : autres ELF [(chemin, décalage)] dont le code s'ajoute à l'image
+        (bootloader, image non sécurisée : `Session.add_symbols`)."""
         if capstone is None:
             raise RuntimeError("le module capstone est requis : pip install capstone")
         self.path = elf_path
@@ -144,19 +146,21 @@ class CodeImage:
         self.arch: int | None = None              # Tag_CPU_arch (v8-M : décodage complété)
         ends: dict[int, int] = {}                 # fonctions : début → fin (alias fusionnés)
         marks: list[tuple[int, str]] = []         # symboles de correspondance : t, a ou d
-        with open(elf_path, "rb") as fh:
-            elf = ELFFile(fh)
-            self.arch = elf_cpu_arch(elf)
-            for seg in elf.iter_segments():
-                if seg["p_type"] == "PT_LOAD" and seg["p_filesz"]:
-                    self.segments.append((seg["p_vaddr"], seg.data()))
-            symtab = elf.get_section_by_name(".symtab")
-            for sym in symtab.iter_symbols() if symtab is not None else ():
-                addr, name = sym["st_value"] & ~1, sym.name
-                if sym["st_info"]["type"] == "STT_FUNC" and sym["st_size"]:
-                    ends[addr] = max(ends.get(addr, 0), addr + sym["st_size"])
-                elif name[:2] in ("$t", "$a", "$d") and (len(name) == 2 or name[2] == "."):
-                    marks.append((addr, name[1]))
+        for path, offset in [(elf_path, 0)] + list(extra):
+            with open(path, "rb") as fh:
+                elf = ELFFile(fh)
+                if self.arch is None:
+                    self.arch = elf_cpu_arch(elf)
+                for seg in elf.iter_segments():
+                    if seg["p_type"] == "PT_LOAD" and seg["p_filesz"]:
+                        self.segments.append((seg["p_vaddr"] + offset, seg.data()))
+                symtab = elf.get_section_by_name(".symtab")
+                for sym in symtab.iter_symbols() if symtab is not None else ():
+                    addr, name = (sym["st_value"] + offset) & ~1, sym.name
+                    if sym["st_info"]["type"] == "STT_FUNC" and sym["st_size"]:
+                        ends[addr] = max(ends.get(addr, 0), addr + sym["st_size"])
+                    elif name[:2] in ("$t", "$a", "$d") and (len(name) == 2 or name[2] == "."):
+                        marks.append((addr, name[1]))
         self.segments.sort()
         self._init_disasm(ends, marks)
 

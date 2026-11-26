@@ -238,10 +238,12 @@ class ScriptAPI:
         if not elf:
             raise RuntimeError("aucun ELF à programmer")
         res = self.s.program(elf, verify)
-        self.symbols = None                     # rechargés à la demande
-        self._rtos = None
-        if self.on_program is not None:
-            self.on_program(elf)
+        from .memtools import is_image
+        if not is_image(elf):                   # HEX, binaire : les symboles ne changent pas
+            self.symbols = None                 # rechargés à la demande
+            self._rtos = None
+            if self.on_program is not None:
+                self.on_program(elf)
         if not quiet:
             print(res.summary())
         return res
@@ -250,7 +252,7 @@ class ScriptAPI:
     def _symbols(self):
         if self.symbols is None and self.s.elf:
             from .symbols import SymbolTable
-            self.symbols = SymbolTable(self.s.elf)
+            self.symbols = SymbolTable(self.s.elf, self.s.extra_symbols)
         return self.symbols
 
     def profile(self, seconds: float = 1.0, per_task: bool = False, show: int = 15):
@@ -840,6 +842,84 @@ class ScriptAPI:
         if self.s.state == "stopped":
             return self.s.read_memory(addr, n)
         return self.live_read(addr, n)
+
+    # outils mémoire (Data.SAVE, Data.LOAD, Data.Set, Data.Find, Data.ComPare)
+    def _where(self, addr, n: int | None = None) -> tuple[int, int | None]:
+        """Adresse (entier, ou expression : `"sensors"`, `"&buf[4]"`, `"0x20000000"`) et taille
+        (par défaut, celle de l'objet nommé)."""
+        if isinstance(addr, int):
+            return addr, n
+        text = str(addr).strip()
+        try:
+            return int(text, 0), n
+        except ValueError:
+            pass
+        a = self.s.address_of_expr(text)
+        if n is None:
+            n = self.s.sizeof(text)
+        return a, n
+
+    def mem_save(self, addr, n: int | None, path: str) -> str:
+        """Data.SAVE : `n` octets à `addr` dans un fichier ; format d'après l'extension (.bin,
+        .hex Intel HEX, .srec S-record). `addr` peut nommer un objet (`"sensors"` : sa taille
+        par défaut). Marche cible en marche par le canal mémoire."""
+        from .memtools import save
+        a, n = self._where(addr, n)
+        if not n:
+            raise ValueError("taille à donner")
+        fmt = save(self.mem, a, n, path)
+        print(f"{n} octets de {a:#x} écrits dans {path} ({fmt})")
+        return path
+
+    def mem_load(self, path: str, addr=None) -> list[tuple[int, int]]:
+        """Data.LOAD : écrit une image en mémoire (RAM ; la flash se programme par
+        `program`). HEX, S-record et ELF portent leurs adresses ; un binaire prend `addr`
+        (ou `fichier.bin@0x20000000`). Rend [(adresse, taille)] des segments écrits."""
+        from .memtools import load
+        self._need_stopped()
+        at = None if addr is None else self._where(addr)[0]
+        segs = load(self.s.write_memory, path, at)
+        print(", ".join(f"{n} octets à {a:#x}" for a, n in segs) + f" depuis {path}")
+        return segs
+
+    def mem_fill(self, addr, n: int | None, pattern=0) -> None:
+        """Data.Set : `n` octets à `addr` remplis du motif répété (entier, bytes, texte)."""
+        from .memtools import fill
+        self._need_stopped()
+        a, n = self._where(addr, n)
+        if not n:
+            raise ValueError("taille à donner")
+        fill(self.s.write_memory, a, n, pattern)
+
+    def mem_find(self, addr, n: int | None, pattern, limit: int = 100, align: int = 1) -> list[int]:
+        """Data.Find : adresses du motif (entier petit-boutiste, bytes, texte) dans [addr,
+        addr+n), au plus `limit`. Marche cible en marche par le canal mémoire."""
+        from .memtools import find
+        a, n = self._where(addr, n)
+        if not n:
+            raise ValueError("taille à donner")
+        found = find(self.mem, a, n, pattern, limit, align)
+        print(f"{len(found)} occurrence(s)" + (" : " + ", ".join(f"{x:#x}" for x in found[:16])
+                                              if found else "") + (" …" if len(found) > 16 else ""))
+        return found
+
+    def mem_compare(self, path: str, addr=None):
+        """Data.ComPare : compare une image (HEX, S-record, ELF, binaire à `addr`) à la
+        mémoire ; rend la `Comparison` (différences, premières adresses)."""
+        from .memtools import compare
+        at = None if addr is None else self._where(addr)[0]
+        res = compare(self.mem, path, at)
+        print(res.summary())
+        return res
+
+    def add_symbols(self, path: str, offset: int = 0) -> None:
+        """Ajoute les symboles d'un autre ELF (bootloader, image chargée à part) à ceux de
+        l'ELF de la session ; `offset` : décalage de chargement. Profil, trace et couverture
+        les connaissent aussi."""
+        self.s.add_symbols(path, offset)
+        self.symbols = None
+        if self.on_program is not None and self.s.elf:
+            self.on_program(self.s.elf)
 
     def live_read(self, addr: int, n: int) -> bytes:
         """Lecture par le canal latéral (OpenOCD TCL / QEMU QMP), cible arrêtée ou non."""

@@ -164,6 +164,7 @@ class App:
         m.add_separator()
         m.add_command(label="Exécuter un script…", command=self._ask_script)
         m.add_command(label="Charger un SVD…", command=self._ask_svd)
+        m.add_command(label="Ajouter des symboles…", command=self._ask_add_symbols)
         m.add_separator()
         m.add_command(label="Enregistrer le layout", command=self.save_layout)
         m.add_command(label="Déconnecter", command=self.disconnect)
@@ -306,14 +307,18 @@ class App:
         """Programme l'ELF `path` dans la cible (flash, ou RAM sous QEMU), vérifie, reset ;
         symboles, vues et trace passent au nouveau programme. Sans cible connectée, la cible
         de la ligne de commande est lancée avec cet ELF."""
-        path = os.path.abspath(path)
-        if not os.path.isfile(path):
-            self.report_error(f"ELF introuvable : {path}")
+        from ..core.memtools import is_image, split_address
+        image = is_image(path)
+        file, at = split_address(path)
+        path = os.path.abspath(file) + (f"@{at:#x}" if at is not None else "")
+        if not os.path.isfile(os.path.abspath(file)):
+            self.report_error(f"fichier introuvable : {file}")
             return
         if self._refuse_if_busy():              # une programmation à la fois
             return
         verify = self.verify_program if verify is None else verify
-        self._remember_elf(path)
+        if not image:
+            self._remember_elf(path)
         s = self.session
         name = os.path.basename(path)
         if s is not None and s.state != "disconnected":
@@ -338,8 +343,9 @@ class App:
                     then(res)
             self.run_action(job, then=done)
             return
-        if self.target_factory is None:
-            self.status.set("Pas de cible : lancer gdbtrace avec --qemu, --openocd ou --remote")
+        if self.target_factory is None or image:
+            self.status.set("Pas de cible : lancer gdbtrace avec --qemu, --openocd ou --remote"
+                            + (" et l'ELF des symboles, puis programmer l'image" if image else ""))
             return
         # cible de la ligne de commande lancée avec cet ELF, puis programmation
         self.connect(path, self.target_factory(path), self.gdb_path, load=False,
@@ -358,11 +364,21 @@ class App:
         cur = self.session.elf if self.session and self.session.elf else \
             (self.recent_elfs[0] if self.recent_elfs else None)
         path = filedialog.askopenfilename(
-            title="ELF à programmer dans la cible",
+            title="ELF ou image à programmer dans la cible",
             initialdir=os.path.dirname(cur) if cur else os.getcwd(),
-            filetypes=[("Exécutables ELF", "*.elf *.axf *.out"), ("Tous", "*")])
-        if path:
-            self.program_elf(path)
+            filetypes=[("Exécutables ELF", "*.elf *.axf *.out"),
+                       ("Images (Intel HEX, S-record, binaire)", "*.hex *.ihex *.srec *.s19 *.s28 *.s37 *.mot *.bin"),
+                       ("Tous", "*")])
+        if not path:
+            return
+        from ..core.memtools import image_format
+        if image_format(path) == "bin":         # binaire brut : l'adresse est à donner
+            at = simpledialog.askstring("Binaire brut", "Adresse de chargement :",
+                                        initialvalue="0x08000000", parent=self.root)
+            if not at:
+                return
+            path = f"{path}@{at.strip()}"
+        self.program_elf(path)
 
     def _fill_recent_menu(self) -> None:
         self.recent_menu.delete(0, "end")
@@ -382,7 +398,7 @@ class App:
         """Le programme de la cible a changé : symboles, trace ETM, caches des vues."""
         from ..views.code import clear_source_cache
         try:
-            self.symbols = SymbolTable(elf)
+            self.symbols = SymbolTable(elf, self.session.extra_symbols if self.session else ())
         except Exception as exc:  # noqa: BLE001
             self.symbols = None
             self.report_error(f"lecture des symboles : {exc}")
@@ -905,6 +921,26 @@ class App:
         path = filedialog.askopenfilename(filetypes=[("Python", "*.py"), ("Tous", "*")])
         if path:
             self.run_script(path)
+
+    # ================================================================== symboles ajoutés
+    def add_symbols(self, spec: str) -> None:
+        """Symboles d'un autre ELF (`ELF[@décalage]`) en plus de ceux de la session : gdb, puis
+        table des symboles, trace et vues (Fichier › Ajouter des symboles…, `--add-symbols`)."""
+        from ..core.memtools import split_address
+        if self.session is None or self.session.state == "disconnected":
+            self.report_error("ajouter des symboles : pas de session")
+            return
+        path, offset = split_address(spec)
+        if self.safe(self.session.add_symbols, path, offset or 0) is None and \
+                os.path.abspath(path) in (p for p, _o in self.session.extra_symbols):
+            self.write_console(f"symboles ajoutés : {path}\n", "gdb")
+            self._program_changed(self.session.elf)
+
+    def _ask_add_symbols(self) -> None:
+        path = filedialog.askopenfilename(title="ELF dont les symboles s'ajoutent",
+                                          filetypes=[("Exécutables ELF", "*.elf *.axf *.out"), ("Tous", "*")])
+        if path:
+            self.add_symbols(path)
 
     # ================================================================== fautes
     def report_fault(self) -> None:

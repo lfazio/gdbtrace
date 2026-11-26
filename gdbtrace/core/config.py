@@ -51,7 +51,7 @@ SERVER_KEYS = {
     "remote": ["remote", "tcl", "remote-exec", "args", "cwd", "non-stop"],
 }
 SERVER_COMMON = ["gdb", "gdb-port", "no-load"]
-CIBLE_KEYS = ["elf", "svd", "cpu-hz", "programmer", "verifier", "go", "break-on-fault"]
+CIBLE_KEYS = ["elf", "svd", "cpu-hz", "programmer", "verifier", "go", "break-on-fault", "add-symbols"]
 COUVERTURE_KEYS = ["fusionner", "exporter"]
 #: options de trace de la ligne de commande, dans l'ordre de --help
 TRACE_KEYS = ["swo", "swo-file", "swo-formatter", "swo-config", "swo-hz", "swo-port", "var-trace",
@@ -62,7 +62,8 @@ TRACE_KEYS = ["swo", "swo-file", "swo-formatter", "swo-config", "swo-hz", "swo-p
 TOP_KEYS = ["gdbtrace", "nom", "cible", "serveur", "os", "script", "couverture", "trace"]
 
 #: clés dont la valeur est un chemin de fichier (relatif au YAML)
-PATH_KEYS = {("cible", "elf"), ("cible", "svd"), ("serveur", "openocd"), ("serveur", "cwd"),
+PATH_KEYS = {("cible", "elf"), ("cible", "svd"), ("cible", "programmer"), ("cible", "add-symbols"),
+             ("serveur", "openocd"), ("serveur", "cwd"),
              ("", "script"), ("couverture", "fusionner"), ("couverture", "exporter"),
              ("trace", "swo-file"), ("trace", "trace-file")}
 #: clé → option de la ligne de commande (quand le nom diffère)
@@ -281,10 +282,12 @@ class SessionConfig:
             srv = {k: v for k, v in (d.get("serveur") or {}).items() if k in SERVER_COMMON}
             for key, v in srv.items():
                 argv += _option(p, "serveur", key, v)
-        for key in ("svd", "cpu-hz", "go", "break-on-fault"):
+        for key in ("svd", "cpu-hz", "go", "break-on-fault", "add-symbols"):
             if key in cible:
                 argv += _option(p, "cible", key, cible[key])
-        if cible.get("programmer"):
+        if isinstance(cible.get("programmer"), str):    # image HEX, S-record, binaire@adresse
+            argv += ["--program", cible["programmer"]]
+        elif cible.get("programmer"):
             argv.append("--program")
         if cible.get("verifier") is False:
             argv.append("--no-verify")
@@ -326,13 +329,16 @@ class SessionConfig:
         if changed("cpu_hz"):
             cible["cpu-hz"] = args.cpu_hz
         if args.program is not None:
-            cible["programmer"] = True
+            from .memtools import is_image
+            cible["programmer"] = os.path.abspath(args.program) if args.program and is_image(args.program) else True
         if args.no_verify:
             cible["verifier"] = False
         if args.go:
             cible["go"] = True
         if args.break_on_fault:
             cible["break-on-fault"] = True
+        if args.add_symbols:
+            cible["add-symbols"] = [os.path.abspath(p) for p in args.add_symbols]
         if cible:
             d["cible"] = cible
         srv: dict[str, Any] = {}

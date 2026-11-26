@@ -154,7 +154,8 @@ class TraceManager:
         try:
             from .etm.image import CodeImage
             from .etm.trace import EtmTrace
-            self.etm = EtmTrace(CodeImage(elf), symbols, cycle_accurate=cycle_accurate,
+            self.etm = EtmTrace(CodeImage(elf, getattr(symbols, "extra", ())), symbols,
+                                cycle_accurate=cycle_accurate,
                                 version=version)
         except Exception as exc:  # noqa: BLE001 - capstone absent, ELF illisible
             self.etm = None
