@@ -485,6 +485,36 @@ class ScriptAPI:
             return out
         return walk((), 0)
 
+    def irq_stats(self, unit: str = "us", n: int | None = None) -> list[dict]:
+        """Trace.STATistic.InterruptIsr : par exception, entrées, durée (sans les exceptions
+        imbriquées) min/moy/max, période entre deux entrées et gigue, préemptions, entrées
+        enchaînées. Depuis la trace d'instructions (ETM, MTB) si elle existe, sinon depuis la
+        trace des exceptions de l'ITM (unités d'horodatage ITM)."""
+        from ..trace.irqstats import sorted_rows
+        etm = self.trace.etm if self.trace is not None else None
+        if etm is not None and etm.history:
+            from ..trace.timing import TimingAnalyzer
+            r = TimingAnalyzer(etm.image, self._symbols()).analyze(etm.last(n or etm.history.maxlen or 200_000))
+            rows = sorted_rows(r.irq)
+            conv, u = self._time_unit(unit)
+            src = f"trace d'instructions, durées {etm.timing}"
+        elif self.trace is not None and self.trace.exceptions.rows():
+            rows = self.trace.exceptions.rows()
+            conv, u = (lambda c: c), "ticks ITM"
+            src = "trace des exceptions de l'ITM"
+        else:
+            print("pas de trace : ni trace d'instructions (ETM, MTB) ni trace des exceptions de l'ITM")
+            return []
+        fmt = lambda c: "" if c is None else f"{conv(c):,.2f}"  # noqa: E731
+        print(f"exceptions ({src}) ; durées et périodes en {u}")
+        print(f"  {'exception':<14} {'entrées':>7} {'durée min':>10} {'moy':>10} {'max':>10} "
+              f"{'période moy':>12} {'gigue':>10} {'préemptée':>9} {'préempte':>8} {'enchaînées':>10}")
+        for st in rows:
+            print(f"  {st.name.strip('[]'):<14} {st.count:>7} {fmt(st.min):>10} {fmt(st.avg):>10} "
+                  f"{fmt(st.max if st.complete else None):>10} {fmt(st.period_avg):>12} {fmt(st.jitter):>10} "
+                  f"{st.preempted:>9} {st.preempting:>8} {st.tail:>10}")
+        return [st.as_dict() for st in rows]
+
     def timeline(self, n: int = 30, unit: str = "us", min_duration: float = 0.0):
         """Trace.Chart.Func en texte : les `n` derniers appels (début, durée, profondeur),
         en ignorant ceux plus courts que `min_duration` (dans l'unité choisie)."""

@@ -96,8 +96,8 @@ def check_results(sess, text, prof, exc):
     assert text.text(0) == "hello\nworld"
     assert [(r.name, r.samples) for r in prof.top_functions()] == [("fib", 5), ("main", 2), (SLEEP, 1)]
     rows = {r.name: r for r in exc.rows()}
-    assert rows["SysTick"].entries == 2 and rows["SysTick"].total_time == 150
-    assert rows["SysTick"].max_time == 100 and rows["IRQ0"].entries == 1
+    assert rows["SysTick"].count == 2 and rows["SysTick"].total == 150
+    assert rows["SysTick"].max == 100 and rows["IRQ0"].count == 1
     assert sess.stats["overflows"] == 1 and sess.stats["erreurs"] == 0
 
 

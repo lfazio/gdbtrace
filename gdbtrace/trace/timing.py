@@ -35,6 +35,7 @@ from dataclasses import dataclass, field, replace
 
 from .etm.image import DIRECT, INDIRECT
 from .etm.qemu_log import MARKS, CycleMark, Event, ExcEntry, ExcReturn, Step, TraceGap
+from .irqstats import IrqStats
 from .itm import exception_name
 
 FUNCTION, EXCEPTION = "function", "exception"
@@ -126,6 +127,8 @@ class TimingResult:
     context_switches: int = 0
     #: arbre d'appels : chemin (noms, de la racine au nœud) → statistiques du nœud
     tree: dict[tuple, FuncStats] = field(default_factory=dict)
+    #: exceptions : nom (« [SysTick] ») → entrées, durées, période, préemptions
+    irq: dict[str, IrqStats] = field(default_factory=dict)
 
     def rows(self, kind: str | None = None) -> list[FuncStats]:
         out = [s for s in self.stats.values() if kind is None or s.kind == kind]
@@ -198,6 +201,7 @@ class TimingAnalyzer:
         self.stats: dict[str, FuncStats] = {}
         self.tree: dict[tuple, FuncStats] = {}
         self._paths: set[tuple] = set()
+        self.irq: dict[str, IrqStats] = {}
         self.intervals: list[Interval] = []
         self.t = 0
         self.prev: _Prev | None = None
@@ -220,7 +224,7 @@ class TimingAnalyzer:
         self.suspended = []
         if len(self.intervals) > self.max_intervals:
             self.intervals = self.intervals[-self.max_intervals:]
-        return TimingResult(self.stats, self.intervals, self.t, self.switches, self.tree)
+        return TimingResult(self.stats, self.intervals, self.t, self.switches, self.tree, self.irq)
 
     # ------------------------------------------------------------------ outils
     def _func(self, addr: int):
@@ -280,6 +284,8 @@ class TimingAnalyzer:
             name = fr.path[-1] if fr.path else fr.name
             node = self.tree[fr.path] = FuncStats(name, fr.kind, entry=fr.entry if name == fr.name else None)
         _add(node, gross, fr.self_c, complete)
+        if fr.kind == EXCEPTION and complete:
+            self._irq(fr.name).on_duration(gross)
 
     # ------------------------------------------------------------------ tâches (RTOS)
     def _suspend(self, base: int, prev: "_Prev") -> None:
@@ -425,6 +431,12 @@ class TimingAnalyzer:
         self.t += e.cycles
         self.prev = _Prev(addr, ins)
 
+    def _irq(self, name: str, number: int | None = None) -> IrqStats:
+        st = self.irq.get(name)
+        if st is None:
+            st = self.irq[name] = IrqStats(name, number)
+        return st
+
     def _exc_entry(self, e: ExcEntry) -> None:
         if e.tailchain:                         # fin de l'exception précédente sans dépilement
             k = self._last_exception()
@@ -433,6 +445,11 @@ class TimingAnalyzer:
                 self._close(k)
                 self.prev = saved
         label = f"[{exception_name(e.number)}]"
+        below = self._last_exception()          # exception interrompue (imbrication)
+        if below is not None:
+            self._irq(self.stack[below].name).preempted += 1
+        self._irq(label, e.number).on_entry(self.t, tail=e.tailchain, preempting=below is not None,
+                                            cycles=e.cycles)
         self.stack.append(_Frame(label, EXCEPTION, self.t, len(self.stack), entry=e.handler,
                                  handler=e.handler, saved_prev=self.prev,
                                  path=self._path((), label)))

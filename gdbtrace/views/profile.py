@@ -58,8 +58,10 @@ class ProfileView(View):
         self.lines.bind("<Double-1>", lambda _e: self._goto_line())
         self.tasks = self._tree(frames["Tâches"], [("n", "Échant.", 70), ("pct", "%", 60),
                                                    ("bar", "", 260)], ("Tâche", 160))
-        self.excs = self._tree(frames["Exceptions"], [("n", "Entrées", 70), ("total", "Temps total", 100),
-                                                      ("max", "Temps max", 90)], ("Exception", 160))
+        self.excs = self._tree(frames["Exceptions"], [("n", "Entrées", 64), ("total", "Temps total", 90),
+                                                      ("min", "Durée min", 76), ("max", "Durée max", 76),
+                                                      ("period", "Période moy", 84), ("jitter", "Gigue", 66),
+                                                      ("pre", "Préemptée", 70)], ("Exception", 150))
 
         self.profile = Profile(app.symbols)
         self.sampler: PcSampler | None = None
@@ -165,9 +167,11 @@ class ProfileView(View):
         for r in p.task_rows():
             self.tasks.insert("", "end", text=r.name, values=(r.samples, f"{r.percent:.1f}", _bar(r.percent)))
         self.excs.delete(*self.excs.get_children())
-        for r in self.app.trace.exceptions.rows():
-            self.excs.insert("", "end", text=f"{r.name} ({r.number})",
-                             values=(r.entries, r.total_time or "", r.max_time or ""))
+        for r in self.app.trace.exceptions.rows():           # unités d'horodatage ITM
+            self.excs.insert("", "end", text=f"{r.name} ({r.number})", values=(
+                r.count, r.total or "", "" if r.min is None else r.min, r.max or "",
+                f"{r.period_avg:.0f}" if r.period_avg else "", "" if r.jitter is None else r.jitter,
+                r.preempted or ""))
         self._show_lines()
 
     def _show_lines(self) -> None:

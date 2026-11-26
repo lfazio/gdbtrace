@@ -12,9 +12,9 @@ from __future__ import annotations
 import collections
 import socket
 import threading
-from dataclasses import dataclass
 from typing import Callable
 
+from .irqstats import IrqStats
 from .itm import ExceptionTrace, ItmDecoder, Overflow, Packet, PcSample, exception_name
 from .tpiu import TpiuDeformatter
 
@@ -291,17 +291,10 @@ def profile_sink(profile) -> PacketSink:
     return sink
 
 
-@dataclass
-class ExceptionRow:
-    number: int
-    name: str
-    entries: int
-    total_time: int           # unités de timestamp ITM (0 si horodatage désactivé)
-    max_time: int
-
-
 class ExceptionStats:
-    """Trace des exceptions : nombre d'entrées et temps passé (si horodatage ITM actif)."""
+    """Trace des exceptions de l'ITM (paquets du DWT) : par exception, entrées, durée (avec
+    l'horodatage ITM), période et gigue, préemptions (`trace/irqstats.py`). Durées et périodes
+    en unités d'horodatage ITM (0 : horodatage désactivé)."""
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -309,10 +302,14 @@ class ExceptionStats:
 
     def reset(self) -> None:
         with self._lock:
-            self.entries: dict[int, int] = {}
-            self.total: dict[int, int] = {}
-            self.max: dict[int, int] = {}
-            self._stack: list[tuple[int, int]] = []    # (numéro, ts d'entrée), imbrication
+            self.stats: dict[int, IrqStats] = {}
+            self._stack: list[tuple[int, int, int]] = []   # (numéro, ts d'entrée, ts interrompu)
+
+    def _get(self, num: int) -> IrqStats:
+        st = self.stats.get(num)
+        if st is None:
+            st = self.stats[num] = IrqStats(exception_name(num), num)
+        return st
 
     def __call__(self, pkts: list[Packet]) -> None:
         with self._lock:
@@ -320,20 +317,24 @@ class ExceptionStats:
                 if not isinstance(p, ExceptionTrace) or p.number == 0:
                     continue
                 if p.event == "entry":
-                    self.entries[p.number] = self.entries.get(p.number, 0) + 1
-                    self._stack.append((p.number, p.ts))
+                    if self._stack:
+                        self._get(self._stack[-1][0]).preempted += 1
+                    self._get(p.number).on_entry(p.ts if p.ts else None, preempting=bool(self._stack))
+                    self._stack.append((p.number, p.ts, 0))
                 elif p.event == "exit":
-                    # dépile jusqu'à l'exception qui sort (paquets perdus tolérés)
+                    # dépile jusqu'à l'exception qui sort (paquets perdus tolérés) ; le temps des
+                    # exceptions imbriquées est retiré de la durée de celle qu'elles ont interrompue
                     while self._stack:
-                        num, ts0 = self._stack.pop()
+                        num, ts0, nested = self._stack.pop()
                         if num == p.number:
-                            dt = p.ts - ts0
-                            self.total[num] = self.total.get(num, 0) + dt
-                            self.max[num] = max(self.max.get(num, 0), dt)
+                            if p.ts:
+                                dt = p.ts - ts0
+                                self._get(num).on_duration(dt - nested)
+                                if self._stack:
+                                    n2, t2, nest2 = self._stack[-1]
+                                    self._stack[-1] = (n2, t2, nest2 + dt)
                             break
 
-    def rows(self) -> list[ExceptionRow]:
+    def rows(self) -> list[IrqStats]:
         with self._lock:
-            return sorted((ExceptionRow(n, exception_name(n), c, self.total.get(n, 0),
-                                        self.max.get(n, 0)) for n, c in self.entries.items()),
-                          key=lambda r: -r.entries)
+            return sorted(self.stats.values(), key=lambda r: (-r.count, r.name))

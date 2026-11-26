@@ -58,9 +58,10 @@ class TimingView(View):
 
         self.tabs = ttk.Notebook(self)
         self.tabs.pack(fill="both", expand=True)
-        f_tab, f_tree, f_chart = ttk.Frame(self.tabs), ttk.Frame(self.tabs), ttk.Frame(self.tabs)
+        f_tab, f_tree, f_irq, f_chart = (ttk.Frame(self.tabs) for _ in range(4))
         self.tabs.add(f_tab, text="Fonctions")
         self.tabs.add(f_tree, text="Arbre d'appels")
+        self.tabs.add(f_irq, text="Exceptions")
         self.tabs.add(f_chart, text="Chronogramme")
 
         cols = [("kind", "Type", 72), ("calls", "Appels", 56), ("partial", "Partiels", 60),
@@ -100,6 +101,27 @@ class TimingView(View):
         self.calltree.bind("<<TreeviewOpen>>", lambda _e: self._open_node(self.calltree.focus()))
         self.calltree.bind("<Double-1>", lambda _e: self._goto_node(self.calltree.focus()))
         self._node_path: dict[str, tuple] = {}
+
+        # statistiques d'exceptions (Trace.STATistic.InterruptIsr)
+        icols = [("n", "Entrées", 60), ("dmin", "Durée min", 72), ("davg", "moy", 66), ("dmax", "max", 66),
+                 ("pmin", "Période min", 80), ("pavg", "moy", 70), ("pmax", "max", 70), ("jit", "Gigue", 66),
+                 ("pre", "Préemptée", 70), ("pre2", "Préempte", 66), ("tail", "Enchaînées", 70),
+                 ("ent", "Entrée", 56)]
+        self.irqs = ttk.Treeview(f_irq, columns=[c[0] for c in icols], show="tree headings", selectmode="browse")
+        self.irqs.heading("#0", text="Exception")
+        self.irqs.column("#0", width=130, stretch=True)
+        for cid, label, width in icols:
+            self.irqs.heading(cid, text=label)
+            self.irqs.column(cid, width=width, stretch=False, anchor="e")
+        ttk.Label(f_irq, foreground=MUTED, wraplength=700, justify="left",
+                  text="Durée : de l'entrée au retour, sans les exceptions plus prioritaires. Période : entre "
+                       "deux entrées ; gigue = plus longue − plus courte. Entrée : cycles de l'empilement. La "
+                       "latence entre la demande d'interruption et l'entrée ne se voit pas dans la trace."
+                  ).pack(side="bottom", fill="x", padx=4, pady=2)
+        isb = ttk.Scrollbar(f_irq, orient="vertical", command=self.irqs.yview)
+        self.irqs.configure(yscrollcommand=isb.set)
+        self.irqs.pack(side="left", fill="both", expand=True)
+        isb.pack(side="right", fill="y")
 
         self.chart = FlameChart(f_chart, self)
         self.result: TimingResult | None = None
@@ -207,6 +229,7 @@ class TimingView(View):
                                  + (f" — {r.context_switches} changements de tâche" if r.context_switches else ""))
         self._render_table()
         self._render_tree()
+        self._render_irqs()
         self.chart.set_data(r)
 
     def _sort(self, key: str) -> None:
@@ -227,6 +250,16 @@ class TimingView(View):
                 "exception" if s.kind == EXCEPTION else "fonction", s.calls, s.partial or "",
                 self.fmt(s.gross), f"{100 * s.gross / r.total:.1f}" if r.total else "",
                 self.fmt(s.min), self.fmt(s.max) if s.calls else "", self.fmt(s.avg), self.fmt(s.net)))
+
+    def _render_irqs(self) -> None:
+        from ..trace.irqstats import sorted_rows
+        self.irqs.delete(*self.irqs.get_children())
+        for st in sorted_rows(self.result.irq):
+            self.irqs.insert("", "end", text=st.name.strip("[]"), values=(
+                st.count, self.fmt(st.min), self.fmt(st.avg), self.fmt(st.max) if st.complete else "",
+                self.fmt(st.period_min), self.fmt(st.period_avg), self.fmt(st.period_max) if st.period_n else "",
+                self.fmt(st.jitter), st.preempted or "", st.preempting or "", st.tail or "",
+                f"{st.entry_avg:.0f}" if st.entry_avg else ""))
 
     # ------------------------------------------------------------------ arbre d'appels
     def _node_values(self, st) -> tuple:

@@ -112,6 +112,9 @@ TOOLS = [
     _tool("call_tree", "Arbre d'appels d'après la trace (brut et net par chemin d'appel ; une "
           "exception est la racine de son arbre) : `depth` niveaux (défaut 4), nœuds d'au moins "
           "`min_pct` % du temps (défaut 1).", {"depth": _I, "min_pct": _N}),
+    _tool("irq_stats", "Statistiques des exceptions : entrées, durée min/moy/max, période et gigue, "
+          "préemptions, enchaînements ; depuis la trace d'instructions (ETM, MTB), sinon la trace "
+          "des exceptions de l'ITM.", {}),
     _tool("trace_find", "Cherche dans la trace d'instructions (les `n` derniers événements, défaut "
           "50000) : adresse 0x…, nom de fonction (chaque entrée), « exception » ou « exception "
           "SysTick », ou texte ; `top` lignes (défaut 20).", {"query": _S, "n": _I, "top": _I}, ("query",)),
@@ -506,6 +509,10 @@ class GdbTraceMcp:
 
     def tool_call_tree(self, depth: int = 4, min_pct: float = 1.0) -> str:
         self.api.call_tree(depth, min_pct)
+        return ""
+
+    def tool_irq_stats(self) -> str:
+        self.api.irq_stats()
         return ""
 
     def tool_trace_find(self, query: str, n: int = 50_000, top: int = 20) -> str:

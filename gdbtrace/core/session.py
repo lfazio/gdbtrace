@@ -408,6 +408,7 @@ class Session:
                     self._loop_stop.set()
             for text in held:                   # sortie retenue pendant la marche (actions)
                 self._emit("output", {"stream": "console", "text": text})
+            self._settle_tty()                  # ses dernières lignes avant sa fin
             self.state = "exited"
             self.stop_reason = payload
             self._emit("exited", payload)
@@ -784,7 +785,28 @@ class Session:
                 return
             if not data:
                 return
-            self._emit("output", {"stream": "target", "text": data.decode(errors="replace")})
+            self._tty_reading = True
+            try:
+                self._emit("output", {"stream": "target", "text": data.decode(errors="replace")})
+            finally:
+                self._tty_reading = False
+
+    def _settle_tty(self, timeout: float = 0.3) -> None:
+        """Programme terminé : ce qu'il a écrit avant sa fin attend peut-être encore dans le
+        pseudo-terminal ; on laisse le fil lecteur le livrer (au plus `timeout`) pour que la
+        sortie précède l'événement « exited »."""
+        if self._pty is None:
+            return
+        import select
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            try:
+                pending, _w, _x = select.select([self._pty[0]], [], [], 0)
+            except (OSError, ValueError):
+                return
+            if not pending and not getattr(self, "_tty_reading", False):
+                return
+            time.sleep(0.005)
 
     def send_input(self, text: str) -> None:
         """Programme natif : `text` arrive sur son entrée standard."""
