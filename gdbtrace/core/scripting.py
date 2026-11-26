@@ -164,6 +164,9 @@ class ScriptAPI:
         self._chrono = Chrono(session, core=lambda: self.trace.core if self.trace is not None else None)
         session.add_resume_hook(self._chrono.start)
         self._fault_catch = None            # arrêt sur faute (FaultCatch)
+        #: TERM : semihosting et RTT (vue Terminal, `terminal()`)
+        from .terminal import Terminal
+        self.term = Terminal()
 
     def chrono(self) -> dict | None:
         """RunTime : temps du cœur pendant la dernière exécution (de la reprise à l'arrêt :
@@ -186,6 +189,22 @@ class ScriptAPI:
     def chrono_reset(self) -> None:
         """Remet à zéro le cumul du chrono."""
         self._chrono.reset()
+
+    # terminal
+    def terminal(self, quiet: bool = False) -> str:
+        """TERM : texte reçu du programme (semihosting, RTT) depuis l'appel précédent. Le RTT
+        est relu d'abord (canal mémoire en marche, gdb à l'arrêt)."""
+        if self.term.rtt is not None:
+            self.term.poll_rtt()
+        text = self.term.take_new()
+        if not quiet and text:
+            print(text, end="" if text.endswith("\n") else "\n")
+        return text
+
+    def terminal_send(self, text: str) -> str:
+        """TERM : envoie du texte au programme (canal descendant du RTT, ou entrée du
+        semihosting) ; rend où il est parti."""
+        return self.term.send(text)
 
     # fautes
     def fault(self, quiet: bool = False) -> dict:

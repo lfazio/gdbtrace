@@ -19,6 +19,8 @@
 #include "semphr.h"
 #include "timers.h"
 
+#include "../common/gdbtrace_rtt.h"
+
 enum { ID_PRODUCER, ID_CONSUMER, ID_WORKER, ID_SLEEPER, ID_HOG, ID_IDLE, N_IDS };
 
 struct command {
@@ -197,9 +199,13 @@ static void consumer_task(void *arg)
             consumed += cmd.arg;
             if ((cmd.seq % 8) == 0) {
                 char num[12];
+                const char *n = u32_to_dec(cmd.seq, num + sizeof num);
                 itm_puts(0, "consumer: commande ");
-                itm_puts(0, u32_to_dec(cmd.seq, num + sizeof num));
+                itm_puts(0, n);
                 itm_puts(0, "\n");
+                rtt_puts("consumer: commande ");    /* aussi par le RTT (vue Terminal, --rtt) */
+                rtt_puts(n);
+                rtt_puts("\n");
                 xSemaphoreGive(done_sem);
             }
         }

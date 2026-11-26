@@ -62,7 +62,8 @@ def build_target(args, elf: str) -> object:
                              gdb_port=args.gdb_port or 3333, rtos=args.rtos)
     return QemuTarget(elf=os.path.abspath(elf), machine=args.machine,
                       gdb_port=args.gdb_port or free_port(), etm_sim=args.etm_sim,
-                      mtb_sim=mtb_sim_size(args, elf), mtb_autohalt=args.mtb_autohalt)
+                      mtb_sim=mtb_sim_size(args, elf), mtb_autohalt=args.mtb_autohalt,
+                      semihosting_port=free_port() if args.semihosting else 0)
 
 
 def mtb_sim_size(args, elf: str) -> int | None:
@@ -88,6 +89,43 @@ def _print_action(kind: str, data: dict) -> None:
     if kind == "output" and data.get("stream") == "action":
         print(data.get("text", ""), end="", flush=True,
               file=sys.stderr if data.get("error") else sys.stdout)
+
+
+def setup_terminal(args, term, session, target, live, symbols, log=print) -> None:
+    """Vue Terminal, après la connexion : semihosting (`--semihosting`, servi par QEMU ou
+    OpenOCD sur une socket) et RTT (`--rtt`, bloc de contrôle lu par le canal mémoire en
+    marche, par gdb à l'arrêt). Commun au mode --batch et au GUI."""
+    from .core.target import OpenOcdTarget
+    from .core.terminal import RTT_SYMBOL, RttChannel, TcpSource
+    term.close()
+    term.stopped_io = (session.read_memory, session.write_memory)
+    term.live_io = (live.read, live.write) if live is not None and live.can_write else None
+    term.is_running = lambda: session.state == "running"
+    if args.semihosting:
+        if isinstance(target, QemuTarget) and target.semihosting_port:
+            term.sources.append(TcpSource(term, target.host, target.semihosting_port, "semihosting"))
+            log(f"semihosting : servi par QEMU (port {target.semihosting_port})")
+        elif isinstance(target, OpenOcdTarget):
+            port = free_port()
+            session.monitor("arm semihosting enable")
+            session.monitor(f"arm semihosting_redirect tcp {port}")
+            term.sources.append(TcpSource(term, target.host, port, "semihosting"))
+            log(f"semihosting : servi par OpenOCD (port {port})")
+        else:
+            log("semihosting : ce serveur ne le sert pas sur une socket (QEMU, OpenOCD seulement)")
+    if args.rtt:
+        if args.rtt == "auto":
+            found = symbols.objects.get(RTT_SYMBOL) if symbols is not None else None
+            if found is None:
+                log(f"RTT : pas de bloc de contrôle {RTT_SYMBOL} dans l'ELF (--rtt ADRESSE)")
+                return
+            addr = found[0]
+        else:
+            addr = int(args.rtt, 0)
+        term.rtt = RttChannel(addr)
+        how = "lu en marche par le canal mémoire" if term.live_io else \
+            "lu aux arrêts seulement (le canal mémoire de ce serveur n'écrit pas)"
+        log(f"RTT : bloc de contrôle à {addr:#x}, {how}")
 
 
 def setup_trace(args, trace, session, target, log=print) -> None:
@@ -242,8 +280,10 @@ class BatchSession:
 
     def setup(self) -> None:
         """Captures de trace demandées par les options, couvertures à fusionner, arrêt sur
-        faute."""
+        faute, terminal (semihosting, RTT)."""
         setup_trace(self.args, self.trace, self.s, self.target, self.log)
+        if self.args.semihosting or self.args.rtt:
+            setup_terminal(self.args, self.api.term, self.s, self.target, self.live, self.symbols, self.log)
         if self.args.break_on_fault and not self.target.native:
             self.log(self.api.break_on_fault())
         for path in self.args.coverage_merge:
@@ -251,6 +291,7 @@ class BatchSession:
 
     def close(self, leave_running: bool = False) -> None:
         try:
+            self.api.term.close()
             self.trace.close()
             if self.live:
                 self.live.close()
@@ -362,6 +403,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "ralentie ; préférer un tampon de 4 à 8 Ko")
     m.add_argument("--mtb-probe", action="store_true",
                    help="lister les composants CoreSight de la cible (MTB, ETM, TPIU...) à la connexion")
+    tm = p.add_argument_group("terminal (vue Terminal)")
+    tm.add_argument("--semihosting", action="store_true",
+                    help="semihosting du programme (BKPT 0xAB) servi par QEMU ou OpenOCD, dans la vue Terminal")
+    tm.add_argument("--rtt", nargs="?", const="auto", metavar="ADRESSE",
+                    help="RTT : bloc de contrôle « SEGGER RTT » (défaut : le symbole _SEGGER_RTT), lu en "
+                         "marche par le canal mémoire, dans la vue Terminal")
     p.add_argument("--machine", default="mps2-an385", help="machine QEMU")
     p.add_argument("--gdb", default="gdb-multiarch", help="exécutable gdb")
     p.add_argument("--gdb-port", type=int, default=0)
@@ -603,6 +650,9 @@ def start_gui_session(app, args) -> None:
     def after_connect(_res=None) -> None:
         # journal de la mise en route de la trace dans la console (pas sur le terminal)
         app.safe(setup_trace, args, app.trace, app.session, app.session.target or target, log)
+        if args.semihosting or args.rtt:
+            app.safe(setup_terminal, args, app.api.term, app.session, app.session.target or target,
+                     app.api.live, app.symbols, log)
         if args.break_on_fault and not app.native:
             app.fault_catch_var.set(True)
             app.toggle_fault_catch()

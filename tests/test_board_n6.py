@@ -65,7 +65,8 @@ def run(request, tmp_path_factory):
             "--layout", str(tmp_path_factory.mktemp("layout") / "layout.json")]
     return boards.run_gui(argv, "n6", ready=lambda app: app.trace.tmc is not None,
                           cleanup=cleanup,
-                          extra=lambda app: {**loop_counts(app), "chrono": boards.chrono_passes(app)})
+                          extra=lambda app: {**loop_counts(app), "chrono": boards.chrono_passes(app),
+                                             "rtt": boards.rtt_live(app)})
 
 
 def view(run, phase, kind):
@@ -301,6 +302,11 @@ def test_etr_read_while_running_is_complete(request, tmp_path, run):
     assert res["streamed"] > 1.5 * res["size"] and res["gaps"] == 0 and res["errors"] == 0, res["status"]
     assert len(counts) > 2500, len(counts)                    # tick de 1 ms
     assert all((b - a) % 64 == 1 for a, b in zip(counts, counts[1:]))
+
+
+def test_rtt_read_live_by_the_relay(run):
+    """RTT lu en marche par le relais RSP (paquets m/M glissés entre ceux de gdb)."""
+    boards.rtt_checks(run["extra"]["rtt"])
 
 
 def test_chrono_by_cyccnt(run):

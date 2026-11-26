@@ -564,7 +564,8 @@ def test_program_elf_from_menu(app, rtos_elf):
     assert app.current_frame.func == "Reset_Handler" and app.recent_elfs[0] == rtos_elf
     assert app.root.title().startswith("gdbtrace — freertos.elf : Reset_Handler")
     fv = app.views.find(FilesView)
-    assert "FreeRTOS-Kernel/" in [fv.tree.item(i, "text") for i in fv.tree.get_children()]
+    roots = [fv.tree.item(i, "text") for i in fv.tree.get_children()]
+    assert {"freertos/", "common/"} <= set(roots), roots      # demo FreeRTOS et bloc RTT commun
     rows = {w.tree.item(i, "text"): w.tree.set(i, "value") for i in w.tree.get_children()}
     assert "ticks" in rows and "hors de portée" in rows["ticks"]     # absent du nouveau programme
     run_to(app, "worker_step")                                  # le nouveau programme tourne

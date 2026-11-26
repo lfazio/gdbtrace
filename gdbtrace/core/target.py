@@ -199,6 +199,8 @@ class QemuTarget(TargetServer):
     mtb_sim: int | None = None
     #: MTB simulée en mode AUTOHALT (arrêts internes, trace complète)
     mtb_autohalt: bool = False
+    #: semihosting traité par QEMU, entrées-sorties sur ce port TCP (0 : pas de semihosting)
+    semihosting_port: int = 0
 
     #: second port QMP réservé au contrôle de la machine (reset) : le premier sert au canal
     #: live, et un serveur QMP n'accepte qu'un client à la fois
@@ -245,7 +247,10 @@ class QemuTarget(TargetServer):
             "-gdb", f"tcp:{self.host}:{self.gdb_port}", "-S",
             "-qmp", f"tcp:{self.host}:{self.qmp_port},server=on,wait=off",
             "-qmp", f"tcp:{self.host}:{self.ctl_port},server=on,wait=off",
-        ] + (["-accel", "tcg,one-insn-per-tb=on"] if self.etm_sim or self.mtb_sim is not None else [])
+        ] + (["-accel", "tcg,one-insn-per-tb=on"] if self.etm_sim or self.mtb_sim is not None else []) + (
+            ["-semihosting-config", "enable=on,target=native,chardev=gdbtrace-sh",
+             "-chardev", f"socket,id=gdbtrace-sh,host={self.host},port={self.semihosting_port},server=on,wait=off"]
+            if self.semihosting_port else [])
 
     def live_memory(self) -> LiveMemory | None:
         return QemuQmp(self.host, self.qmp_port)

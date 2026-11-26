@@ -185,6 +185,35 @@ def chrono_passes(app) -> list[dict]:
     return out
 
 
+# ====================================================================== RTT
+def rtt_live(app, seconds: float = 2.0) -> dict:
+    """RTT lu en marche par le canal mémoire (OpenOCD TCL, relais ST-LINK) : la tâche
+    consumer écrit « consumer: commande N » toutes les 8 commandes (examples/freertos).
+    Cible arrêtée au retour."""
+    from gdbtrace.core.terminal import RTT_SYMBOL, RttChannel
+    s, live = app.session, app.api.live
+    found = app.symbols.objects.get(RTT_SYMBOL)
+    if found is None or live is None:
+        return {"erreur": "pas de bloc RTT ou pas de canal mémoire"}
+    ch, text = RttChannel(found[0]), ""
+    s.go()
+    try:
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            text += ch.poll(live.read, live.write)
+            time.sleep(0.1)
+    finally:
+        s.halt()
+        s.wait_stopped(10)
+    return {"texte": text[-600:], "octets": ch.received, "ecriture": live.can_write}
+
+
+def rtt_checks(passed: dict) -> None:
+    """Le RTT est passé : texte du consumer reçu, canal mémoire capable d'écrire RdOff."""
+    assert "erreur" not in passed, passed
+    assert passed["ecriture"] and "consumer: commande" in passed["texte"], passed
+
+
 # ====================================================================== session GUI pilotée
 def run_gui(argv: list[str], name: str, ready, cleanup=None, extra=None) -> dict:
     """La session GUI complète, par le vrai point d'entrée (`main(argv)`), `App.mainloop`

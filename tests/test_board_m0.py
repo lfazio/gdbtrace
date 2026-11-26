@@ -102,6 +102,7 @@ def run_control(app) -> dict:
     attempt("message", logged)
     attempt("go_till", till)
     attempt("chrono", lambda: boards.chrono_passes(app))
+    attempt("rtt", lambda: boards.rtt_live(app))
     return out
 
 
@@ -245,6 +246,10 @@ def test_task_time_by_ram_log(run):
 
 
 # ====================================================================== chrono
+def test_rtt_read_live_by_openocd(run):
+    boards.rtt_checks(run["extra"]["rtt"])
+
+
 def test_chrono_by_systick(run):
     """Deux passages par worker_step (vTaskDelay de 5 ms) : SysTick et xTickCount ; la pause de
     1 s du débogueur entre les deux n'est pas comptée (SysTick gelé, cœur arrêté)."""

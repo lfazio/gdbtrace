@@ -40,9 +40,10 @@ def view_classes() -> dict[str, type[View]]:
     from ..views.tasktime import TaskTimeView
     from ..views.fault import FaultView
     from ..views.symbols import SymbolsView
+    from ..views.terminal import TerminalView
     classes = [FilesView, SymbolsView, SourceView, DisasmView, TraceView, TimingView, CoverageView, RegistersView, WatchView,
                PeripheralsView, RtosView, ThreadsView, StackView, BreakpointsView, FaultView, MemoryView, ConsoleView,
-               ItmView, ProfileView, VarTraceView, TaskTimeView]
+               TerminalView, ItmView, ProfileView, VarTraceView, TaskTimeView]
     return {c.kind: c for c in classes}
 
 
@@ -68,6 +69,7 @@ DEFAULT_LAYOUT = [
     {"kind": "fault", "where": "data"},
     {"kind": "console", "where": "bottom"},
     {"kind": "memory", "where": "bottom"},
+    {"kind": "terminal", "where": "bottom"},
     {"kind": "itm", "where": "bottom"},
     {"kind": "profile", "where": "bottom"},
     {"kind": "vartrace", "where": "bottom"},
@@ -487,6 +489,7 @@ class App:
         self.poller = self.live = None
         if self.api:
             self.api.live = None
+            self.api.term.close()               # sockets du semihosting
 
     def rtos_layout(self):
         """Disposition FreeRTOS partagée (vue RTOS, profilage par tâche), calculée une fois

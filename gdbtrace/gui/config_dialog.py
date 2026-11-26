@@ -46,6 +46,8 @@ TRACE_FIELDS = {
                           ("mtb-buffer", "Tampon de la MTB (ADRESSE:TAILLE)", "str"),
                           ("mtb-autohalt", "AUTOHALT (trace complète)", "bool"),
                           ("mtb-probe", "Lister les composants CoreSight", "bool")],
+    "Terminal": [("semihosting", "Semihosting servi par QEMU ou OpenOCD", "bool"),
+                 ("rtt", "RTT (vide = non, auto = symbole _SEGGER_RTT, ou adresse)", "opt")],
 }
 #: valeurs par défaut de la ligne de commande (non écrites dans le YAML)
 TRACE_DEFAULTS = {"swo-hz": 2_000_000, "swo-port": 3443, "etm-port": "parallel", "etm-width": 4}

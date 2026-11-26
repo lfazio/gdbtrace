@@ -118,6 +118,9 @@ TOOLS = [
     _tool("symbols", "Fonctions et variables globales de l'ELF dont le nom contient `pattern` (ou "
           "motif avec * et ?) : adresse, taille, fichier:ligne. `kind` : tout, fonctions, "
           "variables ; `top` lignes (défaut 50).", {"pattern": _S, "kind": _S, "top": _I}),
+    _tool("terminal", "Texte écrit par le programme (semihosting, RTT : --semihosting, --rtt) depuis "
+          "l'appel précédent ; `send` : texte envoyé au programme d'abord (RTT descendant, entrée "
+          "du semihosting).", {"send": _S}),
     _tool("fault", "Analyse de la faute en cours (cible arrêtée dans HardFault, BusFault…) : "
           "cause en clair, adresse et instruction fautives, fonction et ligne, cadre empilé. "
           "`catch` : true pose l'arrêt à l'entrée de toute faute, false le retire.", {"catch": _B}),
@@ -505,6 +508,13 @@ class GdbTraceMcp:
     def tool_symbols(self, pattern: str = "", kind: str = "tout", top: int = 50) -> str:
         self.api.sym_list(pattern, kind, top)
         return ""
+
+    def tool_terminal(self, send: str | None = None) -> str:
+        out = ""
+        if send:
+            out = f"envoyé par {self.api.terminal_send(send)}\n"
+        text = self.api.terminal(quiet=True)
+        return out + (text or "(rien de nouveau)")
 
     def tool_fault(self, catch: bool | None = None) -> str:
         if catch is not None:

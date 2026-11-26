@@ -35,6 +35,14 @@ class LiveMemory:
     def read(self, addr: int, length: int) -> bytes:
         raise NotImplementedError
 
+    def write(self, addr: int, data: bytes) -> None:
+        """Écriture cible en marche (RTT : avancer RdOff). Pas sur tous les canaux."""
+        raise LiveMemoryError(f"{self.name} : écriture en marche non disponible")
+
+    @property
+    def can_write(self) -> bool:
+        return type(self).write is not LiveMemory.write
+
     def sample_pc(self) -> int | None:
         """Un échantillon du PC, cible en marche, sans l'arrêter (profilage statistique)."""
         raise LiveMemoryError(f"{self.name} : échantillonnage du PC non disponible")
@@ -119,6 +127,18 @@ class OpenOcdTcl(LiveMemory):
             raise LiveMemoryError(f"read_memory {addr:#x} : {len(words)} valeurs au lieu de {count}")
         size = width // 8
         return b"".join(w.to_bytes(size, "little") for w in words)
+
+    def write(self, addr: int, data: bytes) -> None:
+        """Écriture par le port TCL (`write_memory`), 32 bits quand c'est aligné."""
+        if addr % 4 == 0 and len(data) % 4 == 0 and data:
+            words = " ".join(f"{int.from_bytes(data[i:i + 4], 'little'):#x}" for i in range(0, len(data), 4))
+            width = 32
+        else:
+            words = " ".join(f"{b:#x}" for b in data)
+            width = 8
+        reply = self.query(f"write_memory {addr:#x} {width} {{{words}}}; list OK")
+        if reply != "OK":
+            raise LiveMemoryError(f"write_memory {addr:#x} : {reply}")
 
     def write_u32(self, addr: int, value: int) -> None:
         reply = self.query(f"write_memory {addr:#x} 32 {{{value:#x}}}; list OK")

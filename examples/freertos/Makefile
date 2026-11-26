@@ -9,7 +9,7 @@ LIBC    = $(if $(filter /%,$(shell $(CC) -print-file-name=nano.specs)), \
             --specs=nano.specs --specs=nosys.specs, --specs=picolibc.specs)
 LDFLAGS = -nostartfiles $(LIBC) -T ../firmware/link.ld -Wl,--gc-sections
 
-SRCS = startup.c main.c \
+SRCS = startup.c main.c ../common/gdbtrace_rtt.c \
        $(K)/tasks.c $(K)/queue.c $(K)/list.c $(K)/timers.c \
        $(K)/portable/GCC/ARM_CM3/port.c $(K)/portable/MemMang/heap_4.c
 

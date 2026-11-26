@@ -13,7 +13,7 @@ P       = $(K)/portable/GCC/ARM_CM0
 RTOS_CFLAGS = $(CFLAGS) -I../nucleo-g070 -I$(P) -I$(K)/include -DconfigTOTAL_HEAP_SIZE=9216
 LIBC    = $(if $(filter /%,$(shell $(CC) -print-file-name=nano.specs)), \
             --specs=nano.specs --specs=nosys.specs, --specs=picolibc.specs)
-RTOS_SRC = ../nucleo-g070/startup.c ../freertos/main.c \
+RTOS_SRC = ../nucleo-g070/startup.c ../freertos/main.c ../common/gdbtrace_rtt.c \
            $(K)/tasks.c $(K)/queue.c $(K)/list.c $(K)/timers.c \
            $(P)/port.c $(P)/portasm.c $(K)/portable/MemMang/heap_4.c
 

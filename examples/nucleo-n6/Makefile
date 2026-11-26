@@ -10,7 +10,7 @@ LIBC    = $(if $(filter /%,$(shell $(CC) -print-file-name=nano.specs)), \
             --specs=nano.specs --specs=nosys.specs, --specs=picolibc.specs)
 LDFLAGS = -nostartfiles $(LIBC) -T link.ld -Wl,--gc-sections -Wl,--no-warn-rwx-segments
 
-SRCS = startup.c etr_buffer.c lob.c ../freertos/main.c \
+SRCS = startup.c etr_buffer.c lob.c ../freertos/main.c ../common/gdbtrace_rtt.c \
        $(K)/tasks.c $(K)/queue.c $(K)/list.c $(K)/timers.c \
        FreeRTOS-port/port.c FreeRTOS-port/portasm.c $(K)/portable/MemMang/heap_4.c
 

@@ -58,7 +58,7 @@ TRACE_KEYS = ["swo", "swo-file", "swo-formatter", "swo-config", "swo-hz", "swo-p
               "etm-sim", "trace", "trace-file", "etm-config", "etm-cycle-accurate", "etm-timestamps",
               "etm-width", "etm-port", "etr-buffer", "etr-at-stop", "etm-stall", "stm32", "etm-filter",
               "etm-start", "etm-stop",
-              "mtb", "mtb-buffer", "mtb-sim", "mtb-autohalt", "mtb-probe"]
+              "mtb", "mtb-buffer", "mtb-sim", "mtb-autohalt", "mtb-probe", "semihosting", "rtt"]
 TOP_KEYS = ["gdbtrace", "nom", "cible", "serveur", "os", "script", "couverture", "trace"]
 
 #: clés dont la valeur est un chemin de fichier (relatif au YAML)

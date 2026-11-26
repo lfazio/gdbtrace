@@ -86,6 +86,18 @@ def faults_elfs():
     return {"m3": os.path.join(FAULTS_DIR, "faults-m3.elf"), "m0": os.path.join(FAULTS_DIR, "faults-m0.elf")}
 
 
+TERMINAL_DIR = os.path.join(ROOT, "examples", "terminal")
+
+
+@pytest.fixture(scope="session")
+def terminal_elf():
+    """Démo de la vue Terminal (semihosting, RTT), Cortex-M3 sous QEMU mps2-an385."""
+    if not shutil.which("arm-none-eabi-gcc"):
+        pytest.skip("arm-none-eabi-gcc absent")
+    subprocess.run(["make", "-s", "-C", TERMINAL_DIR], check=True)
+    return os.path.join(TERMINAL_DIR, "terminal.elf")
+
+
 M0_DIR = os.path.join(ROOT, "examples", "m0plus")
 M0_ELF = os.path.join(M0_DIR, "demo.elf")
 
