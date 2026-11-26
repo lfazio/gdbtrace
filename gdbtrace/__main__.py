@@ -134,6 +134,15 @@ def setup_trace(args, trace, session, target, log=print) -> None:
     if args.etm_filter or args.etm_start or args.etm_stop:   # avant la programmation de l'ETM
         for line in trace.set_etm_filter(args.etm_filter, args.etm_start, args.etm_stop, session):
             log(line)
+    for spec in args.snoop:              # variables échantillonnées par le canal mémoire
+        expr, sep, ms = spec.rpartition("@")
+        if not (sep and ms.isdigit() and expr):
+            expr, ms = spec, "10"
+        try:
+            for line in trace.snoop(session, expr, int(ms)):
+                log(line)
+        except (RuntimeError, ValueError) as exc:
+            log(f"--snoop {spec} : {exc}")
     for spec in args.var_trace:          # trace de données du DWT, avant le début des captures
         expr, _, mode = spec.rpartition(":") if ":" in spec else (spec, "", "")
         access, _, pc = mode.partition("+")
@@ -255,6 +264,7 @@ class BatchSession:
             s.add_symbols(path, offset or 0)
         self.live = live = target.live_memory()
         trace = self.trace
+        trace.live = live                        # SNOOPer
         self.symbols = symbols = SymbolTable(elf, s.extra_symbols)
         msg = None
         if not target.native:                    # trace d'instructions : Cortex-M seulement
@@ -403,6 +413,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "ralentie ; préférer un tampon de 4 à 8 Ko")
     m.add_argument("--mtb-probe", action="store_true",
                    help="lister les composants CoreSight de la cible (MTB, ETM, TPIU...) à la connexion")
+    t.add_argument("--snoop", action="append", default=[], metavar="EXPR[@MS]",
+                   help="variable échantillonnée par le canal mémoire, sans trace (défaut toutes les "
+                        "10 ms) ; vue Variables tracées ; répétable")
     tm = p.add_argument_group("terminal (vue Terminal)")
     tm.add_argument("--semihosting", action="store_true",
                     help="semihosting du programme (BKPT 0xAB) servi par QEMU ou OpenOCD, dans la vue Terminal")

@@ -37,6 +37,7 @@ TRACE_FIELDS = {
             ("trace", "Flux TPIU en TCP (hôte:port)", "str"),
             ("trace-file", "Rejouer une capture TPIU", "path")],
     "Données et filtre": [("var-trace", "Variables tracées (une par ligne, EXPR[:ACCÈS])", "list"),
+                          ("snoop", "Variables échantillonnées sans trace (une par ligne, EXPR[@MS])", "list"),
                           ("etm-filter", "Filtre ETM : plages (une par ligne)", "list"),
                           ("etm-start", "Démarrer la trace en ces lieux", "list"),
                           ("etm-stop", "Arrêter la trace après ces lieux", "list")],

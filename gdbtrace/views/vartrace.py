@@ -1,4 +1,6 @@
-"""Var.TRACE / Var.DRAW : variables suivies par la trace de données du DWT, cible en marche.
+"""Var.TRACE / Var.DRAW : variables suivies cible en marche, par la trace de données du DWT
+(chaque accès, par l'ITM) ou échantillonnées par le canal mémoire (SNOOPer, sans trace :
+Cortex-M0/M0+, QEMU, carte sans capture SWO).
 
 En haut : la variable à tracer et l'accès (écriture, lecture, les deux). À gauche : les
 variables tracées, leur nombre d'échantillons et leur dernière valeur (vue tableau, au format
@@ -16,6 +18,8 @@ from ..gui.view_base import View
 from .timing import GRID, INK, INK2, MUTED, SLOTS, SURFACE, nice_step
 
 LANE, GAP, PAD_L, PAD_R, AXIS = 64, 10, 8, 84, 20     # PAD_R : bornes min/max et unité
+DWT, SAMPLED = "DWT (trace)", "échantillonné"
+ACCESS_NAMES = {"write": "écriture", "read": "lecture", "rw": "les deux", "sample": "échantillonné"}
 WINDOW = 5000                           # échantillons dessinés (les plus récents)
 
 
@@ -36,6 +40,15 @@ class VarTraceView(View):
                      state="readonly", width=9).pack(side="left", padx=2)
         self.pc_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(bar, text="PC", variable=self.pc_var).pack(side="left", padx=2)
+        self.source_var = tk.StringVar(value=DWT)
+        src = ttk.Combobox(bar, textvariable=self.source_var, values=[DWT, SAMPLED], state="readonly", width=14)
+        src.pack(side="left", padx=2)
+        src.bind("<<ComboboxSelected>>", lambda _e: setattr(self, "_source_chosen", True))
+        self._source_chosen = False
+        ttk.Label(bar, text="toutes les").pack(side="left")
+        self.period_var = tk.StringVar(value="10")
+        ttk.Entry(bar, textvariable=self.period_var, width=5).pack(side="left", padx=2)
+        ttk.Label(bar, text="ms").pack(side="left")
         ttk.Button(bar, text="Tracer", command=self.trace_expr).pack(side="left", padx=2)
         ttk.Button(bar, text="Retirer", command=self._remove).pack(side="left")
         ttk.Button(bar, text="Effacer", command=self._clear).pack(side="left", padx=2)
@@ -60,7 +73,7 @@ class VarTraceView(View):
         self.canvas.bind("<Configure>", lambda _e: self.render(force=True))
         self.canvas.bind("<Motion>", self._motion)
         self.canvas.bind("<Leave>", lambda _e: self.canvas.delete("hover"))
-        self.wanted: list[tuple[str, str, bool]] = []     # (expr, accès, PC) : layout, reprise
+        self.wanted: list[tuple] = []     # (expr, accès, PC, source, période) : layout, reprise
         self._gen = None
         self._lanes: list[tuple] = []                     # (variable, y0, y1, points) pour le survol
         self._span = (0.0, 1.0)
@@ -78,14 +91,23 @@ class VarTraceView(View):
             return
         access = access or {"écriture": "write", "lecture": "read", "les deux": "rw"}[self.access_var.get()]
         pc = self.pc_var.get() if pc is None else pc
+        sampled = self.source_var.get() == SAMPLED
+        try:
+            period = max(1, int(self.period_var.get()))
+        except ValueError:
+            period = 10
         if not self.stopped:
-            self.app.status.set("Arrêter la cible pour programmer le DWT (Break)")
+            self.app.status.set("Arrêter la cible pour ajouter une variable (Break)")
             return
-        log = self.app.safe(lambda: self.app.trace.trace_variable(self.session, expr, access, pc,
-                                                                  cpu_hz=self.app.cpu_hz))
+        if sampled:
+            log = self.app.safe(lambda: self.app.trace.snoop(self.session, expr, period))
+        else:
+            log = self.app.safe(lambda: self.app.trace.trace_variable(self.session, expr, access, pc,
+                                                                      cpu_hz=self.app.cpu_hz))
         if log:
             self.app.write_console("\n".join(log) + "\n", "gdb")
-            self.wanted = [w for w in self.wanted if w[0] != expr] + [(expr, access, pc)]
+            self.wanted = [w for w in self.wanted if w[0] != expr] + [
+                (expr, access, pc, "sample" if sampled else "dwt", period)]
             self.expr_var.set("")
             self.render(force=True)
 
@@ -94,7 +116,11 @@ class VarTraceView(View):
         if not item:
             return
         expr = self.tree.item(item, "text")
-        self.app.safe(self.app.trace.untrace_variable, self.session, expr)
+        var = next((v for v in self.sink.vars.values() if v.expr == expr), None)
+        if var is not None and var.comparator < 0:
+            self.app.safe(self.app.trace.unsnoop, expr)
+        else:
+            self.app.safe(self.app.trace.untrace_variable, self.session, expr)
         self.wanted = [w for w in self.wanted if w[0] != expr]
         self.render(force=True)
 
@@ -112,11 +138,21 @@ class VarTraceView(View):
 
     def refresh(self) -> None:
         """Cible arrêtée : variables du layout pas encore tracées (reconnexion) reprises."""
+        tm = self.app.trace
         traced = {v.expr for v in self.sink.vars.values()}
-        no_itm = self.app.trace.no_trace_reason() is not None    # dit une fois, dans info
-        for expr, access, pc in self.wanted:
-            if expr not in traced and not no_itm:
-                self.app.safe(lambda e=expr, a=access, p=pc: self.app.trace.trace_variable(
+        no_itm = tm.no_trace_reason() is not None    # dit une fois, dans info
+        if not self._source_chosen:                  # sans ITM ni capture SWO : échantillonné
+            self.source_var.set(SAMPLED if no_itm or tm.source is None else DWT)
+        for w in self.wanted:
+            expr, access, pc = w[0], w[1], w[2]
+            source, period = (w[3], w[4]) if len(w) >= 5 else ("dwt", 10)
+            if expr in traced:
+                continue
+            if source == "sample":
+                if tm.live is not None:
+                    self.app.safe(lambda e=expr, p=period: tm.snoop(self.session, e, p))
+            elif not no_itm:
+                self.app.safe(lambda e=expr, a=access, p=pc: tm.trace_variable(
                     self.session, e, a, p, cpu_hz=self.app.cpu_hz))
         self.render(force=True)
 
@@ -131,13 +167,13 @@ class VarTraceView(View):
         total = sum(v.count for v in vars_)
         self.info.configure(text=f"{len(vars_)} variable(s), {total} échantillon(s)"
                                  + (f", {sink.lost} paquet(s) d'un comparateur inconnu" if sink.lost else "")
-                                 if vars_ else f"pas de trace de données — {reason}" if reason
-                                 else "aucune variable tracée : saisir une globale, puis Tracer")
+                                 if vars_ else f"pas de trace de données — {reason} ; « {SAMPLED} » lit "
+                                 "la variable par le canal mémoire" if reason
+                                 else "aucune variable tracée : saisir une globale, choisir la source, puis Tracer")
         self.tree.delete(*self.tree.get_children())
-        names = {"write": "écriture", "read": "lecture", "rw": "les deux"}
         for v in vars_:
             last = v.text(v.samples[-1]) if v.samples else ""
-            self.tree.insert("", "end", text=v.expr, values=(names[v.access], v.count, last))
+            self.tree.insert("", "end", text=v.expr, values=(ACCESS_NAMES.get(v.access, v.access), v.count, last))
         self._draw(vars_)
 
     def _draw(self, vars_) -> None:

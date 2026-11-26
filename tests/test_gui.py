@@ -1090,9 +1090,11 @@ def test_vartrace_view(app, tmp_path):
     tableau (dernière valeur au format de la variable) et un graphe par variable ; survol."""
     from test_datatrace import data, lts
     from test_itm import SYNC
-    from gdbtrace.views.vartrace import VarTraceView
+    from gdbtrace.views.vartrace import DWT, VarTraceView
     v = app.views.show(VarTraceView)
     app.root.geometry("1200x800")
+    v.source_var.set(DWT)                   # capture SWO rejouée ci-dessous (QEMU n'en a pas)
+    v._source_chosen = True
     v.trace_expr("offset")
     v.trace_expr("counter", access="rw")
     assert sorted(app.trace.datatrace.vars) == [2, 3]
@@ -1111,7 +1113,7 @@ def test_vartrace_view(app, tmp_path):
     v._motion(ev)
     tip = [v.canvas.itemcget(i, "text") for i in v.canvas.find_withtag("hover") if v.canvas.type(i) == "text"]
     assert tip and "offset = " in tip[0] and "counter = " in tip[0]
-    assert v.get_state() == {"vars": [["offset", "write", False], ["counter", "rw", False]]}
+    assert v.get_state() == {"vars": [["offset", "write", False, "dwt", 10], ["counter", "rw", False, "dwt", 10]]}
     app.trace.untrace_variable(app.session)
     v.render(force=True)
     assert not v.tree.get_children() and "aucune variable tracée" in v.info.cget("text")

@@ -115,6 +115,10 @@ TOOLS = [
     _tool("irq_stats", "Statistiques des exceptions : entrées, durée min/moy/max, période et gigue, "
           "préemptions, enchaînements ; depuis la trace d'instructions (ETM, MTB), sinon la trace "
           "des exceptions de l'ITM.", {}),
+    _tool("snoop", "Variable échantillonnée toutes les `period_ms` ms (défaut 10) par le canal "
+          "mémoire, cible en marche, sans trace (Cortex-M0, QEMU) ; `stop` : arrêter "
+          "l'échantillonnage. Les valeurs : outil python, gdbtrace.var_samples(expr).",
+          {"expr": _S, "period_ms": _I, "stop": _B}, ("expr",)),
     _tool("trace_find", "Cherche dans la trace d'instructions (les `n` derniers événements, défaut "
           "50000) : adresse 0x…, nom de fonction (chaque entrée), « exception » ou « exception "
           "SysTick », ou texte ; `top` lignes (défaut 20).", {"query": _S, "n": _I, "top": _I}, ("query",)),
@@ -513,6 +517,13 @@ class GdbTraceMcp:
 
     def tool_irq_stats(self) -> str:
         self.api.irq_stats()
+        return ""
+
+    def tool_snoop(self, expr: str, period_ms: int = 10, stop: bool = False) -> str:
+        if stop:
+            self.api.snoop_stop(expr)
+        else:
+            self.api.snoop(expr, period_ms)
         return ""
 
     def tool_trace_find(self, query: str, n: int = 50_000, top: int = 20) -> str:

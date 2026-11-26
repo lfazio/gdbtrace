@@ -63,6 +63,9 @@ class TraceManager:
         from .datatrace import DataTraceSink
         from .tasktrace import TaskTraceSink
         self.datatrace = DataTraceSink()     # trace de données du DWT (Var.TRACE)
+        #: canal mémoire en direct (posé par l'App et le mode batch) ; SNOOPer
+        self.live = None
+        self.snooper = None
         self.tasktrace = TaskTraceSink()     # temps par tâche (changements de tâche par l'ITM)
         self.line_listeners: list[LineListener] = []
         self._profile: Profile | None = None
@@ -704,12 +707,47 @@ class TraceManager:
                        "arriveront avec elle (--swo-config, Trace › ETM par SWO…, vue ITM)")
         return log
 
+    # ------------------------------------------------------------------ SNOOPer
+    def _live_read(self, addr: int, n: int) -> bytes:
+        live = self.live
+        if live is None:
+            raise RuntimeError("pas de canal mémoire en marche")
+        return live.read(addr, n)
+
+    def snoop(self, session, expr: str, period_ms: int = 10) -> list[str]:
+        """Variable échantillonnée toutes les `period_ms` ms par le canal mémoire, cible en
+        marche, sans trace (core/snooper.py). Cible arrêtée (disposition par gdb). La période
+        est commune à toutes les variables échantillonnées."""
+        from ..core.snooper import Snooper
+        from .datatrace import variable_layout
+        if session is None or session.state != "stopped":
+            raise RuntimeError("arrêter la cible pour ajouter une variable échantillonnée")
+        if self.live is None:
+            raise RuntimeError("pas de canal mémoire en marche pour ce serveur (OpenOCD, ST-LINK "
+                               "ou QEMU) : variable non échantillonnée")
+        addr, size, layout = variable_layout(session, expr, sizes=(1, 2, 4, 8),
+                                             why="échantillonnage de 1, 2, 4 ou 8 octets")
+        if self.snooper is None:
+            self.snooper = Snooper(self.datatrace, self._live_read,
+                                   lambda: session.state == "running", period_ms)
+        self.snooper.period_ms = max(1, int(period_ms))
+        self.snooper.is_running = lambda: session.state == "running"     # session courante
+        self.snooper.add(expr, addr, size, layout)
+        return [f"{expr} échantillonnée toutes les {self.snooper.period_ms} ms ({size} octets à "
+                f"{addr:#010x}, canal mémoire, horloge de l'hôte)"]
+
+    def unsnoop(self, expr: str | None = None) -> list[str]:
+        """Arrête l'échantillonnage de `expr` (de toutes sans argument)."""
+        if self.snooper is None:
+            return []
+        return self.snooper.remove(expr)
+
     def untrace_variable(self, session, expr: str | None = None, quiet: bool = False) -> list[str]:
         """Arrête la trace de `expr` (toutes les variables si None) ; comparateur libéré."""
         from .datatrace import DWT_COMP0
         log = []
         for comp, var in list(self.datatrace.vars.items()):
-            if expr is not None and var.expr != expr:
+            if expr is not None and var.expr != expr or comp < 0:   # < 0 : échantillonnée
                 continue
             if session is not None and session.state == "stopped":
                 session.write_u32(DWT_COMP0 + 16 * comp + 8, 0)
@@ -900,6 +938,9 @@ class TraceManager:
 
     def close(self) -> None:
         self.stop()
+        if self.snooper is not None:
+            self.snooper.close()
+            self.snooper = None
         for name in ("etm_sim", "mtb_sim"):
             sim = getattr(self, name)
             if sim is not None:

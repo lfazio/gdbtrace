@@ -449,6 +449,7 @@ class App:
         """Ouvre le canal mémoire latéral de la cible (s'il existe) et démarre le poller."""
         self._teardown_live()
         self.live = target.live_memory()
+        self.trace.live = self.live                # SNOOPer
         if self.live is not None:
             self.poller = LivePoller(
                 self.live,
@@ -487,6 +488,8 @@ class App:
         if self.live is not None:
             self.live.close()
         self.poller = self.live = None
+        self.trace.live = None
+        self.trace.unsnoop()                    # variables échantillonnées de cette session
         if self.api:
             self.api.live = None
             self.api.term.close()               # sockets du semihosting

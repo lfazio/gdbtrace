@@ -553,6 +553,24 @@ class ScriptAPI:
         for line in self.trace.trace_variable(self.s, expr, access, pc, cpu_hz=self.cpu_hz):
             print(line)
 
+    def snoop(self, expr: str, period_ms: int = 10) -> None:
+        """SNOOPer : `expr` (globale ou statique, 1, 2, 4 ou 8 octets) lue toutes les
+        `period_ms` ms par le canal mémoire pendant que la cible tourne, sans trace ni ITM
+        (Cortex-M0/M0+, QEMU, carte sans capture SWO). Échantillons : `var_samples(expr)`, vue
+        Variables tracées. Cible arrêtée pour l'ajouter ; période commune à toutes."""
+        if self.trace is None:
+            raise RuntimeError("pas de gestionnaire de trace")
+        self._need_stopped()
+        for line in self.trace.snoop(self.s, expr, period_ms):
+            print(line)
+
+    def snoop_stop(self, expr: str | None = None) -> None:
+        """Arrête l'échantillonnage de `expr` (de toutes sans argument)."""
+        if self.trace is None:
+            raise RuntimeError("pas de gestionnaire de trace")
+        for line in self.trace.unsnoop(expr):
+            print(line)
+
     def var_trace_stop(self, expr: str | None = None) -> None:
         """Arrête la trace de `expr` (de toutes les variables sans argument)."""
         if self.trace is None:

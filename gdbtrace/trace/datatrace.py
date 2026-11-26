@@ -59,7 +59,7 @@ class TracedVar:
     addr: int
     size: int
     comparator: int
-    access: str = "write"           # write, read, rw
+    access: str = "write"           # write, read, rw ; « sample » : échantillonnée (core/snooper.py)
     pc: bool = False                # PC de l'instruction qui accède
     layout: LeafLayout = field(default_factory=LeafLayout)
     samples: deque = field(default_factory=lambda: deque(maxlen=MAX_SAMPLES))
@@ -124,6 +124,22 @@ class DataTraceSink:
             self._lts_seen = False
             self.generation += 1
 
+    def host_time(self) -> float:
+        """Secondes de l'horloge de l'hôte depuis la même origine (variables échantillonnées)."""
+        with self._lock:
+            now = time.monotonic()
+            if self._t0_host is None:
+                self._t0_host = now
+            return now - self._t0_host
+
+    def add_sample(self, var: TracedVar, sample: Sample) -> None:
+        """Un échantillon venu d'ailleurs que l'ITM (SNOOPer)."""
+        with self._lock:
+            if self.vars.get(var.comparator) is var:
+                var.samples.append(sample)
+                var.count += 1
+                self.generation += 1
+
     def _time(self, ts: int) -> float:
         """Secondes depuis le premier échantillon : horodatage ITM (cycles du cœur, cumulés
         depuis le début du flux) dès qu'il y en a, sinon heure de réception sur l'hôte."""
@@ -159,20 +175,22 @@ class DataTraceSink:
                 self.generation += 1
 
 
-def variable_layout(session, expr: str) -> tuple[int, int, LeafLayout]:
-    """(adresse, taille, disposition) d'une variable globale ou statique (cible arrêtée)."""
+def variable_layout(session, expr: str, sizes: tuple = (1, 2, 4),
+                    why: str = "un paquet du DWT porte 1, 2 ou 4 octets") -> tuple[int, int, LeafLayout]:
+    """(adresse, taille, disposition) d'une variable globale ou statique (cible arrêtée) ;
+    `sizes` : tailles acceptées."""
     try:
         local_names = {v.get("name") for v in session.locals()}
     except Exception:  # noqa: BLE001 - pas de frame : aucune locale
         local_names = set()
     if root_identifier(expr) in local_names:
         raise ValueError(f"« {expr} » est une variable locale : son adresse change d'un appel à "
-                         "l'autre, le DWT ne peut pas la suivre")
+                         "l'autre, elle ne se suit pas cible en marche")
     addr = session.address_of_expr(expr)
     size = session.sizeof(expr)
-    if size not in (1, 2, 4):
-        raise ValueError(f"« {expr} » : {size} octets ; un paquet du DWT porte 1, 2 ou 4 octets "
-                         "— choisir un champ ou un élément scalaire")
+    if size not in sizes:
+        raise ValueError(f"« {expr} » : {size} octets ; {why} — choisir un champ ou un élément "
+                         "scalaire")
     kind = classify(session.ptype(expr), size)
     layout = LeafLayout(addr=addr, size=size, kind=kind[0], enum_names=kind[1], live=True) \
         if kind else LeafLayout(addr=addr, size=size)
