@@ -227,6 +227,17 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
   seules entrées nouvelles (LivePoller en marche, gdb à l'arrêt), compte les pertes, déroule
   les horodatages 32 bits ; `TraceManager.task_log_active` : jamais avec l'ITM (mesure remise à
   zéro quand l'ITM prend le relais).
+- SNOOPer (`core/snooper.py`, `TraceManager.snoop`) : variables lues à période fixe par le canal
+  mémoire (`TraceManager.live`, posé par l'App et le batch), son propre fil (le LivePoller est à
+  200 ms), versées dans le `DataTraceSink` comme `TracedVar` de numéro **négatif** (jamais un
+  comparateur du DWT : `untrace_variable` les ignore), horloge de l'hôte ; vue `vartrace`
+  (source « échantillonné », par défaut sans ITM ou sans capture SWO).
+- Compteurs (`core/counters.py`, `ScriptAPI._counters`, vue `counters`) : armés à la demande
+  (les compteurs du DWT émettent des paquets de débordement sur le SWO), lus au départ (resume
+  hook, après le chrono) et à l'arrêt, jamais remis à zéro (DWT_CYCCNT sert au chrono) ;
+  compteurs de 8 bits rattrapés par `EventCounterTally` (abonné ITM du `TraceManager`) pendant
+  une capture, sinon « modulo 256 » ; PMU de l'ARMv8.1-M (M55 : 8 × 16 bits chaînés par paires,
+  PMU_CCNTR = DWT_CYCCNT, PMU et compteurs de profil du DWT exclusifs) préférée au DWT.
 - Chrono (`core/chrono.py`, posé par `ScriptAPI`) : resume hook au départ, mesure à l'arrêt
   visible (une par `Session.stop_count`) ; SysTick + compteur de ticks (`xTickCount`,
   `uwTick`, `ICSR.PENDSTSET`) sur un ARMv6-M ou sous QEMU, `DWT_CYCCNT` au-delà ; les arrêts
@@ -237,7 +248,12 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
   paraît inconditionnel ; `Instr.op` = mnémonique sans condition) → `trace.py` (historique, couverture,
   appels). Les événements `Step` / `ExcEntry` / `ExcReturn` portent des cycles mesurés
   (cycle-accurate) ou estimés par `cycles.py` ; `trace/timing.py` en tire le temps brut/net
-  par fonction et par exception (vue Timing). `listing.py` : les lignes de Trace.List
+  par fonction et par exception (vue Timing), et par chemin d'appel (`_Frame.path` fixé à
+  l'empilement, une exception est une racine ; `TimingResult.tree`, plafonds `MAX_DEPTH` et
+  `max_nodes` → nœud « … » ; invariant : somme des nets de l'arbre = somme des nets par
+  fonction). Exceptions : `trace/irqstats.py` (`IrqStats` : durée sans les imbriquées, période,
+  gigue, préemptions, enchaînements), remplies par `TimingAnalyzer` (`TimingResult.irq`) et par
+  `ExceptionStats` (ITM, `trace/swo.py`). `listing.py` : les lignes de Trace.List
   (`TraceRow`), communes à la vue, à `trace_list`/`trace_find`/`trace_export` et au MCP ;
   `find_rows` (adresse, entrées de fonction, exceptions, texte), export CSV.
 - ETMv4 (Cortex-M7, Cortex-M55) : `etm4.py` (paquets) → `flow4.py` (file de spéculation,
@@ -335,8 +351,9 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
 
 ## Limites connues (ne pas « corriger » côté gdbtrace)
 
-- QEMU n'émule pas le vector catch (DEMCR lu à 0 : arrêt sur faute par breakpoints) et QMP
-  n'écrit pas en mémoire (RTT lu aux arrêts). Démos : `Reset_Handler` remet la `.bss` à zéro,
+- QEMU n'émule pas le vector catch (DEMCR lu à 0 : arrêt sur faute par breakpoints) ni le
+  DWT (compteurs absents : écriture de DWT_CTRL ignorée), et QMP n'écrit pas en mémoire (RTT
+  lu aux arrêts). Démos : `Reset_Handler` remet la `.bss` à zéro,
   une variable de commande (`fault_kind`, `semihosting_on`) s'écrit après l'arrivée dans `main`.
 - Le gdbstub de QEMU 8.2 ignore les écritures du débogueur dans les périphériques (RAM/ROM
   seulement ; QEMU 11.1 les applique) ; QEMU n'émule ni ITM ni SWO.

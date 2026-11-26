@@ -158,7 +158,7 @@ La vérification compare les sections par CRC (`compare-sections`). Avec ST-LINK
 
 ## 3. L'interface
 
-La fenêtre principale range 22 vues en quatre zones à onglets, sous un menu, une barre d'outils et au-dessus d'une barre d'état. Chaque vue se détache ou se déplace, et la disposition est gardée d'une session à l'autre.
+La fenêtre principale range 23 vues en quatre zones à onglets, sous un menu, une barre d'outils et au-dessus d'une barre d'état. Chaque vue se détache ou se déplace, et la disposition est gardée d'une session à l'autre.
 
 ### Run-control
 
@@ -188,7 +188,7 @@ La fenêtre principale range 22 vues en quatre zones à onglets, sous un menu, u
 | Gauche | Fichiers, Symboles |
 | Code | Source, Désassemblage, Trace, Timing, Couverture |
 | Données | Registres, Watch, Périphériques, RTOS, Threads, Pile, Breakpoints, Faute |
-| Bas | Console, Mémoire, Terminal, ITM, Profil, Variables tracées, Temps des tâches |
+| Bas | Console, Mémoire, Terminal, ITM, Profil, Variables tracées, Temps des tâches, Compteurs |
 
 Chaque zone est un jeu d'onglets ; le menu Vues ouvre n'importe quelle vue dans une fenêtre à part.
 
@@ -444,15 +444,21 @@ La vue **Terminal** montre ce que le programme écrit, et une ligne lui envoie d
 
 ### Profil
 
-La vue **Profil** donne le pourcentage de temps CPU par fonction, par ligne (double-clic : la source) et par tâche FreeRTOS, sans instrumenter le code. « Auto » prend les échantillons de PC du SWO si une capture tourne, sinon la lecture du PC en marche (`DWT_PCSR` par OpenOCD, ou le PC de QEMU). L'onglet **Exceptions** compte les entrées dans chaque exception et, avec l'horodatage ITM, le temps passé dedans.
+La vue **Profil** donne le pourcentage de temps CPU par fonction, par ligne (double-clic : la source) et par tâche FreeRTOS, sans instrumenter le code. « Auto » prend les échantillons de PC du SWO si une capture tourne, sinon la lecture du PC en marche (`DWT_PCSR` par OpenOCD, ou le PC de QEMU). L'onglet **Exceptions** (trace des exceptions de l'ITM) compte les entrées dans chaque exception et, avec l'horodatage ITM, donne le temps passé dedans (sans les exceptions plus prioritaires qui l'ont interrompue), la durée min et max, la période moyenne entre deux entrées, sa gigue et les préemptions ; en unités d'horodatage ITM.
 
 Un profil qui marche ne prouve donc pas que le SWO est capturé : les vues ITM, Trace et Couverture disent si une capture tourne et ce qu'elle reçoit.
 
 ### Variables tracées
 
-La vue **Variables tracées** suit la valeur d'une globale à chaque accès, cible en marche. Un comparateur du DWT surveille son adresse et émet la valeur par l'ITM, et au choix le PC de l'instruction.
+La vue **Variables tracées** suit la valeur d'une globale cible en marche, de deux façons (choix « source » de la vue) :
 
-- Lancement : dans la vue (cible arrêtée), ou `--var-trace counter`, `--var-trace offset:rw+pc`.
+| Source | Comment | Il faut |
+| --- | --- | --- |
+| **DWT (trace)** | un comparateur du DWT surveille son adresse et émet la valeur par l'ITM à **chaque accès**, et au choix le PC de l'instruction | une capture SWO ; un M3, M4, M7, M55 |
+| **échantillonné** (SNOOPer) | la variable est **lue toutes les N ms** par le canal mémoire, sans trace | un canal mémoire en marche (OpenOCD, ST-LINK, QEMU) ; marche aussi sur un Cortex-M0/M0+ |
+
+- Lancement : dans la vue (cible arrêtée), ou `--var-trace counter`, `--var-trace offset:rw+pc`, `--snoop ticks@10` (toutes les 10 ms). Par défaut la vue propose « échantillonné » quand le cœur n'a pas d'ITM ou qu'aucune capture SWO ne tourne.
+- L'échantillonnage n'est pas une trace : une valeur qui change et revient entre deux lectures n'est pas vue, et l'horodatage est celui de l'hôte (à la milliseconde). Variables de 1, 2, 4 ou 8 octets ; une période commune à toutes.
 - Un petit graphe par variable, chacun à sa propre échelle ; le survol donne les valeurs à un instant.
 - Limites : variables de 1, 2 ou 4 octets ; 4 comparateurs au plus sur un M3/M4/M7/M55, partagés avec les watchpoints et le filtre ETMv3. Sur un ARMv8-M (M33, M55), la variable doit être alignée sur sa taille ; GdbTrace reconnaît le DWT et le programme selon son format.
 
@@ -483,6 +489,9 @@ En capture continue, Trace et Timing se redessinent à l'arrêt, et la Couvertur
 
 La vue **Timing** donne, par fonction et par exception, le nombre d'appels, le temps brut (interruptions déduites), le temps net (sans les appelés), le min, le max et la moyenne. Un chronogramme montre les appels dans le temps (molette : zoom ; glisser : déplacer ; clic : source).
 
+- **Arbre d'appels** (Trace.STATistic.TREE) : les mêmes durées **par chemin d'appel** (`main › update_sensor › fib`) ; une exception est la racine de son propre arbre. Les nœuds se déplient à la demande, et restent ouverts d'une analyse à l'autre ; double-clic : la source. La somme des temps nets de l'arbre égale celle des fonctions.
+- **Exceptions** (Trace.STATistic.InterruptIsr) : par exception, les entrées, la durée min/moy/max (sans les exceptions plus prioritaires qui l'ont interrompue), la période entre deux entrées et sa **gigue** (plus longue − plus courte), les préemptions (préemptée, préempte), les entrées enchaînées (tail-chaining) et les cycles d'entrée. La latence entre la demande d'interruption et l'entrée ne se voit pas dans une trace.
+
 Les durées sont **mesurées** avec `--etm-cycle-accurate`, et **estimées** par un modèle de cycles sinon ; la vue indique toujours laquelle. Unités : cycles ou µs (`--cpu-hz`, 25 MHz par défaut).
 
 - ETMv3 (M3/M4) : chaque instruction porte ses cycles ; environ 8 fois plus de trace.
@@ -493,6 +502,18 @@ Le modèle ne connaît ni les attentes mémoire ni les caches : sur une STM32N6 
 Le modèle suit le cœur détecté : Cortex-M3/M4 pour la trace ETM ; Cortex-M0 ou Cortex-M0+ (tables de cycles de leurs manuels de référence ARM) pour la MTB, réelle ou simulée (QEMU `microbit` : un Cortex-M0). La vue le nomme : « estimé (modèle Cortex-M0, MTB simulée) ».
 
 `--etm-timestamps` (ETMv4) insère dans la trace le compteur de temps global de la puce, à chaque synchronisation ; Trace.List le montre (« horodatage N »).
+
+### Compteurs (vue Compteurs)
+
+La vue **Compteurs** donne, pour la dernière exécution (Go jusqu'à un breakpoint, pas…) et en cumul, les compteurs de performance du cœur. Cocher **Mesurer** (cible arrêtée) les arme ; la mesure vient à l'exécution suivante.
+
+| Cœur | Compteurs |
+| --- | --- |
+| Cortex-M3, M4, M7 (DWT) | cycles ; CPI (attente des instructions multicycles), EXC (surcoût des exceptions), SLEEP, LSU (attente des chargements et rangements), FOLD (instructions repliées) ; instructions déduites (cycles − CPI − EXC − SLEEP − LSU + FOLD) et IPC |
+| Cortex-M55 (PMU de l'ARMv8.1-M) | cycles, instructions retirées, remplissages des caches de données et d'instructions, exceptions prises (compteurs de 16 bits chaînés en 32 bits) ; IPC |
+| Cortex-M0/M0+, QEMU | absents : la vue le dit |
+
+Les compteurs du DWT n'ont que 8 bits : leurs tours sont rattrapés par les paquets de débordement de l'ITM quand une capture SWO tourne ; sans capture, une exécution de plus de 256 cycles n'en donne la valeur que modulo 256 (marquée « ≈ »). Armés, ils émettent ces paquets sur le SWO : un débit de plus. Rien n'est remis à zéro sur la cible. Dans un script : `gdbtrace.counters()`.
 
 ### Couverture
 
@@ -915,6 +936,7 @@ inconnue, cible en marche) est un résultat d'erreur ; la session continue.
 | `--swo-config` | programmer ITM, DWT et TPIU (ou le SWO de la puce) à la connexion, et démarrer la capture (OpenOCD, ST-LINK_gdbserver) |
 | `--cpu-hz N`, `--swo-hz N`, `--swo-port P` | fréquence du cœur, débit SWO, port TCP du SWO d'OpenOCD |
 | `--var-trace EXPR[:ACCÈS]` | trace de données du DWT ; accès `write`, `read`, `rw`, suivi de `+pc` ; répétable |
+| `--snoop EXPR[@MS]` | variable échantillonnée par le canal mémoire, sans trace (toutes les 10 ms par défaut) ; répétable |
 
 ### Trace d'instructions ETM
 
@@ -1047,6 +1069,8 @@ Quand une capture ne démarre pas, GdbTrace le dit : le journal de mise en route
   - Nucleo-F072RB (Cortex-M0, OpenOCD) : run-control (breakpoints à compteur et à message, Go.Till par le DWT), vues en marche, RTOS (en marche : état de chaque tâche lu dans son TCB), profil par `DWT_PCSR`.
 - **Pas encore validé sur carte** : Nucleo-G070RB (Cortex-M0+, OpenOCD ; test prêt : `tests/test_board_m0.py -k g070`), port de trace parallèle, MTB d'un vrai M0+, `--rtos` d'OpenOCD ; le chrono (SysTick gelé pendant l'arrêt sur un Cortex-M0, `DWT_CYCCNT` au-delà), le journal des tâches en RAM et le RTT lus en marche (tests sur carte prêts) ; le vector catch de l'arrêt sur faute et le semihosting d'OpenOCD.
 - **Fautes** : un Cortex-M0/M0+ n'enregistre pas la cause, elle est déduite de l'instruction (une faute dans le gestionnaire lui-même, ou sur un cadre corrompu, peut tromper la déduction). Le cadre empilé vient du déroulement de gdb ; sans informations de débogage du gestionnaire, il est retrouvé par lr et MSP/PSP, au prix d'une base approximative.
+- **Échantillonnage** (SNOOPer) : horloge de l'hôte, à la milliseconde ; une période plus courte que la lecture d'une variable par le canal (1 à 2 ms) n'est pas tenue.
+- **Compteurs** : ceux du DWT ont 8 bits (exacts au-delà de 256 cycles seulement avec une capture SWO) ; PMU validée sur le manuel du Cortex-M55, pas encore sur carte.
 - **Terminal** : semihosting servi par QEMU et OpenOCD seulement (pas ST-LINK_gdbserver) ; RTT sous QEMU lu aux arrêts seulement ; un tampon RTT montant plein perd la suite (le bloc d'exemple n'attend jamais le débogueur).
 - **Chrono** : sans compteur de ticks connu (`xTickCount`, `uwTick`), la durée n'est connue qu'à une période de SysTick près. Lire `SYST_CSR` peut effacer son drapeau COUNTFLAG pour le logiciel (selon la sonde) : un firmware qui l'attend en boucle peut en manquer un.
 - **Modèles de cycles M0/M0+** : d'après les tables des manuels de référence ARM (mémoire sans attente, multiplieur rapide) ; la sortie d'exception et l'enchaînement, non documentés, sont estimés.

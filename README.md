@@ -27,6 +27,7 @@ Interface en **tkinter**.
 | 17. Nucleo-F446RE (Cortex-M4, ETMv3) | ETMv3 matériel par SWO validé : décodage identique à OpenCSD sur une vraie capture, tours de boucle exacts sur 440 appels ; stall effectif (ETMFFLR), options refusées par l'ETM signalées (pas de cycle-accurate sur un ETM-M4), filtre par le DWT avec ses trous de latence comblés ; alignement TPIU retrouvé sans synchro ; test sur carte | ✅ |
 | 18. Mesure du temps sans trace | Chrono entre deux arrêts (SysTick et compte des ticks sur un Cortex-M0/M0+ et sous QEMU, `DWT_CYCCNT` au-delà) ; temps des tâches sans ITM par un journal en RAM (`gdbtrace_task_log`) lu en marche ; modèles de cycles Cortex-M0 et M0+ (manuels ARM) pour la MTB | 🚧 (à valider sur carte) |
 | 19. Débogage de tous les jours | Vue Faute (CFSR, HFSR, SFSR décodés, cadre empilé, ligne fautive ; cause déduite sur un Cortex-M0/M0+) et arrêt sur faute ; outils mémoire (enregistrer, charger, remplir, chercher, comparer) ; images HEX, S-record, binaire à programmer ; symboles d'autres ELF ; navigateur de symboles ; vue Terminal (semihosting, RTT) ; recherche et export CSV dans la trace | 🚧 (RTT en marche et vector catch à valider sur carte) |
+| 20. Analyse de trace avancée | Arbre d'appels (durées par chemin d'appel) ; statistiques d'exceptions (durée, période, gigue, préemptions, enchaînements) depuis la trace ou l'ITM ; variables échantillonnées sans trace par le canal mémoire (Cortex-M0, QEMU) ; compteurs de performance du DWT et de la PMU du Cortex-M55 | 🚧 (compteurs à valider sur carte) |
 
 ## Installation
 
@@ -798,6 +799,18 @@ avec OpenOCD, comme un Break).
 - **Trace** : Chercher (adresse, fonction, exception, texte), Tout trouver, Exporter… en CSV
   (`trace_find`, `trace_export`).
 
+### Analyse de trace avancée (jalon 20)
+
+- **Arbre d'appels** (onglet de la vue Timing, `call_tree()`) : brut et net par chemin
+  d'appel ; une exception est la racine de son arbre.
+- **Exceptions** (onglet de la vue Timing ; onglet Exceptions du Profil pour l'ITM ;
+  `irq_stats()`) : entrées, durée min/moy/max, période et gigue, préemptions, enchaînements.
+- **Variables échantillonnées** (SNOOPer, `--snoop ticks@10`, `snoop()`) : lues par le canal
+  mémoire toutes les N ms, sans trace ; dessinées par la vue Variables tracées, aussi sur un
+  Cortex-M0/M0+ et sous QEMU.
+- **Vue Compteurs** (`counters()`) : cycles, CPI, EXC, SLEEP, LSU, FOLD et instructions
+  déduites du DWT ; instructions, défauts de cache et exceptions de la PMU d'un Cortex-M55.
+
 ### Console
 
 | Saisie | Effet |
@@ -835,6 +848,8 @@ avec OpenOCD, comme un Break).
 | `gdbtrace.sym_list("sensor")`, `gdbtrace.add_symbols("boot.elf")` | sYmbol.List ; symboles d'un autre ELF |
 | `gdbtrace.terminal()`, `gdbtrace.terminal_send("go\n")` | texte du semihosting et du RTT ; envoi au programme |
 | `gdbtrace.trace_find("exception SysTick")`, `gdbtrace.trace_export("t.csv")` | Trace.FindAll ; listing en CSV |
+| `gdbtrace.call_tree(3)`, `gdbtrace.irq_stats()` | arbre d'appels, statistiques d'exceptions |
+| `gdbtrace.snoop("ticks", 10)`, `gdbtrace.counters()` | variable échantillonnée sans trace ; compteurs de performance |
 | `gdbtrace.timing(20, unit="us")`, `gdbtrace.timeline(30)` | durées par fonction / derniers appels (trace ETM) |
 | `!info breakpoints` | Commande CLI gdb brute |
 | `mon reset halt` | Commande `monitor` vers OpenOCD |

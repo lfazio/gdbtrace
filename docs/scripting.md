@@ -665,6 +665,10 @@ gdbtrace.thread("consumer")
 | `trace_list(n)` | Trace.List : les dernières instructions exécutées | trace ETM ou MTB |
 | `calls(n)` | flot des appels, retours et exceptions | idem |
 | `timing(top, unit="us")`, `timeline(n)` | durées par fonction, chronogramme en texte | idem |
+| `call_tree(depth=4, min_pct=1.0)` | arbre d'appels : durées par chemin d'appel → `dict` imbriqués | idem |
+| `irq_stats()` | exceptions : entrées, durée, période et gigue, préemptions, enchaînements | trace ETM ou MTB, sinon trace des exceptions de l'ITM |
+| `snoop(expr, period_ms=10)`, `snoop_stop(expr=None)` | variable lue par le canal mémoire toutes les N ms, sans trace ; échantillons par `var_samples` | canal mémoire en marche |
+| `counters()`, `counters_reset()`, `counters_off()` | compteurs de performance de la dernière exécution (DWT, ou PMU d'un M55) ; le premier appel les arme | M3, M4, M7, M55 sur carte |
 | `cov.summary()`, `cov.list(n)`, `cov.files()` | couverture de code | idem |
 | `cov.save(f)`, `cov.load(f)`, `cov.export(f)`, `cov.reset()` | cumul et rapports (`.html`, `.info`, `.json`) | idem |
 | `mtb(n)`, `mtb_stats()`, `mtb_probe()` | MTB d'un Cortex-M0+ | `--mtb` ou `--mtb-sim` |
@@ -701,9 +705,37 @@ gdbtrace.calls(6)
 gdbtrace.timing(5)                              # durées estimées par le modèle de cycles
 ```
 
+<!-- test: --etm-sim -->
+```python
+gdbtrace.break_("fib")
+gdbtrace.go(); gdbtrace.wait(10)
+gdbtrace.go(); gdbtrace.wait(10)
+tree = gdbtrace.call_tree(depth=4, min_pct=0)   # main › update_sensor › fib…
+assert any(n["nom"] == "[SysTick]" for n in tree)       # une exception : sa propre racine
+irq = gdbtrace.irq_stats()                      # SysTick : entrées, durée, période, gigue
+assert irq and irq[0]["entrees"] > 0
+gdbtrace.delete(gdbtrace.breaks()[0].number)
+```
+
 <!-- test -->
 ```python
 gdbtrace.profile(0.5, show=5)                   # sous QEMU : PC lu en marche par QMP
+```
+
+**Sans trace** (Cortex-M0, QEMU, carte sans capture SWO) : `snoop()` lit la variable par le
+canal mémoire pendant que la cible tourne ; les compteurs de performance, eux, demandent un
+vrai DWT ou une PMU (absents sous QEMU : `counters()` le dit).
+
+<!-- test -->
+```python
+import time
+gdbtrace.go(until="main"); gdbtrace.wait()
+gdbtrace.snoop("ticks", 10)                     # toutes les 10 ms, horloge de l'hôte
+gdbtrace.go(); time.sleep(0.5); gdbtrace.halt(); gdbtrace.wait()
+vals = [s.raw for s in gdbtrace.var_samples("ticks", None)]
+assert len(vals) > 20 and vals == sorted(vals)
+gdbtrace.snoop_stop()
+assert gdbtrace.counters() is None              # QEMU : « DWT absent ou non émulé »
 ```
 
 Filtre : ne tracer que `fib`. Les reprises de la trace sont marquées « trace interrompue »,
