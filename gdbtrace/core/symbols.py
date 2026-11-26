@@ -7,6 +7,7 @@ trop lent.
 from __future__ import annotations
 
 import bisect
+import fnmatch
 import os
 from dataclasses import dataclass
 
@@ -137,3 +138,34 @@ class SymbolTable:
 
     def addresses_for_line(self, file: str, line: int) -> list[int]:
         return [e.address for e in self.lines if e.file == file and e.line == line]
+
+
+def symbol_rows(sym, pattern: str = "", kind: str = "tout") -> list[dict]:
+    """Lignes du navigateur : [{nom, genre, adresse, taille, fichier, ligne}], triées par nom.
+    `pattern` : sous-chaîne, ou motif avec * et ? ; sans casse. `kind` : tout, fonctions,
+    variables."""
+    if sym is None:
+        return []
+    pat = pattern.strip().lower()
+    glob = any(c in pat for c in "*?[")
+
+    def match(name: str) -> bool:
+        n = name.lower()
+        return not pat or (fnmatch.fnmatchcase(n, pat) if glob else pat in n)
+    rows: list[dict] = []
+    if kind in ("tout", "fonctions"):
+        seen: set[str] = set()
+        for f in sym.functions:
+            if f.name in seen or not match(f.name):
+                continue
+            seen.add(f.name)
+            line = sym.line_at(f.start)
+            rows.append({"nom": f.name, "genre": "fonction", "adresse": f.start, "taille": f.size,
+                         "fichier": line.file if line else None, "ligne": line.line if line else None})
+    if kind in ("tout", "variables"):
+        for name, (addr, size) in sym.objects.items():
+            if match(name):
+                rows.append({"nom": name, "genre": "variable", "adresse": addr, "taille": size,
+                             "fichier": None, "ligne": None})
+    rows.sort(key=lambda r: (r["nom"].lower(), r["adresse"]))
+    return rows

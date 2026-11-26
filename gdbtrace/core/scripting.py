@@ -912,6 +912,19 @@ class ScriptAPI:
         print(res.summary())
         return res
 
+    def sym_list(self, pattern: str = "", kind: str = "tout", show: int = 50) -> list[dict]:
+        """sYmbol.List : fonctions et variables globales dont le nom contient `pattern` (ou
+        correspond au motif *, ?), sans casse ; `kind` : tout, fonctions, variables. Affiche
+        les `show` premières et rend [{nom, genre, adresse, taille, fichier, ligne}]."""
+        from .symbols import symbol_rows
+        rows = symbol_rows(self._symbols(), pattern, kind)
+        for r in rows[:show]:
+            where = f"  {r['fichier']}:{r['ligne']}" if r["fichier"] else ""
+            print(f"{r['adresse']:#010x} {r['taille'] or 0:6d}  {r['genre']:<8} {r['nom']}{where}")
+        if len(rows) > show:
+            print(f"… {len(rows) - show} de plus")
+        return rows
+
     def add_symbols(self, path: str, offset: int = 0) -> None:
         """Ajoute les symboles d'un autre ELF (bootloader, image chargée à part) à ceux de
         l'ELF de la session ; `offset` : décalage de chargement. Profil, trace et couverture
