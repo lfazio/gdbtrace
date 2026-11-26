@@ -109,6 +109,9 @@ TOOLS = [
           {"n": _I}),
     _tool("coverage", "Couverture de code par la trace : résumé et fonctions les moins "
           "couvertes (`top`, défaut 20).", {"top": _I}),
+    _tool("call_tree", "Arbre d'appels d'après la trace (brut et net par chemin d'appel ; une "
+          "exception est la racine de son arbre) : `depth` niveaux (défaut 4), nœuds d'au moins "
+          "`min_pct` % du temps (défaut 1).", {"depth": _I, "min_pct": _N}),
     _tool("trace_find", "Cherche dans la trace d'instructions (les `n` derniers événements, défaut "
           "50000) : adresse 0x…, nom de fonction (chaque entrée), « exception » ou « exception "
           "SysTick », ou texte ; `top` lignes (défaut 20).", {"query": _S, "n": _I, "top": _I}, ("query",)),
@@ -499,6 +502,10 @@ class GdbTraceMcp:
     def tool_timing(self, top: int = 20) -> str:
         self._settle()
         self.api.timing(top)
+        return ""
+
+    def tool_call_tree(self, depth: int = 4, min_pct: float = 1.0) -> str:
+        self.api.call_tree(depth, min_pct)
         return ""
 
     def tool_trace_find(self, query: str, n: int = 50_000, top: int = 20) -> str:

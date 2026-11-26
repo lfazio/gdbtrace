@@ -427,7 +427,7 @@ def test_timing_view_with_simulated_etm(etm_app):
     assert [tv.color(s.name) for s in ranked[:7]] == SLOTS[:7]       # premier résultat : ordre fixe
     assert len(ranked) <= 7 or tv.color(ranked[-1].name) == OTHER
     # chronogramme : rectangles visibles, zoom, survol, clic → source
-    tv.tabs.select(1)
+    tv.tabs.select(next(t for t in tv.tabs.tabs() if tv.tabs.tab(t, "text") == "Chronogramme"))
     pump(app, lambda: False, timeout=0.3)
     ch = tv.chart
     n_all = len(ch.items)

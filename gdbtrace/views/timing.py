@@ -58,8 +58,9 @@ class TimingView(View):
 
         self.tabs = ttk.Notebook(self)
         self.tabs.pack(fill="both", expand=True)
-        f_tab, f_chart = ttk.Frame(self.tabs), ttk.Frame(self.tabs)
+        f_tab, f_tree, f_chart = ttk.Frame(self.tabs), ttk.Frame(self.tabs), ttk.Frame(self.tabs)
         self.tabs.add(f_tab, text="Fonctions")
+        self.tabs.add(f_tree, text="Arbre d'appels")
         self.tabs.add(f_chart, text="Chronogramme")
 
         cols = [("kind", "Type", 72), ("calls", "Appels", 56), ("partial", "Partiels", 60),
@@ -80,6 +81,25 @@ class TimingView(View):
         f_tab.rowconfigure(0, weight=1)
         f_tab.columnconfigure(0, weight=1)
         self.table.bind("<Double-1>", lambda _e: self._goto(self.table.focus()))
+
+        # arbre d'appels : enfants insérés à l'ouverture d'un nœud (peu d'appels Tk)
+        tcols = [("calls", "Appels", 56), ("partial", "Partiels", 60), ("gross", "Brut", 80),
+                 ("pct", "%", 48), ("min", "Min", 64), ("max", "Max", 64), ("avg", "Moyenne", 66),
+                 ("net", "Net", 80)]
+        self.calltree = ttk.Treeview(f_tree, columns=[c[0] for c in tcols], show="tree headings",
+                                     selectmode="browse")
+        self.calltree.heading("#0", text="Chemin d'appel")
+        self.calltree.column("#0", width=260, minwidth=120, stretch=True)
+        for cid, label, width in tcols:
+            self.calltree.heading(cid, text=label)
+            self.calltree.column(cid, width=width, stretch=False, anchor="e")
+        tsb = ttk.Scrollbar(f_tree, orient="vertical", command=self.calltree.yview)
+        self.calltree.configure(yscrollcommand=tsb.set)
+        self.calltree.pack(side="left", fill="both", expand=True)
+        tsb.pack(side="right", fill="y")
+        self.calltree.bind("<<TreeviewOpen>>", lambda _e: self._open_node(self.calltree.focus()))
+        self.calltree.bind("<Double-1>", lambda _e: self._goto_node(self.calltree.focus()))
+        self._node_path: dict[str, tuple] = {}
 
         self.chart = FlameChart(f_chart, self)
         self.result: TimingResult | None = None
@@ -186,6 +206,7 @@ class TimingView(View):
         self.info.configure(text=f"{self.fmt(r.total)} {self.unit} analysés — temps {self.timing}"
                                  + (f" — {r.context_switches} changements de tâche" if r.context_switches else ""))
         self._render_table()
+        self._render_tree()
         self.chart.set_data(r)
 
     def _sort(self, key: str) -> None:
@@ -206,6 +227,58 @@ class TimingView(View):
                 "exception" if s.kind == EXCEPTION else "fonction", s.calls, s.partial or "",
                 self.fmt(s.gross), f"{100 * s.gross / r.total:.1f}" if r.total else "",
                 self.fmt(s.min), self.fmt(s.max) if s.calls else "", self.fmt(s.avg), self.fmt(s.net)))
+
+    # ------------------------------------------------------------------ arbre d'appels
+    def _node_values(self, st) -> tuple:
+        total = self.result.total if self.result else 0
+        return (st.calls, st.partial or "", self.fmt(st.gross),
+                f"{100 * st.gross / total:.1f}" if total else "", self.fmt(st.min),
+                self.fmt(st.max) if st.calls else "", self.fmt(st.avg), self.fmt(st.net))
+
+    def _insert_children(self, parent_iid: str, path: tuple) -> None:
+        r = self.result
+        for child, st in r.children(path):
+            iid = self.calltree.insert(parent_iid, "end", text=st.name, values=self._node_values(st),
+                                       tags=("exception",) if st.kind == EXCEPTION else ())
+            self._node_path[iid] = child
+            if r.has_children(child):
+                self.calltree.insert(iid, "end", text="…", tags=("dummy",))   # à déplier
+
+    def _render_tree(self) -> None:
+        opened = {self._node_path.get(i) for i in self._open_iids()}
+        self.calltree.delete(*self.calltree.get_children())
+        self._node_path = {}
+        if self.result is None:
+            return
+        self._insert_children("", ())
+        queue = list(self._node_path.items())                 # nœuds ouverts avant l'analyse
+        while queue:
+            iid, path = queue.pop(0)
+            if path in opened:
+                before = set(self._node_path)
+                self._open_node(iid)
+                self.calltree.item(iid, open=True)
+                queue += [(i, self._node_path[i]) for i in self._node_path if i not in before]
+
+    def _open_iids(self) -> list[str]:
+        out, todo = [], list(self.calltree.get_children())
+        while todo:
+            iid = todo.pop()
+            if self.calltree.item(iid, "open"):
+                out.append(iid)
+                todo += self.calltree.get_children(iid)
+        return out
+
+    def _open_node(self, iid: str) -> None:
+        kids = self.calltree.get_children(iid) if iid else ()
+        if len(kids) == 1 and "dummy" in self.calltree.item(kids[0], "tags"):
+            self.calltree.delete(kids[0])
+            self._insert_children(iid, self._node_path[iid])
+
+    def _goto_node(self, iid: str) -> None:
+        path = self._node_path.get(iid)
+        if path and self.result is not None:
+            self._goto(path[-1], self.result.tree[path].entry)
 
     def _goto(self, name: str | None, entry: int | None = None) -> None:
         if entry is None and name and self.result and name in self.result.stats:

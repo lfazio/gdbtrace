@@ -455,6 +455,36 @@ class ScriptAPI:
                   f"{fmt(st.net):>12}")
         return r
 
+    def call_tree(self, depth: int = 4, min_pct: float = 1.0, unit: str = "us",
+                  n: int | None = None) -> list[dict]:
+        """Trace.STATistic.TREE : durées par chemin d'appel (une exception est la racine de
+        son arbre), jusqu'à `depth` niveaux, sans les nœuds de moins de `min_pct` % du temps
+        analysé. Rend des `dict` imbriqués : nom, appels, partiels, brut, net, min, max,
+        moyenne (cycles), enfants."""
+        from ..trace.timing import TimingAnalyzer
+        etm = self._etm()
+        r = TimingAnalyzer(etm.image, self._symbols()).analyze(etm.last(n or etm.history.maxlen or 200_000))
+        conv, u = self._time_unit(unit)
+        print(f"{conv(r.total):,.2f} {u} analysés — durées {etm.timing} ; brut, net en {u}")
+
+        def walk(path: tuple, level: int) -> list[dict]:
+            out = []
+            for child, st in r.children(path):
+                pct = 100 * st.gross / r.total if r.total else 0.0
+                if pct < min_pct:
+                    continue
+                print(f"  {'  ' * level}{st.name:<{max(8, 30 - 2 * level)}} {st.calls:>6} appel(s)"
+                      f"{f' +{st.partial} partiel(s)' if st.partial else ''}  brut {conv(st.gross):,.2f}"
+                      f" ({pct:.1f} %)  net {conv(st.net):,.2f}")
+                node = {"nom": st.name, "appels": st.calls, "partiels": st.partial, "brut": st.gross,
+                        "net": st.net, "min": st.min, "max": st.max if st.calls else None,
+                        "moyenne": st.avg, "enfants": []}
+                if level + 1 < depth:
+                    node["enfants"] = walk(child, level + 1)
+                out.append(node)
+            return out
+        return walk((), 0)
+
     def timeline(self, n: int = 30, unit: str = "us", min_duration: float = 0.0):
         """Trace.Chart.Func en texte : les `n` derniers appels (début, durée, profondeur),
         en ignorant ceux plus courts que `min_duration` (dans l'unité choisie)."""

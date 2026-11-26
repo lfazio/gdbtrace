@@ -22,16 +22,24 @@ Pile d'appels :
   au premier retour : l'adresse de retour désigne la bonne pile. Le temps
   passé dans les autres tâches est déduit du brut, comme une interruption : une fonction
   préemptée reste un seul appel, dessiné en plusieurs morceaux dans le chronogramme.
+
+Arbre d'appels (Trace.STATistic.TREE) : chaque cadre porte son chemin d'appel, fixé à
+l'empilement (le chemin du cadre du dessous, plus son nom) ; une exception est la racine de
+son propre arbre. Les mêmes statistiques sont tenues par chemin (`TimingResult.tree`) : la
+somme des nets de l'arbre égale celle des fonctions. Profondeur et nombre de nœuds sont
+plafonnés (`MAX_DEPTH`, `max_nodes`) : au-delà, un nœud « … » réunit le reste.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from .etm.image import DIRECT, INDIRECT
 from .etm.qemu_log import MARKS, CycleMark, Event, ExcEntry, ExcReturn, Step, TraceGap
 from .itm import exception_name
 
 FUNCTION, EXCEPTION = "function", "exception"
+MAX_DEPTH = 32                  # profondeur de l'arbre d'appels ; au-delà, un nœud « … »
+ELLIPSIS = "…"
 
 
 def measured_cycles(events: list) -> list[Event]:
@@ -116,10 +124,26 @@ class TimingResult:
     intervals: list[Interval]
     total: int                   # cycles couverts par la trace
     context_switches: int = 0
+    #: arbre d'appels : chemin (noms, de la racine au nœud) → statistiques du nœud
+    tree: dict[tuple, FuncStats] = field(default_factory=dict)
 
     def rows(self, kind: str | None = None) -> list[FuncStats]:
         out = [s for s in self.stats.values() if kind is None or s.kind == kind]
         return sorted(out, key=lambda s: (-s.gross, s.name))
+
+    def children(self, path: tuple = ()) -> list[tuple[tuple, FuncStats]]:
+        """Nœuds fils de `path` (racines si vide), du plus gros temps brut au plus petit."""
+        if not hasattr(self, "_kids"):
+            kids: dict[tuple, list] = {}
+            for p in self.tree:
+                kids.setdefault(p[:-1], []).append(p)
+            self._kids = kids
+        out = [(p, self.tree[p]) for p in self._kids.get(tuple(path), [])]
+        return sorted(out, key=lambda x: (-x[1].gross, x[1].name))
+
+    def has_children(self, path: tuple) -> bool:
+        self.children(())
+        return bool(self._kids.get(tuple(path)))
 
 
 @dataclass
@@ -138,6 +162,7 @@ class _Frame:
     saved_prev: object = None    # cadres d'exception : dernière instruction du code interrompu
     piece: int = -1              # début du morceau visible courant (reprises de tâche)
     resumed: bool = False
+    path: tuple = ()             # chemin d'appel (arbre d'appels)
 
     def __post_init__(self):
         if self.piece < 0:
@@ -159,16 +184,20 @@ class _Prev:
 
 
 class TimingAnalyzer:
-    def __init__(self, image, symbols, max_intervals: int = 200_000, max_tasks: int = 64):
+    def __init__(self, image, symbols, max_intervals: int = 200_000, max_tasks: int = 64,
+                 max_nodes: int = 50_000):
         self.image = image
         self.symbols = symbols
         self.max_intervals = max_intervals
         self.max_tasks = max_tasks
+        self.max_nodes = max_nodes
 
     # ------------------------------------------------------------------ API
     def analyze(self, events: list[Event]) -> TimingResult:
         self.stack: list[_Frame] = []
         self.stats: dict[str, FuncStats] = {}
+        self.tree: dict[tuple, FuncStats] = {}
+        self._paths: set[tuple] = set()
         self.intervals: list[Interval] = []
         self.t = 0
         self.prev: _Prev | None = None
@@ -191,7 +220,7 @@ class TimingAnalyzer:
         self.suspended = []
         if len(self.intervals) > self.max_intervals:
             self.intervals = self.intervals[-self.max_intervals:]
-        return TimingResult(self.stats, self.intervals, self.t, self.switches)
+        return TimingResult(self.stats, self.intervals, self.t, self.switches, self.tree)
 
     # ------------------------------------------------------------------ outils
     def _func(self, addr: int):
@@ -208,10 +237,23 @@ class TimingAnalyzer:
                 return i + 1
         return 0
 
+    def _path(self, parent: tuple, name: str) -> tuple:
+        """Chemin d'un nouveau cadre sous `parent`, plafonds compris."""
+        if parent and parent[-1] == ELLIPSIS and len(parent) > MAX_DEPTH:
+            return parent                        # déjà sous le nœud « … » de profondeur
+        path = parent + (ELLIPSIS,) if len(parent) >= MAX_DEPTH else parent + (name,)
+        if path not in self._paths:
+            if len(self._paths) >= self.max_nodes and path[-1] != ELLIPSIS:
+                path = parent + (ELLIPSIS,)
+            self._paths.add(path)
+        return path
+
     def _push(self, addr: int, ret: int | None, partial: bool) -> None:
         name, fstart = self._name(addr)
+        parent = self.stack[-1].path if self.stack else ()
         self.stack.append(_Frame(name, FUNCTION, self.t, len(self.stack), ret=ret, entry=addr,
-                                 func_start=fstart, partial_start=partial))
+                                 func_start=fstart, partial_start=partial,
+                                 path=self._path(parent, name)))
 
     def _close(self, i: int, complete_end: bool = True) -> None:
         """Ferme les cadres i..sommet (le sommet d'abord) à l'instant courant."""
@@ -232,15 +274,12 @@ class TimingAnalyzer:
         st = self.stats.get(fr.name)
         if st is None:
             st = self.stats[fr.name] = FuncStats(fr.name, fr.kind, entry=fr.entry)
-        st.gross += gross
-        st.net += fr.self_c
-        if complete:
-            st.calls += 1
-            st.gross_complete += gross
-            st.min = gross if st.min is None else min(st.min, gross)
-            st.max = max(st.max, gross)
-        else:
-            st.partial += 1
+        _add(st, gross, fr.self_c, complete)
+        node = self.tree.get(fr.path)
+        if node is None:
+            name = fr.path[-1] if fr.path else fr.name
+            node = self.tree[fr.path] = FuncStats(name, fr.kind, entry=fr.entry if name == fr.name else None)
+        _add(node, gross, fr.self_c, complete)
 
     # ------------------------------------------------------------------ tâches (RTOS)
     def _suspend(self, base: int, prev: "_Prev") -> None:
@@ -395,7 +434,8 @@ class TimingAnalyzer:
                 self.prev = saved
         label = f"[{exception_name(e.number)}]"
         self.stack.append(_Frame(label, EXCEPTION, self.t, len(self.stack), entry=e.handler,
-                                 handler=e.handler, saved_prev=self.prev))
+                                 handler=e.handler, saved_prev=self.prev,
+                                 path=self._path((), label)))
         self.prev = None
         self.stack[-1].self_c += e.cycles       # latence d'entrée
         self.t += e.cycles
@@ -434,6 +474,18 @@ class TimingAnalyzer:
             if self.stack[i].kind == EXCEPTION:
                 return i
         return None
+
+
+def _add(st: FuncStats, gross: int, net: int, complete: bool) -> None:
+    st.gross += gross
+    st.net += net
+    if complete:
+        st.calls += 1
+        st.gross_complete += gross
+        st.min = gross if st.min is None else min(st.min, gross)
+        st.max = max(st.max, gross)
+    else:
+        st.partial += 1
 
 
 def to_us(cycles: float, cpu_hz: int) -> float:
