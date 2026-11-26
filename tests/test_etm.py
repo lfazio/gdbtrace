@@ -417,10 +417,12 @@ def test_simulated_etm_not_taken_it_branch(qemu_paths):
     from gdbtrace.trace.etm.flow import decode
     img, events = qemu_paths["bare"]
     steps = [e for e in events if isinstance(e, ql.Step)]
-    skipped = {s.addr for s, n in zip(steps, steps[1:])
-               if (i := img.instr(s.addr)).op == "bx" and i.cond and n.addr == s.addr + i.size}
+    # par passage, pas par adresse : un même `bx<c> lr` peut être pris à un passage et non
+    # pris à un autre (selon le chemin de QEMU), et décodé « exécuté » à juste titre
+    skipped = [k for k, (s, n) in enumerate(zip(steps, steps[1:]))
+               if (i := img.instr(s.addr)).op == "bx" and i.cond and n.addr == s.addr + i.size]
     assert skipped, "le chemin doit traverser un `bx<c> lr` non pris"
     decoded, pk, _ = decode(encode(events, img), img)
     assert pk.errors == 0 and as_tuples(decoded) == as_tuples(events)
-    flags = {e.executed for e in decoded if isinstance(e, ql.Step) and e.addr in skipped}
-    assert flags == {False}
+    dsteps = [e for e in decoded if isinstance(e, ql.Step)]
+    assert {dsteps[k].executed for k in skipped if k < len(dsteps)} == {False}
