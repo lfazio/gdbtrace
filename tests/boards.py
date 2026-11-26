@@ -176,13 +176,26 @@ def chrono_passes(app) -> list[dict]:
         s.wait_stopped(10)
         for pause in (0.0, 1.0):
             time.sleep(pause)
+            t0 = int(s.evaluate("xTickCount"))
             s.go()
             s.wait_stopped(10)
             r = api.chrono() or {}
-            out.append({k: r.get(k) for k in ("secondes", "cycles", "source", "note")})
+            out.append({**{k: r.get(k) for k in ("secondes", "cycles", "source", "note")},
+                        "ticks": int(s.evaluate("xTickCount")) - t0})
     finally:
         s.delete_break(bp.number)
     return out
+
+
+def chrono_checks(passes: list[dict], source: str) -> None:
+    """Chaque passage de worker_step : la mesure du chrono (`source`) suit le compte des ticks
+    du noyau (1 kHz), à un tick près. La durée elle-même dépend de la carte : 5 ms d'attente,
+    plus l'ordonnancement et le relevé des piles (~3 ms de plus sur un Cortex-M0 à 8 MHz)."""
+    assert isinstance(passes, list) and len(passes) == 2, passes
+    for p in passes:
+        assert p["source"] == source and not p["note"], p
+        assert 0.004 < p["secondes"] < 0.02, p
+        assert abs(p["secondes"] * 1000 - p["ticks"]) <= 1.0, p
 
 
 # ====================================================================== compteurs

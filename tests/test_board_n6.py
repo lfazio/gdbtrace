@@ -319,8 +319,4 @@ def test_rtt_read_live_by_the_relay(run):
 def test_chrono_by_cyccnt(run):
     """Deux passages par worker_step (vTaskDelay de 5 ms) mesurés par DWT_CYCCNT ; la pause de
     1 s du débogueur entre les deux n'est pas comptée."""
-    passes = run["extra"]["chrono"]
-    assert isinstance(passes, list) and len(passes) == 2, passes
-    for p in passes:
-        assert p["source"] == "DWT_CYCCNT" and not p["note"], p
-        assert 0.004 < p["secondes"] < 0.008, p
+    boards.chrono_checks(run["extra"]["chrono"], "DWT_CYCCNT")

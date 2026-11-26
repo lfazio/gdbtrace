@@ -26,6 +26,10 @@ class Ring:
         self.head += 1
 
     def read(self, addr, n):
+        if addr != BASE and getattr(self, "during_entries", None):
+            pending, self.during_entries = self.during_entries, None
+            for ts, tcb in pending:                  # écrasent les plus vieilles, déjà en route
+                self.write(ts, tcb)
         if addr == BASE:
             if self.during_read:
                 pending, self.during_read = self.during_read, None
@@ -65,6 +69,25 @@ def test_overrun_and_overwrite_during_read_are_lost_not_wrong():
     got = [ts for ts, _ in r.poll(ring.read)]
     assert got == [20] and r.lost == 12
     assert [ts for ts, _ in r.poll(ring.read)] == [21, 22, 23]
+
+
+def test_ring_overwritten_while_read_keeps_entries_aligned():
+    """Anneau relu en entier (dépassé entre deux lectures) pendant que le firmware écrit : les
+    entrées écrasées sont retirées en tête, **par entrée** (8 octets). Retirées par octet, les
+    suivantes glissaient : des TCB faits de moitiés d'horodatage (constaté sur Nucleo-F072RB,
+    des milliers de « tâches » et une image de chronologie trop haute pour X)."""
+    tcb = lambda i: 0x20001000 + 0x40 * (i % 5)  # noqa: E731
+    ring, r = Ring(), TaskLogReader(BASE)
+    for i in range(20):
+        ring.write(i, tcb(i))
+    r.poll(ring.read)
+    for i in range(20, 28):                          # l'anneau entier est à relire
+        ring.write(i, tcb(i))
+    ring.during_entries = [(i, tcb(i)) for i in range(28, 31)]
+    got = r.poll(ring.read)
+    assert got == [(i, tcb(i)) for i in range(23, 28)], got
+    assert r.lost == 12 + 3
+    assert r.poll(ring.read) == [(i, tcb(i)) for i in range(28, 31)]
 
 
 def test_timestamps_unwrapped_and_restart_detected():

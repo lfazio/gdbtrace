@@ -225,7 +225,7 @@ class TaskLogReader:
         again = int.from_bytes(read(self.addr + 8, 4), "little")
         valid = max(start, again - size)          # écrasées pendant la lecture : perdues
         self.lost += valid - start
-        raw = raw[valid - start:]
+        raw = raw[8 * (valid - start):]           # en octets : 8 par entrée
         out = []
         for i in range(0, len(raw), 8):
             ts = int.from_bytes(raw[i:i + 4], "little")

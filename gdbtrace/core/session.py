@@ -397,20 +397,22 @@ class Session:
             self.exit_code = int(code, 8) if code else (0 if payload["reason"] == "exited-normally" else None)
             if self.target is not None and getattr(self.target, "native", False):
                 self.target.pid = None
+            # ses dernières lignes avant sa fin ; avant de réveiller une boucle de pas, qui
+            # sinon se finirait pendant cette attente sur un « stopped » inventé
+            self._settle_tty()
             with self._lock:
                 # plus rien à reprendre : arrêt interne, halt en attente, boucle de pas
                 self._internal = self._resuming = False
                 self._halt_requested = self._halt_wanted = False
                 held, self._held = self._held, []
+                self.state = "exited"
+                self.stop_reason = payload
                 if self._looping:               # Step.Till / Step.Change : la boucle s'arrête
                     self._loop_reason = payload
                     self._loop_inflight = False
                     self._loop_stop.set()
             for text in held:                   # sortie retenue pendant la marche (actions)
                 self._emit("output", {"stream": "console", "text": text})
-            self._settle_tty()                  # ses dernières lignes avant sa fin
-            self.state = "exited"
-            self.stop_reason = payload
             self._emit("exited", payload)
             self._stopped.set()
         elif t == "notify" and msg in ("stopped", "running") and self.non_stop:

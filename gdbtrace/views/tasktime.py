@@ -20,6 +20,10 @@ from ..gui.view_base import View
 from .timing import GRID, INK, INK2, MUTED, OTHER, SLOTS, SURFACE, nice_step
 
 ROW, TOP, LEFT, NAME_W = 20, 22, 6, 110
+#: couloirs dessinés au plus : au-delà, l'image de la chronologie dépasserait ce que X accepte
+#: (32 767 pixels ; une erreur X tue l'application entière). Un nombre de tâches aberrant
+#: (journal mal lu) ne doit jamais aller jusque-là.
+MAX_LANES = 64
 WINDOW = 2000                           # tranches dessinées (les plus récentes)
 
 
@@ -176,7 +180,7 @@ class TaskTimeView(View):
             self.tree.insert("", "end", text=t.name, values=(
                 t.activations, fmt(t.gross), fmt(t.net), f"{100 * t.gross / span:.1f}",
                 fmt(t.max_slice), fmt(t.avg_slice)))
-        self._draw(rows)
+        self._draw(rows[:MAX_LANES])
 
     def _draw(self, rows) -> None:
         c = self.canvas

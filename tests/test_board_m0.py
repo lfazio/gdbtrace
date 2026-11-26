@@ -253,11 +253,7 @@ def test_rtt_read_live_by_openocd(run):
 def test_chrono_by_systick(run):
     """Deux passages par worker_step (vTaskDelay de 5 ms) : SysTick et xTickCount ; la pause de
     1 s du débogueur entre les deux n'est pas comptée (SysTick gelé, cœur arrêté)."""
-    passes = run["extra"]["chrono"]
-    assert isinstance(passes, list) and len(passes) == 2, passes
-    for p in passes:
-        assert p["source"] == "SysTick" and not p["note"], p
-        assert 0.004 < p["secondes"] < 0.008, p
+    boards.chrono_checks(run["extra"]["chrono"], "SysTick")
 
 
 # ====================================================================== run-control

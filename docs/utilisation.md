@@ -739,7 +739,7 @@ Il éprouve en plus les comparateurs du cœur et le chrono :
 - un breakpoint à compteur ;
 - un breakpoint à message : un message par passage, sans arrêt visible ;
 - un Go.Till sur une globale ;
-- le chrono entre deux passages par `worker_step` (5 ms), dont un après une pause de 1 s du débogueur, qui ne doit pas compter.
+- le chrono entre deux passages par `worker_step` (5 ms d'attente, plus l'ordonnancement : environ 8 ms sur le Cortex-M0 à 8 MHz), qui doit suivre le compte des ticks du noyau à un tick près, dont un après une pause de 1 s du débogueur, qui ne doit pas compter.
 
 Chaque carte est trouvée seule : sonde ST-LINK dans `/sys`, puis identité de la puce (DEV_ID) lue par OpenOCD. `GDBTRACE_G070_SERIAL` et `GDBTRACE_F072_SERIAL` imposent la sonde. Une carte absente ne fait sauter que ses propres tests.
 

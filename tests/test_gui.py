@@ -357,11 +357,17 @@ def test_trace_view_with_simulated_etm(etm_app):
     tv._goto(tv.listing)
     src = app.views.find(SourceView)
     assert src.current_file.endswith("main.c")
-    # 2e exécution : la trace s'enrichit (ETM simulé à chaque arrêt)
+    # 2e exécution : la trace s'enrichit (ETM simulé à chaque arrêt). QEMU chargé : le pas qui
+    # enjambe le breakpoint revient parfois sans avoir avancé, et gdb revoit le même arrêt sans
+    # rien avoir exécuté (limite connue, CLAUDE.md) : on relance, trois fois au plus
     n = app.trace.etm.stats["instructions"]
-    app.go()
-    assert pump(app, lambda: app.trace.etm.stats["instructions"] > n and not app.trace.etm_busy), \
-        etm_diagnostics(app)
+    for _ in range(3):
+        app.go()
+        grew = pump(app, lambda: app.trace.etm.stats["instructions"] > n and not app.trace.etm_busy)
+        if grew:
+            break
+        assert pump(app, lambda: app.session.state == "stopped"), etm_diagnostics(app)
+    assert grew, etm_diagnostics(app)
 
 
 def trace_drawn(tv) -> bool:
