@@ -29,6 +29,7 @@ make -C examples/nucleo-f446     # firmware de test STM32F446RE (M4F, flash, ETM
 .venv/bin/python -m gdbtrace fw.elf --batch --script s.py             # sans GUI
 .venv/bin/python -m gdbtrace --config configs/qemu-freertos.yaml      # session décrite en YAML
 .venv/bin/python -m gdbtrace.mcp                                       # serveur MCP (stdio)
+.venv/bin/python -m gdbtrace.mcp --check                               # bilan de l'environnement
 
 xvfb-run -a .venv/bin/python -m pytest                 # suite complète
 .venv/bin/python -m pytest tests/test_etm.py -k rtos   # sous-ensemble
@@ -77,7 +78,11 @@ mais avec son firmware de test.
   ne doit ni lire les requêtes ni écrire dans les réponses. Chaque outil capture stdout/stderr
   dans son résultat ; les événements du thread lecteur (actions, sortie du programme) sont
   gardés pour le résultat suivant. Un outil sur une méthode de `ScriptAPI` est déclaré dans
-  `TOOLS` et implémenté par `tool_<nom>`.
+  `TOOLS` (`_tool` : titre, annotations `read_only` / `destructive`) et implémenté par
+  `tool_<nom>`, mêmes paramètres que le schéma (vérifié par `tests/test_mcp.py`). Le
+  `.mcp.json` du dépôt le lance par le Python du venv avec `--root ${CLAUDE_PROJECT_DIR:-.}` :
+  le répertoire du projet devient le répertoire courant (chemins des outils relatifs à lui) ;
+  `--check` / outil `check` : bilan de l'environnement (`environment_report`).
 
 - `GdbMI` : un thread lecteur ; chaque commande porte un jeton et attend sa réponse dans une
   queue. Les abonnés sont appelés **dans le thread lecteur** et ne doivent jamais bloquer.

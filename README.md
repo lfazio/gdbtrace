@@ -28,6 +28,7 @@ Interface en **tkinter**.
 | 18. Mesure du temps sans trace | Chrono entre deux arrêts (SysTick et compte des ticks sur un Cortex-M0/M0+ et sous QEMU, `DWT_CYCCNT` au-delà) ; temps des tâches sans ITM par un journal en RAM (`gdbtrace_task_log`) lu en marche ; modèles de cycles Cortex-M0 et M0+ (manuels ARM) pour la MTB | 🚧 (à valider sur carte) |
 | 19. Débogage de tous les jours | Vue Faute (CFSR, HFSR, SFSR décodés, cadre empilé, ligne fautive ; cause déduite sur un Cortex-M0/M0+) et arrêt sur faute ; outils mémoire (enregistrer, charger, remplir, chercher, comparer) ; images HEX, S-record, binaire à programmer ; symboles d'autres ELF ; navigateur de symboles ; vue Terminal (semihosting, RTT) ; recherche et export CSV dans la trace | 🚧 (RTT en marche et vector catch à valider sur carte) |
 | 20. Analyse de trace avancée | Arbre d'appels (durées par chemin d'appel) ; statistiques d'exceptions (durée, période, gigue, préemptions, enchaînements) depuis la trace ou l'ITM ; variables échantillonnées sans trace par le canal mémoire (Cortex-M0, QEMU) ; compteurs de performance du DWT et de la PMU du Cortex-M55 | 🚧 (compteurs à valider sur carte) |
+| 21. Serveur MCP clé en main | `.mcp.json` du dépôt : Claude Code trouve et lance le serveur seul (`--root`, `CLAUDE_PROJECT_DIR`) ; bilan de l'environnement (`--check`, outil `check`) ; 55 outils titrés et annotés (lecture seule, destructif), dont Go.Till, Step.Till / Step.Change, désassemblage, types, écriture, remplissage, recherche et fichiers mémoire, symboles ajoutés, périphériques SVD, valeurs des variables tracées, contexte des tâches et objets FreeRTOS, temps par tâche, filtre ETM, export de la trace et de la couverture ; guide pas à pas dans la notice | ✅ |
 
 ## Installation
 
@@ -868,11 +869,17 @@ de variables, lectures cible en marche), `demo.py`, `rtos.py` (FreeRTOS), `cover
 
 `python -m gdbtrace.mcp` (ou `gdbtrace-mcp`) est un serveur [MCP](https://modelcontextprotocol.io)
 sur stdio : un agent comme Claude Code ouvre une session GdbTrace sans interface et la pilote
-par des outils. Dans Claude Code :
+par des outils. **Clé en main dans ce dépôt** : le `.mcp.json` de la racine déclare le
+serveur ; ouvrir Claude Code dans le dépôt, approuver le serveur `gdbtrace`, et demander
+(« connecte-toi à examples/firmware/demo.elf avec la trace simulée et dis-moi qui appelle
+fib »). Avant, vérifier l'environnement :
 
 ```bash
-claude mcp add gdbtrace -- "$PWD/.venv/bin/python" -m gdbtrace.mcp     # depuis le dépôt
+.venv/bin/python -m gdbtrace.mcp --check        # gdb, QEMU, compilateur, sondes, démos
 ```
+
+Pour un autre projet : `claude mcp add gdbtrace -s user -- /chemin/gdbtrace/.venv/bin/python
+-m gdbtrace.mcp --root /chemin/projet` (chemins des outils relatifs au projet).
 
 L'agent commence par l'outil `connect`, avec les options de la ligne de commande
 (`examples/firmware/demo.elf --etm-sim`, `fw.elf --openocd configs/nucleo-f746zg.cfg --program
@@ -880,16 +887,21 @@ L'agent commence par l'outil `connect`, avec les options de la ligne de commande
 
 | Outils | Rôle |
 | --- | --- |
-| `connect`, `disconnect`, `status` | session (une à la fois), état et dernier arrêt |
-| `go` (`until`, attente de l'arrêt), `halt`, `step` (ligne, par-dessus, retour, instruction), `reset` | run-control |
-| `break` (condition, compteur, message), `watch`, `delete`, `breakpoints` | breakpoints et watchpoints |
-| `evaluate`, `set`, `registers`, `backtrace`, `memory`, `threads`, `rtos` | données ; `evaluate` relit en marche une globale déjà évaluée |
-| `trace_list`, `calls`, `coverage`, `timing`, `profile`, `itm` | trace et mesures |
+| `connect`, `disconnect`, `status`, `check` | session (une à la fois), état et dernier arrêt ; bilan de l'environnement |
+| `go`, `go_till`, `halt`, `step`, `step_until`, `reset` | run-control, Go.Till, Step.Till / Step.Change |
+| `break`, `watch`, `enable`, `delete`, `breakpoints` | breakpoints et watchpoints (condition, compteur, message) |
+| `evaluate`, `set`, `type`, `registers`, `backtrace`, `disassemble` | données ; `evaluate` relit en marche une globale déjà évaluée |
+| `memory`, `memory_write`, `memory_fill`, `memory_find`, `memory_file` | mémoire : dump, écriture, remplissage, recherche, fichiers |
+| `symbols`, `add_symbols`, `peripheral` | symboles, autres ELF, périphériques d'après le SVD |
+| `threads`, `rtos`, `task`, `queues`, `task_times` | threads, tâches et objets FreeRTOS, temps par tâche |
+| `trace_list`, `trace_find`, `trace_export`, `calls`, `etm_filter`, `coverage`, `timing`, `call_tree`, `irq_stats` | trace et analyses |
+| `var_trace`, `snoop`, `var_samples`, `chrono`, `counters`, `profile`, `itm`, `terminal`, `fault` | mesures, variables dans le temps, sorties du programme, fautes |
 | `program`, `gdb` (commande CLI brute), `python` (code avec l'objet `gdbtrace`) | le reste |
 
-Ce que GdbTrace affiche (journal de mise en route, messages des breakpoints à action, sortie
-d'un programme de l'hôte) revient dans le résultat des outils ; stdout ne porte que le
-protocole. Détails : [`docs/utilisation.md`](docs/utilisation.md#serveur-mcp-claude-code).
+Chaque outil porte un titre et ses annotations MCP (lecture seule, destructif). Ce que
+GdbTrace affiche (journal de mise en route, messages des breakpoints à action, sortie d'un
+programme de l'hôte) revient dans le résultat des outils ; stdout ne porte que le protocole.
+Guide pas à pas et dépannage : [`docs/utilisation.md`](docs/utilisation.md#serveur-mcp-claude-code).
 
 ## Architecture
 
