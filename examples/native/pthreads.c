@@ -56,9 +56,17 @@ int consume_step(void)
     return value;
 }
 
+/* chaque thread se nomme lui-même avant tout travail : nommé par main après sa création, il
+   pouvait atteindre un breakpoint encore anonyme (machine chargée) */
+static void name_self(const char *name)
+{
+    pthread_setname_np(pthread_self(), name);
+}
+
 static void *producer(void *arg)
 {
     (void)arg;
+    name_self("producer");
     for (long i = 1; rounds == 0 || i <= rounds; i++) {
         produce_step((int)(i % 1000));
         usleep(200);
@@ -69,6 +77,7 @@ static void *producer(void *arg)
 static void *consumer(void *arg)
 {
     (void)arg;
+    name_self("consumer");
     for (long i = 1; rounds == 0 || i <= rounds; i++)
         consume_step();
     return NULL;
@@ -77,6 +86,7 @@ static void *consumer(void *arg)
 static void *monitor(void *arg)
 {
     (void)arg;
+    name_self("monitor");
     long last = -1;
     while (rounds == 0 || consumed < rounds) {
         if (consumed != last)
