@@ -1,5 +1,3 @@
-# Scripting Python : notice d'utilisation
-
 GdbTrace se pilote entièrement en Python. Un script peut programmer la cible, poser des
 breakpoints, faire avancer l'exécution, lire et modifier des variables, la mémoire et les
 registres, puis décider de la suite selon ce qu'il trouve. Il peut aussi lancer des mesures :
@@ -50,7 +48,7 @@ Tout le reste est du Python : boucles, conditions, fichiers, `csv`, `json`, `tim
 | Au démarrage du GUI | `python -m gdbtrace fw.elf --script s.py` | les vues (Source, Watch, Pile, Breakpoints…) suivent chaque arrêt |
 | Depuis le GUI | Fichier › Exécuter un script… | même chose, sur la cible déjà connectée |
 | Ligne par ligne | console du GUI (onglet Console) | `gdbtrace.…` ; `!cmd` pour une commande gdb, `mon cmd` pour une commande `monitor` |
-| Par un agent | outil `python` du serveur MCP (`python -m gdbtrace.mcp`) | Claude Code ; `print` et la valeur d'une expression reviennent dans le résultat ([notice](utilisation.md#serveur-mcp-claude-code)) |
+| Par un agent | outil `python` du serveur MCP (`python -m gdbtrace.mcp`) | Claude Code ; `print` et la valeur d'une expression reviennent dans le résultat ([Serveur MCP](Serveur-MCP)) |
 
 Dans le GUI, le script tourne dans son propre fil d'exécution : l'interface reste réactive,
 et `print` écrit dans la console. Un script peut en lancer un autre avec
@@ -95,7 +93,7 @@ variables et lectures cible en marche.
 | `--openocd CFG…` | sonde réelle via OpenOCD, par ex. `--openocd configs/nucleo-f746zg.cfg` |
 | `--stlink [SN] [--stlink-ap N] [--ram-boot]` | sonde ST-LINK via ST-LINK_gdbserver, par ex. une Nucleo-N657X0-Q : `--stlink --stlink-ap 1 --ram-boot` |
 | `--remote HOST:PORT [--tcl HOST:PORT]` | serveur gdb déjà lancé (J-Link, pyOCD, OpenOCD) |
-| `--config F.yaml` | une configuration de session (cible, serveur, OS, trace : [`utilisation.md`](utilisation.md), sections 2 et 12) ; les autres options l'emportent sur elle |
+| `--config F.yaml` | une configuration de session (cible, serveur, OS, trace : [Lancer GdbTrace](Lancer-GdbTrace)) ; les autres options l'emportent sur elle |
 
 Un script lit la configuration de la session par `gdbtrace.config` : une copie du YAML en
 lecture seule (sections `cible`, `serveur`, `os`, `script`, `couverture`, `trace`), ou `None`

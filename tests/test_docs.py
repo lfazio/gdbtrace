@@ -1,4 +1,4 @@
-"""La notice du scripting (docs/scripting.md) est exécutable : chaque bloc `python` précédé de
+"""La page Scripting Python du wiki (Documentations/Scripting.md) est exécutable : chaque bloc `python` précédé de
 `<!-- test -->` (ou `<!-- test: OPTIONS -->`) tourne en --batch sur la démo et doit finir
 sans erreur. Un exemple de la notice qui ne marche plus fait échouer la suite."""
 import os
@@ -11,7 +11,7 @@ import unicodedata
 import pytest
 from conftest import ROOT, needs_qemu
 
-DOC = os.path.join(ROOT, "docs", "scripting.md")
+DOC = os.path.join(ROOT, "Documentations", "Scripting.md")
 _BLOCK = re.compile(r"<!-- test(?::\s*(?P<opts>.*?))?\s*-->\s*\n```python\n(?P<code>.*?)```", re.S)
 
 
@@ -57,3 +57,22 @@ def test_doc_example(name, opts, code, elf, rtos_elf, tmp_path):
                        timeout=120, env={**os.environ, "PYTHONPATH": ROOT})
     out = r.stdout + r.stderr
     assert r.returncode == 0 and "Traceback" not in out and "erreur :" not in out, out
+
+
+def test_wiki_pages_and_links():
+    """Documentations/ : les pages du wiki. Chaque lien `[texte](Page)` mène à une page qui
+    existe, et la barre latérale (_Sidebar) les donne toutes."""
+    import glob
+    wiki = os.path.join(ROOT, "Documentations")
+    pages = {os.path.basename(p)[:-3] for p in glob.glob(os.path.join(wiki, "*.md"))}
+    assert {"Home", "_Sidebar", "Scripting", "Installation"} <= pages
+    broken = []
+    for name in pages:
+        text = open(os.path.join(wiki, f"{name}.md"), encoding="utf-8").read()
+        for target in re.findall(r"\]\(([^)\s]+)\)", text):
+            if not target.startswith(("http", "#", "mailto:")) and target.split("#")[0] not in pages:
+                broken.append(f"{name} → {target}")
+    assert not broken, broken
+    sidebar = open(os.path.join(wiki, "_Sidebar.md"), encoding="utf-8").read()
+    missing = [p for p in pages - {"_Sidebar", "Home"} if f"]({p})" not in sidebar]
+    assert not missing, missing

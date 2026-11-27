@@ -10,7 +10,7 @@ Protocole MCP (Model Context Protocol) sur stdio : JSON-RPC 2.0, un message par 
 `initialize`, `tools/list`, `tools/call`, `ping`. Une session à la fois, sans interface,
 ouverte par l'outil `connect` avec les options de la ligne de commande de GdbTrace (ELF,
 cible, trace : comme `python -m gdbtrace … --batch`). Les autres outils reprennent l'objet
-`gdbtrace` des scripts (docs/scripting.md) : run-control, breakpoints, variables, mémoire,
+`gdbtrace` des scripts (Documentations/Scripting.md) : run-control, breakpoints, variables, mémoire,
 registres, pile, désassemblage, périphériques, threads, RTOS, trace, couverture, timing,
 profil ; `python` exécute du code avec cet objet, `gdb` une commande CLI brute. Chaque outil
 porte un titre et ses annotations MCP (lecture seule, destructif).
@@ -289,7 +289,7 @@ TOOLS = [
           "« x/4wx 0x20000000 »).", {"command": _S}, ("command",), destructive=True),
     _tool("python", "Code Python", "Exécute du code Python avec l'objet `gdbtrace` des scripts "
           "(et `session`, `hexdump`) : tout ce que les autres outils ne couvrent pas "
-          "(docs/scripting.md). Rend ce que le code affiche.", {"code": _S}, ("code",),
+          "(page Scripting du wiki). Rend ce que le code affiche.", {"code": _S}, ("code",),
           destructive=True),
 ]
 

@@ -6,11 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 GdbTrace (paquet `gdbtrace`) : débogueur Cortex-M avec trace, construit sur gdb (GDB/MI), GUI tkinter. Tout
 le projet est **en français** : docstrings, commentaires, libellés d'interface, messages
-d'erreur, README et messages de commit. Les commentaires citent souvent le nom de commande
+d'erreur, README, wiki et messages de commit. Les commentaires citent souvent le nom de commande
 GdbTrace (Data.dump, Var.view, PER.view, Trace.List…) : garder ce vocabulaire. Le produit
 s'appelle **GdbTrace** : ne citer aucun autre débogueur commercial dans le code ni la doc.
 
-Le développement avance par jalons (voir le tableau du README). Messages de commit :
+Le développement avance par jalons (page `Documentations/Jalons.md` du wiki). Messages de commit :
 `Jalon N, étape M : résumé`, puis une liste à puces par module touché.
 
 ## Commandes
@@ -37,6 +37,7 @@ xvfb-run -a .venv/bin/python -m pytest                 # suite complète
 .venv/bin/python -m pytest tests/test_etm.py::test_roundtrip_matches_qemu
 tools/build_opencsd.sh           # oracle OpenCSD dans .cache/ (active test_opencsd_*)
 tools/release_check.sh           # release : toute la suite, cartes de test exigées
+tools/publish_wiki.sh            # publie Documentations/ dans le wiki GitHub (chez l'utilisateur)
 ```
 
 Outils externes : `qemu-system-arm`, `gdb-multiarch`, `arm-none-eabi-gcc`, `xvfb-run`. Les
@@ -46,6 +47,13 @@ tests non exécutés, vérifier les skips. Les fixtures `elf` / `rtos_elf` de
 `tests/conftest.py` recompilent les firmwares (`make`) ; `session` / `rtos_session` lancent
 QEMU sur un port libre. `pythonpath` inclut `tests/`, d'où `from conftest import …`.
 Aucun linter n'est configuré.
+
+Documentation : `Documentations/`, les pages du wiki GitHub (Home, _Sidebar, une page par
+thème : Lancer-GdbTrace, Trace-ETM, Scripting, Serveur-MCP, Référence-des-options…), liens
+entre pages en `[texte](Nom-de-page)`. Le README reste court et renvoie au wiki. Le wiki ne
+s'atteint pas depuis une session cloud : `tools/publish_wiki.sh` le publie depuis le poste de
+l'utilisateur. `git pull --rebase origin main` avant chaque commit : les commits qui arrivent
+sur le distant viennent des tests sur carte.
 
 Tests sur carte (`tests/test_board_f746.py`, Nucleo-F746ZG, firmware `examples/nucleo-f746`
 flashé ; `tests/test_board_n6.py`, Nucleo-N657X0-Q, `examples/nucleo-n6` chargé en RAM par
@@ -358,7 +366,7 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
 
 Une fonctionnalité complète touche en général : le module métier (`core/` ou `trace/`), une
 vue (`views/`), une méthode de `ScriptAPI` (`core/scripting.py`), une option CLI dans
-`__main__.py`, la section du README, la notice d'utilisation (`docs/utilisation.md` : cibles,
+`__main__.py`, la page du wiki qui en parle (`Documentations/` : cibles,
 menus, options, dépannage, limites) et les tests. `__main__.py` câble la trace **deux fois**
 (chemin `--batch` et chemin GUI via `App._setup_live` / `App.attach`) : garder les deux
 synchronisés. Les options de capture passent par `setup_trace(args, trace, session, target,
@@ -370,8 +378,8 @@ Une option ajoutée à la ligne de commande doit marcher dans une configuration 
 trace s'ajoute à `TRACE_KEYS` (`core/config.py`) et à `TRACE_FIELDS` (`gui/config_dialog.py`) ;
 une autre option, à sa section (`CIBLE_KEYS`, `SERVER_KEYS`…), à `from_args` et à la boîte de
 dialogue ; une règle entre options va dans `validate()`, jamais directement dans `main()`.
-Une méthode ajoutée à `ScriptAPI` se documente aussi dans `docs/scripting.md` (notice) et,
-si un agent en a l'usage, devient un outil du serveur MCP (`mcp.py`, `docs/utilisation.md`) ; ses
+Une méthode ajoutée à `ScriptAPI` se documente aussi dans `Documentations/Scripting.md` et,
+si un agent en a l'usage, devient un outil du serveur MCP (`mcp.py`, `Documentations/Serveur-MCP.md`) ; ses
 blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et doivent rester verts.
 
 ## Limites connues (ne pas « corriger » côté gdbtrace)
