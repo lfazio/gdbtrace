@@ -520,6 +520,41 @@ assert res.verified and not res.mismatched
 print(f"{res.size} octets en {res.seconds:.1f} s, pc = {gdbtrace.reg('pc'):#x}")
 ```
 
+### Chargeur de flash
+
+Un **algorithme de flash** s'exécute sur la cible, par gdb, quel que soit le serveur : FLM
+d'un CMSIS-Pack, ou chargeur externe `.stldr` de STM32CubeProgrammer (flash externe QSPI/XSPI).
+`flash_loader(fichier, ram=None)` le pose dans la session (un nom seul de `.stldr` est cherché
+dans le dossier `ExternalLoader` de STM32CubeProgrammer ; un FLM veut sa RAM, `"ADRESSE:TAILLE"`).
+Ensuite `program()` écrit par lui les segments de sa mémoire, le reste par le serveur.
+`flash_info()` décrit les chargeurs, `flash_erase(adresse=None, n=None)` efface des secteurs
+(toute la mémoire sans argument). Sur la ligne de commande : `--flash-loader`, `--flash-ram` ;
+avec un pack : `--pack`, `--device`, `--flash-loader pack`.
+
+<!-- test -->
+```python
+import os, subprocess
+subprocess.run(["make", "-s", "-C", os.path.join(os.environ["PYTHONPATH"], "examples", "flashalgo")], check=True)
+algo = os.path.join(os.environ["PYTHONPATH"], "examples", "flashalgo", "ram-flash.FLM")
+gdbtrace.flash_loader(algo, "0x20100000:0x10000")   # flash émulée à 0x00300000 (QEMU)
+open("motif.bin", "wb").write(bytes(range(256)) * 8)
+res = gdbtrace.program("motif.bin@0x00300000")       # « … par ram-flash.FLM (1 secteur(s) …) »
+assert res.verified and res.loaders
+assert gdbtrace.mem(0x00300000, 4) == b"\x00\x01\x02\x03"
+gdbtrace.flash_erase(0x00300000, 16)                 # le secteur redevient 0xFF
+assert gdbtrace.mem(0x00300000, 4) == b"\xff" * 4
+```
+
+`chip_info()` décrit la puce du CMSIS-Pack (`--pack`, `--device`) : cœur, horloge, mémoires,
+algorithmes, SVD, et le cœur lu sur la cible ; `gdbtrace.chip` est son `Device`
+(`memories`, `algorithms`, `svd_file()`).
+
+<!-- test: --pack examples/flashalgo/GdbTrace.QEMU_DFP.1.0.0.pack --device GDBTRACE-AN385 -->
+```python
+chip = gdbtrace.chip_info()             # « GDBTRACE-AN385 (ARM) — GdbTrace.QEMU_DFP 1.0.0 »
+assert chip.core == "Cortex-M3" and gdbtrace.device.peripheral("TIMER0")   # SVD du pack
+```
+
 ### Fautes
 
 `fault()` analyse la faute en cours (cible arrêtée dans un gestionnaire) et rend un `dict` :
@@ -555,6 +590,29 @@ gdbtrace.terminal_send("?")
 gdbtrace.go(); time.sleep(0.3); gdbtrace.halt(); gdbtrace.wait()
 gdbtrace.terminal()
 assert "écho : ?" in gdbtrace.term.text("rtt")
+```
+
+### CoreSight et MPU
+
+`coresight()` relit les tables ROM CoreSight de la puce (cible arrêtée) et rend ses composants
+(`Component` : `addr`, `name`, `kind` — ROM, SCS, DWT, FPB, ITM, TPIU, ETM, CTI, MTB, PMU,
+ETF, ETR… —, `etm_version`, `part`, `designer`). Une puce sans ETM dans sa table refuse toute
+capture ETM en le disant. QEMU n'a pas de table ROM : liste vide.
+
+`mpu()` décode la MPU (cible arrêtée) : `MpuState` (`enabled`, `dregion`, `regions`,
+`summary()`, `region_at(adresse)`), chaque région avec début, fin, sous-régions désactivées,
+accès privilégié et non privilégié, XN et type mémoire (TEX/C/B en ARMv7-M, MAIR en ARMv8-M).
+Sous QEMU 8.2, le débogueur ne peut pas choisir la région (MPU_RNR) : seules les régions
+lisibles sans cela sont décodées, la note le dit.
+
+<!-- test: examples/faults/faults-m3.elf -->
+```python
+assert gdbtrace.coresight() == []              # QEMU : pas de table ROM
+import time
+gdbtrace.go(); time.sleep(0.2)
+gdbtrace.halt(); gdbtrace.wait()               # main a posé ses régions
+st = gdbtrace.mpu()                            # « MPU ARMv7-M, 8 régions, activée (PRIVDEFENA) … »
+assert st.enabled and st.region_at(0x40000000).memory == "Device partagé"
 ```
 
 ## 9. Périphériques et RTOS
@@ -1009,6 +1067,9 @@ gdbtrace.cov.export("couverture.html")
 |---|---|
 | `program(elf=None, verify=True)` | programme (ELF, ou image HEX, S-record, `fw.bin@adresse`), vérifie, reset → `ProgramResult` |
 | `add_symbols(elf, offset=0)` | symboles d'un autre ELF en plus |
+| `flash_loader(fichier, ram=None)`, `flash_info()`, `flash_erase(adresse=None, n=None)` | algorithme de flash (FLM, `.stldr`) exécuté sur la cible ; effacement par secteurs |
+| `chip`, `chip_info()` | puce du CMSIS-Pack (`--pack`, `--device`) |
+| `coresight()`, `mpu()` | composants des tables ROM CoreSight ; régions de la MPU |
 
 ### Trace et mesures
 

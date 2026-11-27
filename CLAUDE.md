@@ -24,6 +24,7 @@ make -C examples/nucleo-n6       # firmware de test STM32N6 (M55, en RAM, boucle
 make -C examples/nucleo-g070     # firmware de test STM32G070RB (M0+, flash, sans ITM)
 make -C examples/nucleo-f072     # firmware de test STM32F072RB (M0, 8 MHz ; démarrage et config de nucleo-g070)
 make -C examples/nucleo-f446     # firmware de test STM32F446RE (M4F, flash, ETMv3 par SWO)
+make -C examples/flashalgo       # algorithmes de flash de test (FLM, .stldr) et pack GdbTrace.QEMU_DFP
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf               # GUI sur QEMU
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf --etm-sim     # + trace ETM simulée
 .venv/bin/python -m gdbtrace fw.elf --batch --script s.py             # sans GUI
@@ -152,6 +153,23 @@ mais avec son firmware de test.
   l'instruction. `FaultCatch` : vector catch (DEMCR, `cortex_m vector_catch` d'OpenOCD), sinon
   breakpoints sur les gestionnaires de la table des vecteurs (QEMU : DEMCR lu à 0). Vue Faute,
   `App.report_fault` à chaque arrêt (une lecture d'ICSR hors faute).
+- Puces (jalon 22) :
+  - Tables ROM CoreSight (`trace/coresight.py`, `TraceManager.discover` à la connexion, chemins
+    GUI et batch) : composants nommés par DEVARCH, pièce ARM (JEP106 0x23B) ou DEVTYPE ;
+    `detect_etm` prend la version de l'ETM listé ; table sans ETM → `no_etm_reason`,
+    `_require_etm` (pas de table, QEMU : rien ne change). `trace/mtb.py` réexporte le parcours.
+  - MPU (`core/mpu.py`) : RNR écrit puis restauré ; écriture ignorée (QEMU 8.2) → régions
+    lisibles sans elle (alias A1..A3 en ARMv8-M), dit ; `fault._mpu_cause` (MemManage).
+  - Chargeur de flash (`core/flashalgo.py`) : FLM (PrgCode/PrgData, r9 = données) et `.stldr`
+    (segments à leur adresse) appelés par `Session.target_calls` (r0-r3, r9, sp, lr = BKPT de
+    retour + breakpoint matériel masqué, PRIMASK à 1, `_looping` : ni événement ni resume
+    hook) ; `Session.flash_loaders` : `program`/`program_image` y envoient leur mémoire
+    (`split_segments`), le reste par `load` ; posés par `build_flash_loaders` (`__main__.py`,
+    avant la programmation, batch et `App.flash_loader_factory`).
+  - CMSIS-Pack (`core/pack.py`) : héritage famille → variante, packs installés, fichiers
+    extraits dans `~/.cache/gdbtrace/packs` ; `resolve_session` pose `args.chip` et le SVD du
+    pack ; `chip_core_warning` à la connexion. `gdbtrace.chip` (pas `device` : c'est le SVD).
+  - Vue Système (`views/system.py`) : onglets CoreSight, MPU (relue à chaque arrêt), Puce.
 - Images et symboles ajoutés : `core/memtools.py` (HEX, S-record, binaire `f.bin@adr`, ELF par
   ses segments, outils Data.*) ; `Session.program` d'une image = `load` gdb d'un Intel HEX
   temporaire, vérifié par relecture, symboles inchangés ; `Session.add_symbols`
@@ -360,7 +378,9 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
 
 - QEMU n'émule pas le vector catch (DEMCR lu à 0 : arrêt sur faute par breakpoints) ni le
   DWT (compteurs absents : écriture de DWT_CTRL ignorée), et QMP n'écrit pas en mémoire (RTT
-  lu aux arrêts). Démos : `Reset_Handler` remet la `.bss` à zéro,
+  lu aux arrêts). Pas de table ROM CoreSight (0xE00FF000 lu à 0). MPU : l'écriture de MPU_RNR
+  par le débogueur est ignorée (seule la région choisie par le firmware, ou son groupe par les
+  alias en ARMv8-M). `mps3-an547` : Cortex-M55 en sécurisé, ITCM 0x10000000, DTCM 0x30000000. Démos : `Reset_Handler` remet la `.bss` à zéro,
   une variable de commande (`fault_kind`, `semihosting_on`) s'écrit après l'arrivée dans `main`.
 - Le gdbstub de QEMU 8.2 ignore les écritures du débogueur dans les périphériques (RAM/ROM
   seulement ; QEMU 11.1 les applique) ; QEMU n'émule ni ITM ni SWO.
@@ -379,9 +399,11 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
   passé : Nucleo-G070RB (`-k g070`, DEV_ID 0x460, `STM32G070.svd` à confirmer). Validé sur Nucleo-F446RE (`tests/test_board_f446.py`) :
   ETMv3 par SWO (décodage = OpenCSD sur une vraie capture), filtres plage et start/stop,
   ETMFFLR. Un ETMv3 par SWO sans filtre prend toute la broche : l'ITM n'y passe plus et un
-  firmware qui attend sa FIFO se fige (dit par `EtmConfig.summary()`). Prêts, pas encore
-  passés sur carte : chrono (`boards.chrono_passes` : SysTick gelé à l'arrêt sur un M0,
-  `DWT_CYCCNT` sur F746 et N6) et journal des tâches en RAM lu en marche. Non validé sur sonde
+  firmware qui attend sa FIFO se fige (dit par `EtmConfig.summary()`). Validés sur la F072 :
+  chrono par SysTick (`boards.chrono_passes`, comparé au compte des ticks) et journal des
+  tâches en RAM lu en marche ; prêts, pas encore passés : chrono par `DWT_CYCCNT` (F746, N6),
+  et du jalon 22 : tables ROM (F746, F446, N6, F072), MPU relue en entier, FLM d'un pack (F446),
+  chargeur externe de la flash XSPI (N6) (`boards.system_passes`, `flash_by_algorithm`). Non validé sur sonde
   réelle : `--rtos`, port de trace parallèle, MTB (dont le sens de
   l'adresse source d'une entrée d'exception : prise comme adresse de retour). ETMv4 : M7 (ETMv4.0, par SWO) et M55 (ETMv4.5, par l'ETR d'un
   STM32N6), cycle-accurate et horodatage compris ; la branche d'un BF* (v8.1-M) n'est pas

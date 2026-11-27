@@ -29,6 +29,7 @@ Interface en **tkinter**.
 | 19. Débogage de tous les jours | Vue Faute (CFSR, HFSR, SFSR décodés, cadre empilé, ligne fautive ; cause déduite sur un Cortex-M0/M0+) et arrêt sur faute ; outils mémoire (enregistrer, charger, remplir, chercher, comparer) ; images HEX, S-record, binaire à programmer ; symboles d'autres ELF ; navigateur de symboles ; vue Terminal (semihosting, RTT) ; recherche et export CSV dans la trace | 🚧 (RTT en marche et vector catch à valider sur carte) |
 | 20. Analyse de trace avancée | Arbre d'appels (durées par chemin d'appel) ; statistiques d'exceptions (durée, période, gigue, préemptions, enchaînements) depuis la trace ou l'ITM ; variables échantillonnées sans trace par le canal mémoire (Cortex-M0, QEMU) ; compteurs de performance du DWT et de la PMU du Cortex-M55 | 🚧 (compteurs à valider sur carte) |
 | 21. Serveur MCP clé en main | `.mcp.json` du dépôt : Claude Code trouve et lance le serveur seul, par `sh` (`CLAUDE_PROJECT_DIR`, `GDBTRACE_PYTHON`, `--root`) ; bilan de l'environnement (`--check`, outil `check`) ; 55 outils titrés et annotés (lecture seule, destructif), dont Go.Till, Step.Till / Step.Change, désassemblage, types, écriture, remplissage, recherche et fichiers mémoire, symboles ajoutés, périphériques SVD, valeurs des variables tracées, contexte des tâches et objets FreeRTOS, temps par tâche, filtre ETM, export de la trace et de la couverture ; guide pas à pas dans la notice | ✅ |
+| 22. Toutes les puces Cortex-M | Tables ROM CoreSight parcourues (SCS, DWT, FPB, ITM, TPIU, ETM et sa version, CTI, MTB, PMU, ETF/ETR ; une puce sans ETM le dit) ; MPU décodée (ARMv7-M, ARMv8-M ; région citée par une MemManage) ; chargeur de flash générique exécuté sur la cible par gdb (FLM des CMSIS-Packs, chargeurs externes .stldr de STM32CubeProgrammer) ; puce décrite par son CMSIS-Pack (`--device` : SVD, mémoires, algorithmes, cœur vérifié) ; vue Système | 🚧 (à valider sur carte) |
 
 ## Installation
 
@@ -812,6 +813,22 @@ avec OpenOCD, comme un Break).
 - **Vue Compteurs** (`counters()`) : cycles, CPI, EXC, SLEEP, LSU, FOLD et instructions
   déduites du DWT ; instructions, défauts de cache et exceptions de la PMU d'un Cortex-M55.
 
+### Toutes les puces Cortex-M (jalon 22)
+
+- **Vue Système**, onglet CoreSight (`coresight()`) : les tables ROM CoreSight de la puce (SCS,
+  DWT, FPB, ITM, TPIU, ETM et sa version, CTI, MTB, PMU, ETF/ETR) ; l'ETM listé règle le
+  décodeur, une puce sans ETM refuse la trace d'instructions en le disant.
+- **Onglet MPU** (`mpu()`) : régions décodées, ARMv7-M (TEX/C/B, sous-régions) et ARMv8-M
+  (MAIR) ; une MemManage cite sa région dans la vue Faute. Démo : `examples/faults` (faute 7,
+  `faults-m55.elf` sous QEMU `mps3-an547`).
+- **Chargeur de flash générique** (`--flash-loader`, `--flash-ram`, `flash_loader()`) : FLM des
+  CMSIS-Packs et chargeurs externes `.stldr` de STM32CubeProgrammer exécutés sur la cible par
+  gdb, quel que soit le serveur ; flash externe QSPI/XSPI comprise. Algorithmes de test :
+  `examples/flashalgo`.
+- **CMSIS-Pack** (`--device`, `--pack`, onglet Puce, `chip_info()`) : SVD, mémoires,
+  algorithmes de flash (`--flash-loader pack`) et cœur attendu de la puce ; packs installés par
+  cmsis-toolbox ou pyOCD.
+
 ### Console
 
 | Saisie | Effet |
@@ -941,7 +958,11 @@ gdbtrace/
   trace/etm/trace.py    historique, flot d'appels ; alimente la base de couverture
   trace/coverage.py     base de couverture (E/N par adresse), lignes, fonctions, fusion
   trace/coverage_report.py  rapports HTML et LCOV
-  trace/mtb.py          MTB des Cortex-M0+ : paquets, registres, tables ROM, décodeur, encodeur
+  trace/mtb.py          MTB des Cortex-M0+ : paquets, registres, décodeur, encodeur
+  trace/coresight.py    tables ROM CoreSight : composants de la puce (ETM, CTI, PMU, TPIU…)
+  core/mpu.py           régions de la MPU (ARMv7-M, ARMv8-M)
+  core/flashalgo.py     chargeur de flash : FLM, .stldr exécutés sur la cible
+  core/pack.py          CMSIS-Pack : puces, mémoires, SVD, algorithmes
   trace/mtb_capture.py  capture MTB (sonde, à chaque arrêt) et MTB simulée sous QEMU
   trace/etm/config.py   programmation ETM + TPIU (port parallèle ou SWO)
   trace/etm/cycles.py   modèle de cycles Cortex-M3/M4 (durées estimées)

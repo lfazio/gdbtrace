@@ -147,6 +147,73 @@ La vérification compare les sections par CRC (`compare-sections`). Avec ST-LINK
 | `--no-verify` | sans vérification |
 | `--go` | lance le programme ensuite |
 
+#### Algorithme de flash exécuté sur la cible
+
+Le serveur gdb programme la flash interne qu'il connaît (pilotes d'OpenOCD, de
+ST-LINK_gdbserver). Pour une autre mémoire (flash externe QSPI/XSPI, puce qu'OpenOCD ne connaît
+pas, serveur sans pilote), GdbTrace exécute lui-même un **algorithme de flash** sur la cible, par
+gdb, quel que soit le serveur :
+
+- un **FLM** de CMSIS-Pack (Keil) : code indépendant de sa position, copié en RAM ;
+- un **chargeur externe `.stldr`** de STM32CubeProgrammer : lié à son adresse en RAM. Un nom seul
+  (`MX66UW1G45G_STM32N6570-NUCLEO.stldr`) est cherché dans le dossier `ExternalLoader` de
+  STM32CubeProgrammer (`GDBTRACE_LOADER_DIR` pour un autre dossier).
+
+À la programmation (`--program`, Fichier › Programmer…), la cible est remise à zéro. Les segments
+de la mémoire de l'algorithme passent par lui : effacement des secteurs touchés, puis écriture
+page par page. Le reste de l'image passe par le serveur. La vérification prend la fonction
+Verify de l'algorithme (ou Read d'un `.stldr`), sinon une relecture. Le résumé dit ce qu'a écrit
+chaque algorithme. Chaque appel pose r0-r3, r9 (base statique d'un FLM), sp, lr sur une
+instruction de retour gardée par un breakpoint matériel, puis laisse tourner la cible jusqu'au
+retour. Les appels se font interruptions masquées, sans événement : ni chrono, ni compteurs, ni
+trace simulée. Un algorithme bloqué est interrompu après son délai, une faute dans l'algorithme
+est dite.
+
+| Option | Effet |
+| --- | --- |
+| `--flash-loader F` | algorithme de flash : `.FLM`, `.stldr` (ou son nom), ou `pack` (ceux de `--device`) ; répétable, un par mémoire |
+| `--flash-ram ADRESSE:TAILLE` | RAM où placer l'algorithme (code, pile, tampon d'une page) ; un FLM hors pack l'exige |
+
+```bash
+.venv/bin/python -m gdbtrace fw.elf --stlink --stlink-ap 1 --program --flash-loader MX66UW1G45G_STM32N6570-NUCLEO.stldr
+```
+
+```bash
+make -C examples/flashalgo        # algorithmes de test : flash émulée à 0x00300000 sous QEMU
+```
+
+```bash
+.venv/bin/python -m gdbtrace examples/firmware/demo.elf --program motif.bin@0x00300000 --flash-loader examples/flashalgo/ram-flash.FLM --flash-ram 0x20100000:0x10000
+```
+
+#### Puce décrite par son CMSIS-Pack
+
+`--device NOM` (`--pack FICHIER` pour un pack précis, sinon les packs installés) décrit la puce
+par son CMSIS-Pack. GdbTrace en tire :
+
+- le **SVD** des périphériques, si `--svd` n'est pas donné ;
+- les **algorithmes de flash** : `--flash-loader pack` prend ceux par défaut de la puce, avec leur
+  RAM et l'horloge du pack ;
+- la description de la puce dans la vue Système (onglet Puce) : cœur, horloge maximale, mémoires,
+  algorithmes ;
+- une **vérification** du cœur : celui du pack est comparé à celui qui répond (CPUID), et un écart
+  est signalé (autre puce, ou mauvais `--device`).
+
+Un pack est un `.pack` (zip), un `.pdsc`, ou son dossier. Les packs installés sont cherchés dans
+`CMSIS_PACK_ROOT`, `~/.cache/arm/packs` (cmsis-toolbox), `~/.arm/Packs` et
+`~/.local/share/cmsis-pack-manager` (pyOCD), dernière version de chaque pack. GdbTrace ne
+télécharge rien : `cpackget add Keil::STM32F4xx_DFP` (cmsis-toolbox) installe un pack. Le nom de
+la puce se donne sans casse, ou par un préfixe unique (`STM32F446RE` pour `STM32F446RETx`). Dans
+Configuration, le bouton **Choisir…** liste les puces du pack ou des packs installés.
+
+```bash
+.venv/bin/python -m gdbtrace fw.elf --openocd configs/nucleo-f446re.cfg --device STM32F446RE --flash-loader pack --program
+```
+
+```bash
+.venv/bin/python -m gdbtrace examples/firmware/demo.elf --pack examples/flashalgo/GdbTrace.QEMU_DFP.1.0.0.pack --device GDBTRACE-AN385 --flash-loader pack --program motif.bin@0x00300000
+```
+
 ### Sans interface : le mode batch
 
 `--batch` exécute un script (`--script s.py`) puis quitte, sans fenêtre. Le code de retour vaut 0 si tout s'est bien passé, 1 sinon ; c'est la forme pour l'intégration continue. Sans `--script`, `--batch --program` flashe la cible et quitte.
@@ -158,7 +225,7 @@ La vérification compare les sections par CRC (`compare-sections`). Avec ST-LINK
 
 ## 3. L'interface
 
-La fenêtre principale range 23 vues en quatre zones à onglets, sous un menu, une barre d'outils et au-dessus d'une barre d'état. Chaque vue se détache ou se déplace, et la disposition est gardée d'une session à l'autre.
+La fenêtre principale range 24 vues en quatre zones à onglets, sous un menu, une barre d'outils et au-dessus d'une barre d'état. Chaque vue se détache ou se déplace, et la disposition est gardée d'une session à l'autre.
 
 ### Run-control
 
@@ -187,7 +254,7 @@ La fenêtre principale range 23 vues en quatre zones à onglets, sous un menu, u
 | --- | --- |
 | Gauche | Fichiers, Symboles |
 | Code | Source, Désassemblage, Trace, Timing, Couverture |
-| Données | Registres, Watch, Périphériques, RTOS, Threads, Pile, Breakpoints, Faute |
+| Données | Registres, Watch, Périphériques, Système, RTOS, Threads, Pile, Breakpoints, Faute |
 | Bas | Console, Mémoire, Terminal, ITM, Profil, Variables tracées, Temps des tâches, Compteurs |
 
 Chaque zone est un jeu d'onglets ; le menu Vues ouvre n'importe quelle vue dans une fenêtre à part.
@@ -303,6 +370,29 @@ La vue **Périphériques** décode les registres et leurs champs, avec leurs én
 - Seuls les périphériques dépliés sont lus, par blocs de registres contigus ; les trous réservés ne sont jamais lus.
 - Les registres en écriture seule ou à lecture destructive (ex. le registre de données d'un UART) ne sont pas lus d'office ; clic droit › **Lire quand même**.
 - Double-clic : écriture d'un registre, ou d'un champ par lecture-modification-écriture. Le registre est relu ensuite, et un écart est signalé.
+
+### Système : CoreSight, MPU, puce
+
+La vue **Système** dit ce que la puce a vraiment, en trois onglets.
+
+- **CoreSight** : les tables ROM CoreSight, lues à la connexion (**Relire les tables ROM** :
+  à la demande). Arbre des tables et de leurs composants : type (SCS, DWT, FPB, ITM, TPIU, ETM
+  et sa version, CTI, MTB, PMU, ETF, ETR…), pièce, fabricant, révision, adresse.
+  - L'ETM de la table donne sa version au décodeur (ETMv3 ou ETMv4).
+  - Une puce dont la table n'a pas d'ETM refuse toute capture ETM en le disant (Trace,
+    Couverture, Trace › ETM par SWO…).
+  - QEMU n'a pas de table ROM : « pas de table ROM ».
+- **MPU** : les régions de la MPU, relues à chaque arrêt : active, début, fin, taille,
+  sous-régions désactivées, accès privilégié et non privilégié, XN, type mémoire. ARMv7-M et
+  ARMv6-M : TEX/S/C/B (fortement ordonné, Device, Normal WT/WB…) ; ARMv8-M : attribut MAIR
+  (Device-nGnRE, Normal WB RWA…). Le résumé dit si la MPU est activée (PRIVDEFENA, HFNMIENA).
+  Une MemManage cite, dans la vue Faute, la région qui couvre l'adresse fautive.
+- **Puce** : la puce du CMSIS-Pack (`--device`), et ce que la cible répond (cœur par CPUID,
+  conforme ou non au pack ; ETM de la table ROM).
+
+Démo : `examples/faults` pose ses régions MPU au démarrage. Sa faute 7 écrit dans une garde de
+32 octets et donne une MemManage. `faults-m55.elf` (QEMU `--machine mps3-an547`) fait de même
+avec la MPU ARMv8-M d'un Cortex-M55.
 
 ### Cible en marche
 
@@ -835,7 +925,7 @@ Un script peut ce que l'interface ne propose pas : une **action Python** sur un 
 
 Un agent peut déboguer à votre place, ou avec vous : `python -m gdbtrace.mcp` est un serveur
 MCP (Model Context Protocol) sur stdio. L'agent ouvre une session GdbTrace sans interface,
-comme le mode batch, et la pilote par des outils.
+comme le mode batch, et la pilote par 60 outils.
 
 #### Mise en route pas à pas
 
@@ -929,7 +1019,8 @@ nouveau `connect` ferme la précédente.
 | `var_trace`, `snoop`, `var_samples` | variable tracée par le DWT, ou échantillonnée par le canal mémoire ; ses valeurs |
 | `chrono`, `counters`, `profile`, `itm`, `terminal` | temps de la dernière exécution, compteurs de performance, profil statistique, texte ITM, terminal (semihosting, RTT) |
 | `fault` | analyse de la faute en cours ; `catch` : arrêt sur faute |
-| `program` | programmer un ELF (celui de la session par défaut) |
+| `coresight`, `mpu`, `chip` | composants des tables ROM CoreSight (ETM présent ou non) ; régions de la MPU ; puce du CMSIS-Pack et cœur lu sur la cible |
+| `program`, `flash_info`, `flash_erase` | programmer un ELF (celui de la session par défaut ; par les chargeurs de flash posés) ; chargeurs de flash ; effacement de secteurs |
 | `gdb`, `python` | commande CLI de gdb ; code Python avec l'objet `gdbtrace` (tout ce que les autres outils ne couvrent pas, [`docs/scripting.md`](scripting.md)) |
 
 Chaque outil porte un titre et ses annotations MCP : lecture seule (`status`, `evaluate`,
@@ -983,6 +1074,8 @@ inconnue, cible en marche) est un résultat d'erreur ; la session continue.
 | `--args 'A B…'` | programme de l'hôte : ses arguments (syntaxe shell) |
 | `--cwd DOSSIER` | programme de l'hôte : son répertoire de travail |
 | `--svd F` | description CMSIS-SVD des périphériques |
+| `--device NOM` | puce décrite par son CMSIS-Pack : SVD, mémoires, algorithmes de flash, cœur attendu |
+| `--pack F` | CMSIS-Pack de la puce (`.pack`, `.pdsc`, dossier) ; sans lui, les packs installés |
 | `--rtos [TYPE]` | avec `--openocd` : tâches RTOS vues comme threads gdb |
 | `--gdb GDB`, `--gdb-port P` | exécutable gdb, port du serveur gdb (avec `--stlink` : port du relais) |
 | `--no-load` | ne pas flasher l'ELF à la connexion |
@@ -996,6 +1089,8 @@ inconnue, cible en marche) est un résultat d'erreur ; la session continue.
 | --- | --- |
 | `--program [ELF]` | programmer l'ELF à la connexion (reset, écriture, vérification, reset) |
 | `--no-verify` | sans vérification |
+| `--flash-loader F` | algorithme de flash exécuté sur la cible (`.FLM`, `.stldr`, `pack`) ; répétable |
+| `--flash-ram ADRESSE:TAILLE` | RAM de l'algorithme de flash |
 | `--go` | lancer le programme après la connexion |
 | `--script S` | script Python exécuté après la connexion |
 | `--batch` | sans interface : exécute `--script` puis quitte |
@@ -1082,7 +1177,7 @@ trace:
 
 | Section | Clés | Équivalent en ligne de commande |
 | --- | --- | --- |
-| `cible` | `elf`, `svd`, `cpu-hz`, `programmer` (`true`, ou le chemin d'une image HEX, S-record, binaire), `verifier`, `go`, `break-on-fault`, `add-symbols` (liste) | l'ELF, `--svd`, `--cpu-hz`, `--program`, `--no-verify` (si `false`), `--go`, `--break-on-fault`, `--add-symbols` |
+| `cible` | `elf`, `svd`, `pack`, `device`, `cpu-hz`, `programmer` (`true`, ou le chemin d'une image HEX, S-record, binaire), `verifier`, `go`, `break-on-fault`, `add-symbols` (liste), `flash-loader` (liste), `flash-ram` | l'ELF, `--svd`, `--pack`, `--device`, `--cpu-hz`, `--program`, `--no-verify` (si `false`), `--go`, `--break-on-fault`, `--add-symbols`, `--flash-loader`, `--flash-ram` |
 | `serveur` | `type` : `qemu`, `openocd`, `stlink`, `gdb`, `remote` | `--qemu`, `--openocd`, `--stlink`, `--native`, `--remote` |
 | `serveur`, QEMU | `machine` | `--machine` |
 | `serveur`, OpenOCD | `openocd` (liste de `.cfg`), `rtos` | `--openocd CFG…`, `--rtos` |
@@ -1096,7 +1191,7 @@ trace:
 | `trace` | toute option de trace et du terminal : `swo-config`, `swo-hz`, `etm-config`, `etm-port`, `var-trace`, `etm-filter`, `etm-sim`, `mtb`, `semihosting`, `rtt`… | la même option |
 
 - Une option sans valeur s'écrit `true` ; une option répétable s'écrit en liste.
-- Un chemin relatif l'est au fichier YAML. Exceptions : un fichier `.cfg` qui n'est pas à côté du YAML est cherché par OpenOCD dans son dossier de scripts (`board/st_nucleo_f4.cfg`), et un SVD donné par son seul nom est cherché dans STM32CubeIDE (`GDBTRACE_SVD_DIR` pour un autre dossier).
+- Un chemin relatif l'est au fichier YAML. Exceptions : un fichier `.cfg` qui n'est pas à côté du YAML est cherché par OpenOCD dans son dossier de scripts (`board/st_nucleo_f4.cfg`), et un SVD donné par son seul nom est cherché dans STM32CubeIDE (`GDBTRACE_SVD_DIR` pour un autre dossier) ; de même un chargeur de flash donné par son nom (ou `pack`) n'est pas un chemin.
 - À l'enregistrement, un chemin proche du fichier (au plus deux `..`) est écrit relatif, les autres absolus.
 - Une clé inconnue, ou qui ne va pas avec le serveur choisi, est refusée en la nommant.
 
@@ -1109,6 +1204,11 @@ Quand une capture ne démarre pas, GdbTrace le dit : le journal de mise en route
 | Symptôme | Cause probable | Que faire |
 | --- | --- | --- |
 | Le profil marche mais Trace et Couverture disent « pas de capture SWO » | le profil a pris la lecture du PC en marche, pas le SWO | lancer la capture : `--swo-config`, ou Trace › ETM par SWO… ; vérifier `--cpu-hz` |
+| « la table ROM CoreSight de cette puce n'a pas d'ETM » | la puce n'a pas d'ETM (vue Système, onglet CoreSight) | trace ITM, profil, trace de données, ou MTB s'il y en a une |
+| Programmation : « RAM trop petite », « RAM de l'algorithme à donner » | un FLM hors pack ne sait pas où se placer | `--flash-ram ADRESSE:TAILLE` (RAM libre au reset, au moins le code, 1 Ko de pile et une page) |
+| Programmation : « fonction … sans retour », « arrêtée hors de son retour » | algorithme bloqué (horloge, watchdog) ou en faute | vérifier l'algorithme et sa RAM ; la vue Faute dit la faute |
+| « puce … introuvable » ou « ambiguë » | pas de pack installé pour elle, ou un préfixe trop court | `--pack FICHIER`, `cpackget add …`, ou le nom complet (bouton Choisir…) |
+| « attention : le pack décrit … la cible répond … » | autre puce que celle du pack | corriger `--device`, ou la sonde |
 | Octets reçus mais aucun de l'ETM | ETM non programmé, ou `--cpu-hz` / débit SWO faux | `--etm-config` (ou Trace › ETM par SWO…), fréquence réelle du cœur |
 | Trace à trous (« trace interrompue ») | le débit du port ne suit pas le cœur | `--etm-stall`, un filtre ETM, ou une horloge plus basse |
 | Vues figées cible en marche | pas de canal mémoire : `--remote` sans `--tcl` | ajouter `--tcl` (OpenOCD), sinon les vues se rafraîchissent à l'arrêt |
@@ -1140,9 +1240,10 @@ Quand une capture ne démarre pas, GdbTrace le dit : le journal de mise en route
   - Nucleo-F746ZG (Cortex-M7, OpenOCD) : ETMv4 et ITM par SWO, trace de données du DWT, profil par SWO, vues RTOS et temps des tâches ;
   - Nucleo-N657X0-Q (Cortex-M55, ST-LINK_gdbserver) : vues en marche par le relais, image en RAM, ITM par le SWO de la sonde, ETMv4.5 par l'ETR (boucles à faible coût comprises), trace de données du DWT de l'ARMv8-M, vues RTOS et temps des tâches ;
   - Nucleo-F446RE (Cortex-M4F, OpenOCD) : ETMv3 et ITM par SWO, filtres de l'ETMv3 (plage et start/stop), trace de données du DWT, profil par SWO, vues RTOS et temps des tâches ;
-  - Nucleo-F072RB (Cortex-M0, OpenOCD) : run-control (breakpoints à compteur et à message, Go.Till par le DWT), vues en marche, RTOS (en marche : état de chaque tâche lu dans son TCB), profil par `DWT_PCSR`.
-- **Pas encore validé sur carte** : Nucleo-G070RB (Cortex-M0+, OpenOCD ; test prêt : `tests/test_board_m0.py -k g070`), port de trace parallèle, MTB d'un vrai M0+, `--rtos` d'OpenOCD ; le chrono (SysTick gelé pendant l'arrêt sur un Cortex-M0, `DWT_CYCCNT` au-delà), le journal des tâches en RAM et le RTT lus en marche (tests sur carte prêts) ; le vector catch de l'arrêt sur faute et le semihosting d'OpenOCD.
+  - Nucleo-F072RB (Cortex-M0, OpenOCD) : run-control (breakpoints à compteur et à message, Go.Till par le DWT), vues en marche, RTOS (en marche : état de chaque tâche lu dans son TCB), profil par `DWT_PCSR`, chrono par SysTick, temps des tâches par le journal en RAM lu en marche.
+- **Pas encore validé sur carte** : Nucleo-G070RB (Cortex-M0+, OpenOCD ; test prêt : `tests/test_board_m0.py -k g070`), port de trace parallèle, MTB d'un vrai M0+, `--rtos` d'OpenOCD ; le chrono par `DWT_CYCCNT` (F746, N6) et le RTT lu en marche (tests sur carte prêts) ; le vector catch de l'arrêt sur faute et le semihosting d'OpenOCD.
 - **Fautes** : un Cortex-M0/M0+ n'enregistre pas la cause, elle est déduite de l'instruction (une faute dans le gestionnaire lui-même, ou sur un cadre corrompu, peut tromper la déduction). Le cadre empilé vient du déroulement de gdb ; sans informations de débogage du gestionnaire, il est retrouvé par lr et MSP/PSP, au prix d'une base approximative.
+- **CoreSight, MPU, puce, chargeur de flash** : validés sous QEMU (tables ROM sur des mémoires d'après les manuels, MPU ARMv7-M de l'an385 et ARMv8-M de l'an547, algorithmes de test) ; tests sur carte prêts, pas encore passés : tables ROM (F746, F446, N6, F072), MPU relue en entier, FLM du pack Keil.STM32F4xx_DFP sur la F446, chargeur externe de la flash XSPI de la N6. QEMU n'a pas de table ROM, et son gdbstub (8.2) ignore l'écriture de MPU_RNR par le débogueur : seule la région choisie (ARMv7-M), ou son groupe de quatre par les alias (ARMv8-M), est lue. MPU sécurisée et non sécurisée (TrustZone) : jalon 23. CMSIS-Pack : séquences de débogage et debugvars ignorées ; puce à plusieurs processeurs : le premier ; rien n'est téléchargé. Algorithmes de flash : un secteur touché est effacé en entier.
 - **Échantillonnage** (SNOOPer) : horloge de l'hôte, à la milliseconde ; une période plus courte que la lecture d'une variable par le canal (1 à 2 ms) n'est pas tenue.
 - **Compteurs** : ceux du DWT ont 8 bits (exacts au-delà de 256 cycles seulement avec une capture SWO) ; PMU validée sur le manuel du Cortex-M55, pas encore sur carte.
 - **Terminal** : semihosting servi par QEMU et OpenOCD seulement (pas ST-LINK_gdbserver) ; RTT sous QEMU lu aux arrêts seulement ; un tampon RTT montant plein perd la suite (le bloc d'exemple n'attend jamais le débogueur).
