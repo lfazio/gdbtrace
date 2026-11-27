@@ -388,7 +388,7 @@ def world_backtrace(session, state: SecurityState | None = None,
                         lr = _frame_regs(session, thread, i, ("lr",)).get("lr")
                     except Exception:  # noqa: BLE001
                         lr = None
-                    if lr is not None and not lr & 1 and not lr & 0xFE000000 == 0xFE000000:
+                    if lr and not lr & 1 and lr & 0xFE000000 != 0xFE000000:
                         # appel reçu du monde non sécurisé : ce cadre et la suite sont NS
                         out.append(WorldFrame(f, "NS", "appel depuis le monde non sécurisé (SG)"))
                         regs = _frame_regs(session, thread, i, CONTEXT + ("xpsr",))

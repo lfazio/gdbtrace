@@ -108,6 +108,19 @@ def test_registers(run):
     assert rows["pc"][2].startswith("<worker_step")
 
 
+def test_trustzone_state(run):
+    """Le M55 de la N6 tourne dans le monde sécurisé : « S » dans la vue Registres, registres
+    bancaires groupés par monde (si le serveur expose msp_s, msp_ns…)."""
+    rows = view(run, "arret", "registers")["tree"]
+    state = next((r for r in rows if r["text"] == "état"), None)
+    if state is None:
+        pytest.skip("ST-LINK_gdbserver n'expose pas les registres bancaires (msp_s, msp_ns…)")
+    assert state["values"][0] == "S" and "sécurisé" in state["values"][2], state
+    groups = {r["text"]: r for r in rows}
+    assert {"msp_s", "control_s"} <= {c["text"] for c in groups["Sécurisé"]["children"]}
+    assert "msp_ns" in {c["text"] for c in groups["Non sécurisé"]["children"]}
+
+
 def test_stack_shows_file_and_line(run):
     frames = view(run, "arret", "stack")["frames"]
     assert frames[0]["values"][2] == "worker_step"

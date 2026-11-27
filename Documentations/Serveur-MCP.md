@@ -1,6 +1,6 @@
 Un agent peut déboguer à votre place, ou avec vous : `python -m gdbtrace.mcp` est un serveur
 MCP (Model Context Protocol) sur stdio. L'agent ouvre une session GdbTrace sans interface,
-comme le mode batch, et la pilote par 60 outils.
+comme le mode batch, et la pilote par 62 outils.
 
 ### Mise en route pas à pas
 
@@ -94,7 +94,9 @@ nouveau `connect` ferme la précédente.
 | `var_trace`, `snoop`, `var_samples` | variable tracée par le DWT, ou échantillonnée par le canal mémoire ; ses valeurs |
 | `chrono`, `counters`, `profile`, `itm`, `terminal` | temps de la dernière exécution, compteurs de performance, profil statistique, texte ITM, terminal (semihosting, RTT) |
 | `fault` | analyse de la faute en cours ; `catch` : arrêt sur faute |
-| `coresight`, `mpu`, `chip` | composants des tables ROM CoreSight (ETM présent ou non) ; régions de la MPU ; puce du CMSIS-Pack et cœur lu sur la cible |
+| `coresight`, `mpu`, `chip` | composants des tables ROM CoreSight (ETM présent ou non) ; régions de la MPU (`nonsecure` : la MPU non sécurisée d'un cœur TrustZone) ; puce du CMSIS-Pack et cœur lu sur la cible |
+| `security` | TrustZone : monde du cœur arrêté, registres bancaires, SAU, pile à travers les deux mondes ([TrustZone et multi-cœur](TrustZone-et-multi-cœur)) |
+| `core` | plusieurs cœurs (`--core` à `connect`) : sans `name`, la liste ; avec `name`, le cœur de toutes les commandes suivantes |
 | `program`, `flash_info`, `flash_erase` | programmer un ELF (celui de la session par défaut ; par les chargeurs de flash posés) ; chargeurs de flash ; effacement de secteurs |
 | `gdb`, `python` | commande CLI de gdb ; code Python avec l'objet `gdbtrace` (tout ce que les autres outils ne couvrent pas, [Scripting Python](Scripting)) |
 

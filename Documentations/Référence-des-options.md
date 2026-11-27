@@ -5,7 +5,8 @@
 | Option | Effet |
 | --- | --- |
 | `--qemu` | cible QEMU (défaut pour un ELF ARM) |
-| `--machine M` | machine QEMU (`mps2-an385` par défaut ; `microbit`, `mps2-an500`…) |
+| `--machine M` | machine QEMU (`mps2-an385` par défaut ; `microbit`, `mps2-an500`, `mps2-an505` (TrustZone), `mps2-an521` (deux cœurs), `mps3-an547`…) |
+| `--qemu-load ELF` | QEMU : autre image chargée avec l'ELF (`-device loader`, rechargée à chaque reset) : image non sécurisée, bootloader… ; répétable |
 | `--openocd CFG…` | lancer OpenOCD avec ces fichiers `-f` |
 | `--stlink [SN]` | lancer ST-LINK_gdbserver sur la sonde de numéro de série SN (à donner si plusieurs sondes sont branchées) |
 | `--stlink-ap N` | avec `--stlink` : port d'accès du cœur (STM32N6 : 1) |
@@ -26,6 +27,7 @@
 | `--no-load` | ne pas flasher l'ELF à la connexion |
 | `--layout F` | fichier de layout des fenêtres |
 | `--config F.yaml` | configuration de session ([Lancer GdbTrace](Lancer-GdbTrace)) ; les autres options l'emportent sur elle |
+| `--core NOM[=SOURCE][,ELF]` | plusieurs cœurs ([TrustZone et multi-cœur](TrustZone-et-multi-cœur)) : sans SOURCE, le nom du cœur de la session ; `=N` : processus N du même serveur (QEMU `mps2-an521` : 2) ; `=HÔTE:PORT` : autre serveur gdb ; `,ELF` : ses symboles ; répétable |
 | `--os aucun\|freertos\|pthread` | OS de la cible : vues RTOS et Temps des tâches (FreeRTOS), Threads (Pthread), aucune des trois (aucun) ; sans `--os`, toutes les vues |
 
 ## Programmation, scripts, batch
@@ -122,9 +124,9 @@ trace:
 
 | Section | Clés | Équivalent en ligne de commande |
 | --- | --- | --- |
-| `cible` | `elf`, `svd`, `pack`, `device`, `cpu-hz`, `programmer` (`true`, ou le chemin d'une image HEX, S-record, binaire), `verifier`, `go`, `break-on-fault`, `add-symbols` (liste), `flash-loader` (liste), `flash-ram` | l'ELF, `--svd`, `--pack`, `--device`, `--cpu-hz`, `--program`, `--no-verify` (si `false`), `--go`, `--break-on-fault`, `--add-symbols`, `--flash-loader`, `--flash-ram` |
+| `cible` | `elf`, `svd`, `pack`, `device`, `cpu-hz`, `programmer` (`true`, ou le chemin d'une image HEX, S-record, binaire), `verifier`, `go`, `break-on-fault`, `add-symbols` (liste), `flash-loader` (liste), `flash-ram`, `coeurs` (liste de `NOM[=SOURCE][,ELF]`) | l'ELF, `--svd`, `--pack`, `--device`, `--cpu-hz`, `--program`, `--no-verify` (si `false`), `--go`, `--break-on-fault`, `--add-symbols`, `--flash-loader`, `--flash-ram`, `--core` |
 | `serveur` | `type` : `qemu`, `openocd`, `stlink`, `gdb`, `remote` | `--qemu`, `--openocd`, `--stlink`, `--native`, `--remote` |
-| `serveur`, QEMU | `machine` | `--machine` |
+| `serveur`, QEMU | `machine`, `qemu-load` (liste) | `--machine`, `--qemu-load` |
 | `serveur`, OpenOCD | `openocd` (liste de `.cfg`), `rtos` | `--openocd CFG…`, `--rtos` |
 | `serveur`, ST-LINK | `stlink` (numéro de série), `stlink-ap`, `ram-boot` | `--stlink SN`, `--stlink-ap`, `--ram-boot` |
 | `serveur`, programme de l'hôte | `args`, `cwd`, `pid`, `non-stop` | `--native --args`, `--cwd`, `--pid` (sans `--native`), `--non-stop` |

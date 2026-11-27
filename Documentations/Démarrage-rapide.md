@@ -25,6 +25,10 @@ make -C examples/freertos && .venv/bin/python -m gdbtrace examples/freertos/free
 .venv/bin/python -m gdbtrace fw.elf --openocd … --etm-config --etm-port swo --cpu-hz 4000000  # ETM par SWO
 make -C examples/m0plus && .venv/bin/python -m gdbtrace examples/m0plus/demo.elf --machine microbit --mtb-sim  # M0+ + MTB
 .venv/bin/python -m gdbtrace fw.elf --openocd … --mtb --mtb-probe  # MTB d'un vrai Cortex-M0+
+make -C examples/tz-an505 && .venv/bin/python -m gdbtrace examples/tz-an505/secure.elf --machine mps2-an505 \
+    --qemu-load examples/tz-an505/nonsecure.elf --add-symbols examples/tz-an505/nonsecure.elf  # TrustZone
+make -C examples/multicore-an521 && .venv/bin/python -m gdbtrace examples/multicore-an521/multicore.elf \
+    --machine mps2-an521 --core cpu0 --core cpu1=2                  # deux Cortex-M33
 make -C examples/native && .venv/bin/python -m gdbtrace examples/native/pthreads --args 100000  # programme natif
 .venv/bin/python -m gdbtrace --config configs/nucleo-g070rb.yaml         # une session décrite en YAML
 ```

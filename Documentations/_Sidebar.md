@@ -10,6 +10,7 @@
 - [Breakpoints](Breakpoints)
 - [Données et périphériques](Données-et-périphériques)
 - [RTOS et threads](RTOS-et-threads)
+- [TrustZone et multi-cœur](TrustZone-et-multi-cœur)
 
 **Trace et mesures**
 - [Vue d'ensemble, chrono, compteurs](Trace-et-mesures)

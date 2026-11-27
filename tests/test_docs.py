@@ -37,8 +37,8 @@ def test_doc_has_runnable_examples():
 def test_doc_example(name, opts, code, elf, rtos_elf, tmp_path):
     args = shlex.split(opts)
     target = elf
-    for a in list(args):
-        if a.endswith(".elf"):                  # autre firmware que la démo (FreeRTOS...)
+    for k, a in enumerate(list(args)):
+        if a.endswith(".elf") and k == 0:       # autre firmware que la démo (FreeRTOS...)
             target = rtos_elf if "freertos" in a else os.path.join(ROOT, a)
             if not os.path.exists(target) and os.path.exists(os.path.join(os.path.dirname(target), "Makefile")):
                 subprocess.run(["make", "-s", "-C", os.path.dirname(target)], check=True)

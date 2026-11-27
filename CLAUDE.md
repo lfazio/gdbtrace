@@ -25,6 +25,8 @@ make -C examples/nucleo-g070     # firmware de test STM32G070RB (M0+, flash, san
 make -C examples/nucleo-f072     # firmware de test STM32F072RB (M0, 8 MHz ; démarrage et config de nucleo-g070)
 make -C examples/nucleo-f446     # firmware de test STM32F446RE (M4F, flash, ETMv3 par SWO)
 make -C examples/flashalgo       # algorithmes de flash de test (FLM, .stldr) et pack GdbTrace.QEMU_DFP
+make -C examples/tz-an505        # TrustZone (QEMU mps2-an505) : secure.elf + nonsecure.elf (--qemu-load)
+make -C examples/multicore-an521 # deux Cortex-M33 (QEMU mps2-an521, --core cpu1=2)
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf               # GUI sur QEMU
 .venv/bin/python -m gdbtrace examples/firmware/demo.elf --etm-sim     # + trace ETM simulée
 .venv/bin/python -m gdbtrace fw.elf --batch --script s.py             # sans GUI
@@ -161,6 +163,20 @@ mais avec son firmware de test.
   l'instruction. `FaultCatch` : vector catch (DEMCR, `cortex_m vector_catch` d'OpenOCD), sinon
   breakpoints sur les gestionnaires de la table des vecteurs (QEMU : DEMCR lu à 0). Vue Faute,
   `App.report_fault` à chaque arrêt (une lecture d'ICSR hors faute).
+- TrustZone (`core/security.py`, jalon 23) : monde du cœur par `sp` comparé à `msp_s`/`psp_s`/
+  `msp_ns`/`psp_ns`, DSCSR.CDS pour départager (QEMU : 0) ; `App.security` à chaque arrêt
+  (barre d'état, vues Registres, Pile, Système). gdb s'arrête au changement de monde
+  (« previous frame inner » après un SG, pseudo-cadre FNC_RETURN) : `world_backtrace`
+  écrit les registres du cadre (`_context`, remis ensuite) et redemande la pile ; appelant
+  sécurisé pris dans le cadre FNC_RETURN ; depuis le non sécurisé sous QEMU, mémoire
+  sécurisée par `QemuQmp.read_physical` (xp). SAU (RNR comme la MPU), MPU non sécurisée par
+  l'alias 0xE002ED90, `fault` : cadre sur la pile du monde interrompu (EXC_RETURN.S).
+- Plusieurs cœurs (`core/cores.py`) : `--core NOM[=N|=HÔTE:PORT][,ELF]` ; processus N du
+  même serveur = inférieur du même gdb (`Session.add_process`, `schedule-multiple`,
+  `scheduler-locking step`) ; autre serveur = sa `Session` (pas de non-stop chez QEMU ni
+  OpenOCD). `App.select_core` remplace `app.session` (et `api.s`) par celle du cœur ;
+  `App._session_event` ne livre aux vues que les événements de la session affichée. Trace :
+  cœur de la session ; `qemu_log.parse(cpu=0)` ne garde que les lignes « Trace 0: ».
 - Puces (jalon 22) :
   - Tables ROM CoreSight (`trace/coresight.py`, `TraceManager.discover` à la connexion, chemins
     GUI et batch) : composants nommés par DEVARCH, pièce ARM (JEP106 0x23B) ou DEVTYPE ;
@@ -390,6 +406,10 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
   par le débogueur est ignorée (seule la région choisie par le firmware, ou son groupe par les
   alias en ARMv8-M). `mps3-an547` : Cortex-M55 en sécurisé, ITCM 0x10000000, DTCM 0x30000000. Démos : `Reset_Handler` remet la `.bss` à zéro,
   une variable de commande (`fault_kind`, `semihosting_on`) s'écrit après l'arrivée dans `main`.
+- QEMU et TrustZone (`mps2-an505`) : DSCSR lu à 0 ; accès du débogueur dans le monde courant
+  (depuis le non sécurisé : mémoire sécurisée refusée, SAU et SHCSR lus à 0) ; il faut
+  NSCCFG.CODENSC (0x50080014) en plus du SAU pour une zone NSC. Plusieurs CPU : un processus
+  par cluster (`attach 2`), pas de mode non-stop (OpenOCD non plus).
 - Le gdbstub de QEMU 8.2 ignore les écritures du débogueur dans les périphériques (RAM/ROM
   seulement ; QEMU 11.1 les applique) ; QEMU n'émule ni ITM ni SWO.
 - QEMU (8.2) sous charge : environ un pas à pas sur quelques centaines revient sans avoir
@@ -404,7 +424,8 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
   direct, reset), ITM par le SWO de la sonde, ETMv4.5 par l'ETR (boucles LE comprises), DWT
   de l'ARMv8-M. Validé sur Nucleo-F072RB (`tests/test_board_m0.py -k f072`, DEV_ID 0x448,
   `STM32F0x2.svd`) : run-control, `DWT_PCSR` du Cortex-M0, RTOS en marche. Prêt, pas encore
-  passé : Nucleo-G070RB (`-k g070`, DEV_ID 0x460, `STM32G070.svd` à confirmer). Validé sur Nucleo-F446RE (`tests/test_board_f446.py`) :
+  passé : Nucleo-G070RB (`-k g070`, DEV_ID 0x460, `STM32G070.svd` à confirmer). Jalon 23 :
+  TrustZone et plusieurs cœurs validés sous QEMU seulement (an505, an521) ; CTI pas passé. Validé sur Nucleo-F446RE (`tests/test_board_f446.py`) :
   ETMv3 par SWO (décodage = OpenCSD sur une vraie capture), filtres plage et start/stop,
   ETMFFLR. Un ETMv3 par SWO sans filtre prend toute la broche : l'ITM n'y passe plus et un
   firmware qui attend sa FIFO se fige (dit par `EtmConfig.summary()`). Validés sur la F072 :

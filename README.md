@@ -10,8 +10,8 @@ agent (serveur MCP).
 - **Trace et mesures** : ITM/SWO, profil, trace de données du DWT, ETM (v3 et v4), MTB, timing
   par fonction et par chemin d'appel, couverture de code, chrono et compteurs sans trace.
 - **Cibles** : QEMU, OpenOCD, ST-LINK_gdbserver ou tout serveur gdb ; tables ROM CoreSight,
-  MPU, CMSIS-Packs, algorithmes de flash (FLM, `.stldr`) ; validé sur Nucleo-F746ZG,
-  Nucleo-N657X0-Q (STM32N6), Nucleo-F446RE et Nucleo-F072RB.
+  MPU, CMSIS-Packs, algorithmes de flash (FLM, `.stldr`), TrustZone, plusieurs cœurs ; validé
+  sur Nucleo-F746ZG, Nucleo-N657X0-Q (STM32N6), Nucleo-F446RE et Nucleo-F072RB.
 
 ## Documentation
 
@@ -46,8 +46,9 @@ Les autres commandes (STM32N6, Cortex-M0, ETM par SWO, MTB, programmes de l'hôt
 
 ## État
 
-22 jalons, du run-control à la trace ETMv4 et aux CMSIS-Packs ; le détail et ce qui reste à
-valider sur carte : [Jalons](https://github.com/lfazio/gdbtrace/wiki/Jalons).
+23 jalons, du run-control à la trace ETMv4, aux CMSIS-Packs, à TrustZone et aux puces à
+plusieurs cœurs ; le détail et ce qui reste à valider sur carte :
+[Jalons](https://github.com/lfazio/gdbtrace/wiki/Jalons).
 
 ## Tests
 

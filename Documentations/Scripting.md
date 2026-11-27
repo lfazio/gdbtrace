@@ -613,6 +613,40 @@ st = gdbtrace.mpu()                            # « MPU ARMv7-M, 8 régions, act
 assert st.enabled and st.region_at(0x40000000).memory == "Device partagé"
 ```
 
+### TrustZone et plusieurs cœurs
+
+`security()` dit dans quel monde est le cœur arrêté (`SecurityState` : `secure`, `label`
+« S » / « NS », `text()`, `banked` : `msp_s`, `psp_ns`, `control_s`…), ou None sans extension
+de sécurité. `sau()` décode le SAU (`SauState` : `regions`, `enabled`, `attribution(adresse)`),
+lisible depuis le monde sécurisé. `stack()` rend la pile à travers les deux mondes
+(`WorldFrame` : `frame`, `world`, `note`), que `bt()` affiche ; `mpu(nonsecure=True)` lit la
+MPU non sécurisée. Détail : [TrustZone et multi-cœur](TrustZone-et-multi-cœur).
+
+<!-- test: examples/tz-an505/secure.elf --machine mps2-an505 --qemu-load examples/tz-an505/nonsecure.elf --add-symbols examples/tz-an505/nonsecure.elf -->
+```python
+gdbtrace.break_("ns_step")
+gdbtrace.go(); gdbtrace.wait()
+st = gdbtrace.security()                       # « état : non sécurisé, Thread, pile MSP_NS … »
+assert st.label == "NS"
+frames = gdbtrace.stack()                      # ns_step ← ns_main ← … ← appelant sécurisé
+assert [w.world for w in frames][:2] == ["NS", "NS"] and frames[-1].world == "S"
+assert not gdbtrace.sau().readable             # le SAU ne se lit que depuis le sécurisé
+```
+
+Avec `--core`, `cores()` liste les cœurs (nom, état, source) et `core(nom)` choisit celui des
+commandes suivantes ; `go_all()` et `halt_all()` visent tous les cœurs, `cti_sync()` programme
+l'arrêt synchrone par les CTI (matériel).
+
+<!-- test: examples/multicore-an521/multicore.elf --machine mps2-an521 --core cpu0 --core cpu1=2 -->
+```python
+gdbtrace.break_("core1_step")
+gdbtrace.go(); gdbtrace.wait()                 # le cœur 0 a libéré le cœur 1
+cores = gdbtrace.cores()                       # « * cpu1  arrêté  processus 2 du même serveur »
+assert [c.name for c in cores] == ["cpu0", "cpu1"]
+gdbtrace.core("cpu0")                          # registres, pile, pas : le cœur 0
+assert gdbtrace.eval("core0_count") != "0"
+```
+
 ## 9. Périphériques et RTOS
 
 **Périphériques** (`--svd F.svd`, ou `gdbtrace.load_svd("F.svd")`) : `periph("NOM")`
@@ -1067,7 +1101,9 @@ gdbtrace.cov.export("couverture.html")
 | `add_symbols(elf, offset=0)` | symboles d'un autre ELF en plus |
 | `flash_loader(fichier, ram=None)`, `flash_info()`, `flash_erase(adresse=None, n=None)` | algorithme de flash (FLM, `.stldr`) exécuté sur la cible ; effacement par secteurs |
 | `chip`, `chip_info()` | puce du CMSIS-Pack (`--pack`, `--device`) |
-| `coresight()`, `mpu()` | composants des tables ROM CoreSight ; régions de la MPU |
+| `coresight()`, `mpu(nonsecure=False)` | composants des tables ROM CoreSight ; régions de la MPU (TrustZone : la non sécurisée) |
+| `security()`, `sau()`, `stack()` | TrustZone : monde du cœur, registres bancaires ; SAU ; pile à travers les deux mondes |
+| `cores()`, `core(nom)`, `go_all()`, `halt_all()`, `cti_sync(enable=True)` | plusieurs cœurs (`--core`) : liste, choix, Go et Break de tous, arrêt synchrone par les CTI |
 
 ### Trace et mesures
 

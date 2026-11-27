@@ -38,7 +38,10 @@ gdbtrace/
   trace/coverage_report.py  rapports HTML et LCOV
   trace/mtb.py          MTB des Cortex-M0+ : paquets, registres, décodeur, encodeur
   trace/coresight.py    tables ROM CoreSight : composants de la puce (ETM, CTI, PMU, TPIU…)
-  core/mpu.py           régions de la MPU (ARMv7-M, ARMv8-M)
+  core/mpu.py           régions de la MPU (ARMv7-M, ARMv8-M ; non sécurisée par l'alias)
+  core/security.py      TrustZone : monde du cœur, SAU, pile à travers les deux mondes
+  core/cores.py         plusieurs cœurs : processus du même serveur, autre serveur gdb
+  core/cti.py           arrêt synchrone des cœurs par les CTI
   core/flashalgo.py     chargeur de flash : FLM, .stldr exécutés sur la cible
   core/pack.py          CMSIS-Pack : puces, mémoires, SVD, algorithmes
   trace/mtb_capture.py  capture MTB (sonde, à chaque arrêt) et MTB simulée sous QEMU
