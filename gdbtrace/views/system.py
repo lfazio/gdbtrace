@@ -89,7 +89,7 @@ class SystemView(View):
             self.render_device()
 
     def on_running(self) -> None:
-        if self._tab() == "MPU":
+        if self._tab() == "MPU" and not self.stopped:     # événement en retard sur un arrêt
             self.mpu_info.configure(text="cible en marche : la MPU se relit à l'arrêt")
 
     def on_disconnected(self) -> None:

@@ -413,6 +413,21 @@ class ScriptAPI:
             print(f"  {line}")
         return comps
 
+    def mpu(self, quiet: bool = False):
+        """MPU du cœur (cible arrêtée) : régions décodées (début, fin, sous-régions, accès
+        privilégié et non privilégié, XN, type mémoire), ARMv7-M ou ARMv8-M. Rend un `MpuState`
+        (`regions`, `enabled`, `summary()`, `region_at(adresse)`)."""
+        from .mpu import session_mpu
+        self._need_stopped()
+        state = session_mpu(self.s)
+        if not quiet:
+            print(state.summary())
+            for r in state.regions:
+                on, base, end, size, subs, access, xn, mem = r.row()
+                print(f"  {r.number:>2} {on:<3} {base}-{end} {size:>7}  {access:<36} {xn:<6} {mem}"
+                      + (f"  sous-régions {subs}" if subs else ""))
+        return state
+
     def coresight(self, refresh: bool = True) -> list:
         """Composants CoreSight de la puce, par ses tables ROM (cible arrêtée) : SCS, DWT, FPB,
         ITM, TPIU, ETM (et sa version), CTI, MTB, PMU… Rend la liste (`Component` : `addr`,

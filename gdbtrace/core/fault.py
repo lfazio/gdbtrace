@@ -352,6 +352,8 @@ def analyze(session) -> FaultReport:
             report.address = mmfar
     if not report.in_fault:
         return report
+    if report.registers.get("CFSR", 0) & 0xFF:  # MemManage : la région MPU en cause
+        _mpu_cause(report, session)
     frame, caller, level = find_stacked_frame(session, arch)
     report.frame = frame
     if frame is not None:
@@ -388,6 +390,27 @@ def analyze(session) -> FaultReport:
     elif not report.causes:
         report.causes.append(("?", "aucun bit de cause levé (faute effacée par le logiciel ?)"))
     return report
+
+
+def _mpu_cause(report: FaultReport, session) -> None:
+    """MemManage : la région de la MPU qui couvre l'adresse fautive (MMFAR), ou son absence."""
+    from .mpu import read_mpu
+    try:
+        state = read_mpu(session.read_u32, session.write_u32, report.arch)
+    except Exception:  # noqa: BLE001 - MPU illisible : la cause reste celle de CFSR
+        return
+    if not state.enabled or report.address is None or not report.registers["CFSR"] >> 7 & 1:
+        return
+    region = state.region_at(report.address)
+    if region is not None:
+        report.causes.append(("MPU", f"région {region.number} ({region.base:#010x}-{region.limit:#010x}) : "
+                                     f"{region.access()}{', XN' if region.xn else ''}"))
+    elif len(state.regions) < state.dregion:
+        report.causes.append(("MPU", f"adresse hors des régions lues ({state.note})"))
+    else:
+        report.causes.append(("MPU", "adresse hors de toute région : carte par défaut "
+                                     + ("(PRIVDEFENA), refusée en mode non privilégié"
+                                        if state.ctrl >> 2 & 1 else "refusée (PRIVDEFENA à 0)")))
 
 
 def in_fault(session) -> bool:

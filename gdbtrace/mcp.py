@@ -189,6 +189,9 @@ TOOLS = [
           "par ses tables ROM (cible arrêtée) : SCS, DWT, FPB, ITM, TPIU, ETM et sa version, CTI, "
           "MTB, PMU, ETF/ETR… ; dit s'il n'y a pas d'ETM. Vide sous QEMU (pas de table ROM).",
           read_only=True),
+    _tool("mpu", "Régions de la MPU", "Régions de la MPU décodées (cible arrêtée) : début, fin, "
+          "sous-régions désactivées, accès privilégié et non privilégié, XN, type mémoire "
+          "(TEX/C/B en ARMv7-M, MAIR en ARMv8-M), et si la MPU est activée.", read_only=True),
     _tool("peripheral", "Périphérique (SVD)", "PER.view : registres décodés d'un périphérique "
           "(champs en clair) d'après le SVD de la session (--svd) ou `svd` (fichier, chargé "
           "d'abord). Sans `name` : la liste des périphériques. Les registres à lecture "
@@ -840,6 +843,11 @@ class GdbTraceMcp:
         api.coresight()
         reason = api.trace.no_etm_reason() if api.trace is not None else None
         return f"trace d'instructions : {reason}" if reason else ""
+
+    def tool_mpu(self) -> str:
+        self._stopped()
+        self.api.mpu()
+        return ""
 
     def tool_peripheral(self, name: str = "", svd: str | None = None, force: bool = False) -> str:
         api = self.api
