@@ -21,11 +21,11 @@ Elle équivaut à :
 ```bash
 .venv/bin/python -m gdbtrace examples/nucleo-f446/nucleo-f446.elf --program \
     --openocd configs/nucleo-f446re.cfg --svd STM32F446.svd --cpu-hz 16000000 \
-    --etm-config --etm-port swo --etm-stall --etm-start worker_step --etm-stop 0x080002ac \
+    --etm-config --etm-port swo --etm-stall --etm-start worker_step --etm-stop 0x08000388 \
     --var-trace produced:write
 ```
 
-- `0x080002ac` est l'adresse du `bx lr` de `worker_step` dans ce firmware (Désassemblage, ou `arm-none-eabi-objdump -d`) ; le test sur carte vérifie qu'elle n'a pas changé.
+- `0x08000388` est l'adresse du `bx lr` de `worker_step` dans ce firmware (Désassemblage, ou `arm-none-eabi-objdump -d`) ; le test sur carte vérifie qu'elle n'a pas changé.
 - Plusieurs sondes branchées : `STLINK_SERIAL=<numéro de série>` choisit la bonne.
 - La connexion se fait sous reset ; `CONNECT_UNDER_RESET=0` et `--no-load` pour s'attacher sans reset.
 
@@ -51,4 +51,4 @@ Sur cette carte, le décodage de GdbTrace est identique à celui d'OpenCSD, et l
 2. lance l'interface avec le SVD, l'ETM et l'ITM par SWO (stall), l'ETM démarré à l'entrée de `worker_step` et arrêté à son retour, et une variable tracée par le DWT ;
 3. relève et vérifie toutes les vues (`tests/artifacts/board-f446.json`).
 
-En plus, les tours de boucle de chaque appel de `worker_step` doivent suivre le firmware, et un filtre par plage, en mode batch, doit donner la même trace qu'OpenCSD. La carte est trouvée seule : sonde ST-LINK dans `/sys`, puis identité de la puce (DEV_ID 0x421) lue par OpenOCD. `GDBTRACE_F446_SERIAL` impose la sonde.
+En plus, les tours de boucle de chaque appel de `worker_step` doivent suivre le firmware, et un filtre par plage, en mode batch, doit donner la même trace qu'OpenCSD. Comme sur la F746, le chrono (`DWT_CYCCNT`), les compteurs du DWT et le RTT lu en marche sont éprouvés, l'ETMv3 et l'ITM occupant la broche. La carte est trouvée seule : sonde ST-LINK dans `/sys`, puis identité de la puce (DEV_ID 0x421) lue par OpenOCD. `GDBTRACE_F446_SERIAL` impose la sonde.

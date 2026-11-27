@@ -96,7 +96,10 @@ def run(request, tmp_path_factory):
     os.environ["STLINK_SERIAL"] = serial
     try:
         return boards.run_gui(argv, "f446", ready=lambda app: app.trace.etm_swo, cleanup=cleanup,
-                              extra=lambda app: {**worker_loops(app), "compteurs": boards.counters_passes(app),
+                              extra=lambda app: {**worker_loops(app),
+                                                 "compteurs": boards.counters_passes(app),
+                                                 "chrono": boards.chrono_passes(app),
+                                                 "rtt": boards.rtt_live(app),
                                                  "systeme": boards.system_passes(app),
                                                  "flash": f446_pack_flash(app)})
     finally:
@@ -279,7 +282,12 @@ def test_etm3_range_filter_by_dwt_on_board(request, tmp_path, run):
     st = res["stats"]
     assert st["erreurs"] == 0 and st["débordements"] == 0 and st["code inconnu"] == 0, res
     assert st["instructions"] > 1000 and st["trous comblés"] > 0, res
-    assert res["ranges"] == [[0x08000200, 0x08000300]], res       # bloc aligné du DWT
+    from gdbtrace.core.symbols import SymbolTable
+    f, size = SymbolTable(FW).function("worker_step"), 2
+    while f.start // size != (f.end - 1) // size:                 # plus petit bloc aligné
+        size *= 2
+    base = f.start - f.start % size
+    assert res["ranges"] == [[base, base + size]], res           # bloc aligné du DWT
 
     img = CodeImage(FW)
     data = raw_path.read_bytes()
@@ -334,3 +342,15 @@ def test_flash_by_the_pack_algorithm(run):
 def test_counters_of_the_dwt(run):
     """Compteurs du DWT d'un Cortex-M4 entre deux passages par worker_step."""
     boards.counters_checks(run["extra"]["compteurs"], "DWT")
+
+
+def test_chrono_by_cyccnt(run):
+    """Deux passages par worker_step (vTaskDelay de 5 ms) mesurés par DWT_CYCCNT, ETMv3 et ITM
+    en marche sur le SWO ; la pause de 1 s du débogueur entre les deux n'est pas comptée."""
+    boards.chrono_checks(run["extra"]["chrono"], "DWT_CYCCNT")
+
+
+def test_rtt_read_live_by_openocd(run):
+    """RTT lu en marche par le port TCL d'OpenOCD (lecture, puis RdOff écrit), pendant que
+    l'ETMv3 et l'ITM occupent le SWO."""
+    boards.rtt_checks(run["extra"]["rtt"])
