@@ -63,7 +63,8 @@ def build_target(args, elf: str) -> object:
     return QemuTarget(elf=os.path.abspath(elf), machine=args.machine,
                       gdb_port=args.gdb_port or free_port(), etm_sim=args.etm_sim,
                       mtb_sim=mtb_sim_size(args, elf), mtb_autohalt=args.mtb_autohalt,
-                      semihosting_port=free_port() if args.semihosting else 0)
+                      semihosting_port=free_port() if args.semihosting else 0,
+                      loads=[os.path.abspath(f) for f in args.qemu_load])
 
 
 def mtb_sim_size(args, elf: str) -> int | None:
@@ -474,6 +475,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="RTT : bloc de contrôle « SEGGER RTT » (défaut : le symbole _SEGGER_RTT), lu en "
                          "marche par le canal mémoire, dans la vue Terminal")
     p.add_argument("--machine", default="mps2-an385", help="machine QEMU")
+    p.add_argument("--qemu-load", action="append", default=[], metavar="ELF",
+                   help="QEMU : autre image chargée avec l'ELF (-device loader), rechargée à chaque "
+                        "reset : image non sécurisée d'une démo TrustZone, bootloader… ; ses symboles "
+                        "par --add-symbols ; répétable")
     p.add_argument("--gdb", default="gdb-multiarch", help="exécutable gdb")
     p.add_argument("--gdb-port", type=int, default=0)
     p.add_argument("--no-load", action="store_true", help="ne pas flasher l'ELF à la connexion")
@@ -581,7 +586,7 @@ def validate(args) -> list[str]:
 SERVER_DESTS = ("qemu", "openocd", "stlink", "remote", "native", "pid")
 #: options propres à un serveur : retirées de la configuration quand la ligne de commande en
 #: donne un autre
-SERVER_OPTION_DESTS = ("machine", "rtos", "stlink_ap", "ram_boot", "args", "cwd", "tcl",
+SERVER_OPTION_DESTS = ("machine", "qemu_load", "rtos", "stlink_ap", "ram_boot", "args", "cwd", "tcl",
                        "non_stop", "remote_exec")
 
 

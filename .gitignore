@@ -5,6 +5,7 @@ __pycache__/
 build/
 dist/
 examples/**/*.elf
+examples/tz-an505/*.o
 gdbtrace-layout.json
 .pytest_cache/
 .cache/

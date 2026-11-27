@@ -52,7 +52,7 @@ TRACE_FIELDS = {
 }
 #: valeurs par défaut de la ligne de commande (non écrites dans le YAML)
 TRACE_DEFAULTS = {"swo-hz": 2_000_000, "swo-port": 3443, "etm-port": "parallel", "etm-width": 4}
-QEMU_MACHINES = ["mps2-an385", "mps2-an500", "microbit"]
+QEMU_MACHINES = ["mps2-an385", "mps2-an500", "microbit", "mps2-an505", "mps2-an521", "mps3-an547"]
 
 
 class ConfigEditor(tk.Toplevel):
@@ -205,6 +205,12 @@ class ConfigEditor(tk.Toplevel):
         ttk.Label(fr, text="Machine").grid(row=0, column=0, sticky="w", padx=(0, 6))
         ttk.Combobox(fr, textvariable=self._var("serveur", "machine"), values=QEMU_MACHINES,
                      width=16).grid(row=0, column=1, sticky="w")
+        ttk.Label(fr, text="Autres images (-device loader), une par ligne").grid(
+            row=1, column=0, sticky="nw", padx=(0, 6), pady=(4, 0))
+        t = tk.Text(fr, height=2, width=48, wrap="none")
+        t.grid(row=1, column=1, sticky="ew", pady=(4, 0))
+        self.texts[("serveur", "qemu-load")] = t
+        fr.columnconfigure(1, weight=1)
         fr = self.server_frames["openocd"] = ttk.LabelFrame(holder, text="OpenOCD", padding=6)
         ttk.Label(fr, text="Fichiers de configuration (-f), un par ligne").grid(row=0, column=0, sticky="nw")
         t = tk.Text(fr, height=3, width=48, wrap="none")
@@ -370,6 +376,8 @@ class ConfigEditor(tk.Toplevel):
                     or (key == "machine" and v == "mps2-an385"):
                 continue
             srv[key] = _number(v) if key in ("gdb-port", "stlink-ap", "pid") else v
+        if kind == "qemu" and self._get_list("serveur", "qemu-load"):
+            srv["qemu-load"] = self._get_list("serveur", "qemu-load")
         if kind == "openocd":
             srv["openocd"] = self._get_list("serveur", "openocd")
             if self.vars[("serveur", "rtos")].get():

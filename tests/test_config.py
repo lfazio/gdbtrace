@@ -98,6 +98,8 @@ def test_yaml_syntax_error(tmp_path):
 # ====================================================================== ligne de commande
 @pytest.mark.parametrize("server,expected", [
     ({"type": "qemu", "machine": "microbit"}, ["--qemu", "--machine", "microbit"]),
+    ({"type": "qemu", "machine": "mps2-an505", "qemu-load": ["/a/ns.elf", "/a/boot.elf"]},
+     ["--qemu", "--machine", "mps2-an505", "--qemu-load", "/a/ns.elf", "--qemu-load", "/a/boot.elf"]),
     ({"type": "openocd", "openocd": ["a.cfg", "b.cfg"], "rtos": True}, ["--openocd", "a.cfg", "b.cfg", "--rtos"]),
     ({"type": "stlink", "stlink": "0042", "stlink-ap": 1, "ram-boot": True},
      ["--stlink", "0042", "--stlink-ap", "1", "--ram-boot"]),

@@ -44,7 +44,7 @@ OS_TYPES = {"aucun": "Aucun", "freertos": "FreeRTOS", "pthread": "Pthread (progr
 
 #: clés propres à chaque type de serveur, et clés communes
 SERVER_KEYS = {
-    "qemu": ["machine"],
+    "qemu": ["machine", "qemu-load"],
     "openocd": ["openocd", "rtos"],
     "stlink": ["stlink", "stlink-ap", "ram-boot"],
     "gdb": ["args", "cwd", "pid", "non-stop"],
@@ -65,7 +65,7 @@ TOP_KEYS = ["gdbtrace", "nom", "cible", "serveur", "os", "script", "couverture",
 #: clés dont la valeur est un chemin de fichier (relatif au YAML)
 PATH_KEYS = {("cible", "elf"), ("cible", "svd"), ("cible", "programmer"), ("cible", "add-symbols"),
              ("cible", "flash-loader"), ("cible", "pack"),
-             ("serveur", "openocd"), ("serveur", "cwd"),
+             ("serveur", "openocd"), ("serveur", "cwd"), ("serveur", "qemu-load"),
              ("", "script"), ("couverture", "fusionner"), ("couverture", "exporter"),
              ("trace", "swo-file"), ("trace", "trace-file")}
 #: clé → option de la ligne de commande (quand le nom diffère)
@@ -373,7 +373,8 @@ class SessionConfig:
             dest = key.replace("-", "_")
             if changed(dest):
                 v = getattr(args, dest)
-                srv[key] = os.path.abspath(v) if key == "cwd" else v
+                srv[key] = (os.path.abspath(v) if key == "cwd" else
+                            [os.path.abspath(x) for x in v] if key == "qemu-load" else v)
         d["serveur"] = srv
         if getattr(args, "os", None):
             d["os"] = args.os
