@@ -46,7 +46,8 @@ def run(request, tmp_path_factory):
         return boards.run_gui(argv, "f746", ready=lambda app: app.trace.etm_swo, cleanup=cleanup,
                               extra=lambda app: {"chrono": boards.chrono_passes(app),
                                                  "rtt": boards.rtt_live(app),
-                                                 "compteurs": boards.counters_passes(app)})
+                                                 "compteurs": boards.counters_passes(app),
+                                                 "systeme": boards.system_passes(app)})
     finally:
         if old is None:
             os.environ.pop("STLINK_SERIAL", None)
@@ -208,3 +209,9 @@ def test_chrono_by_cyccnt(run):
     """Deux passages par worker_step (vTaskDelay de 5 ms) mesurés par DWT_CYCCNT ; la pause de
     1 s du débogueur entre les deux n'est pas comptée."""
     boards.chrono_checks(run["extra"]["chrono"], "DWT_CYCCNT")
+
+
+def test_coresight_and_mpu(run):
+    """Tables ROM d'un Cortex-M7 (tables imbriquées, ETMv4, CTI) ; MPU ARMv7-M lue en entier."""
+    boards.system_checks(run["extra"]["systeme"], {"ROM", "SCS", "DWT", "FPB", "ITM", "ETM", "CTI"},
+                         4, "ARMv7-M")

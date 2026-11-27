@@ -1027,15 +1027,22 @@ class Session:
         `call(adresse, args, timeout)` → r0. Chaque appel pose r0-r3, r9 (`static_base`), sp,
         lr (= `return_addr`, où une instruction BKPT attend et où gdb pose un breakpoint
         matériel, masqué de breakpoints()), pc, puis laisse tourner la cible jusqu'au retour.
-        Silencieux : ni événement, ni resume hook (chrono, compteurs, trace simulée). Un délai
-        dépassé interrompt la cible ; un arrêt ailleurs qu'au retour (faute) est une erreur."""
+        Silencieux : ni événement, ni resume hook (chrono, compteurs, trace simulée) ; PRIMASK à 1
+        pendant les appels, remis ensuite. Un délai dépassé interrompt la cible ; un arrêt
+        ailleurs qu'au retour (faute) est une erreur."""
         with self._lock:
             if self.state != "stopped":
                 raise GdbError("la cible doit être arrêtée")
             self._looping, self._loop_first, self._halt_wanted = True, False, False
         ret = return_addr & ~1
         num = None
+        primask = None
         try:
+            try:                                # interruptions masquées pendant les appels
+                primask = int(self.evaluate("(unsigned int)$primask"), 0)
+                self.write_register("primask", 1)
+            except GdbError:                    # registre absent de la description de cible
+                primask = None
             try:
                 num = self.gdb.command(f"-break-insert -h *{ret:#x}")["bkpt"]["number"]
             except GdbError:                    # plus de comparateur matériel : logiciel
@@ -1082,6 +1089,11 @@ class Session:
                 self._transient.discard(num)
                 try:
                     self.gdb.command(f"-break-delete {num}")
+                except GdbError:
+                    pass
+            if primask is not None:
+                try:
+                    self.write_register("primask", primask)
                 except GdbError:
                     pass
             with self._lock:

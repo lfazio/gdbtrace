@@ -96,7 +96,9 @@ def run(request, tmp_path_factory):
     os.environ["STLINK_SERIAL"] = serial
     try:
         return boards.run_gui(argv, "f446", ready=lambda app: app.trace.etm_swo, cleanup=cleanup,
-                              extra=lambda app: {**worker_loops(app), "compteurs": boards.counters_passes(app)})
+                              extra=lambda app: {**worker_loops(app), "compteurs": boards.counters_passes(app),
+                                                 "systeme": boards.system_passes(app),
+                                                 "flash": f446_pack_flash(app)})
     finally:
         if old is None:
             os.environ.pop("STLINK_SERIAL", None)
@@ -299,6 +301,34 @@ def test_etm3_range_filter_by_dwt_on_board(request, tmp_path, run):
     it = iter(healed)
     assert all(a in it for a in theirs)                          # sous-suite, dans l'ordre
     assert len(healed) > len(theirs) and flow.stats.healed > 0
+
+
+def f446_pack_flash(app) -> dict:
+    """Le dernier secteur de 128 Ko de la flash (hors du firmware de test) programmé par le
+    FLM du pack Keil.STM32F4xx_DFP, s'il est installé."""
+    from gdbtrace.core.pack import PackError, resolve
+    try:
+        chip = resolve(None, "STM32F446RE")
+        algo = next(a for a in chip.algorithms if a.default)
+        flm = chip.pack.file(algo.path)
+    except (PackError, StopIteration) as exc:
+        return {"absent": str(exc)}
+    ram = f"{algo.ram_start:#x}:{algo.ram_size:#x}" if algo.ram_start is not None else "0x20000000:0x4000"
+    return boards.flash_by_algorithm(app, flm, ram, 0x08060000)
+
+
+def test_coresight_and_mpu(run):
+    """Tables ROM d'un Cortex-M4 (ETM-M4 en ETMv3, TPIU) ; MPU ARMv7-M lue en entier."""
+    boards.system_checks(run["extra"]["systeme"], {"ROM", "SCS", "DWT", "FPB", "ITM", "TPIU", "ETM"},
+                         3, "ARMv7-M")
+
+
+def test_flash_by_the_pack_algorithm(run):
+    """FLM du CMSIS-Pack exécuté par gdb sur la cible : programmé, vérifié par sa fonction Verify."""
+    res = run["extra"]["flash"]
+    if "absent" in res:
+        pytest.skip(f"pack Keil.STM32F4xx_DFP non installé ({res['absent']})")
+    assert not res["différences"] and res["programmé"]["octets"] == 0x10000, res
 
 
 def test_counters_of_the_dwt(run):

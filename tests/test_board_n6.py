@@ -67,7 +67,9 @@ def run(request, tmp_path_factory):
                           cleanup=cleanup,
                           extra=lambda app: {**loop_counts(app), "chrono": boards.chrono_passes(app),
                                              "rtt": boards.rtt_live(app),
-                                             "compteurs": boards.counters_passes(app)})
+                                             "compteurs": boards.counters_passes(app),
+                                             "systeme": boards.system_passes(app),
+                                             "flash": n6_external_flash(app)})
 
 
 def view(run, phase, kind):
@@ -320,3 +322,30 @@ def test_chrono_by_cyccnt(run):
     """Deux passages par worker_step (vTaskDelay de 5 ms) mesurés par DWT_CYCCNT ; la pause de
     1 s du débogueur entre les deux n'est pas comptée."""
     boards.chrono_checks(run["extra"]["chrono"], "DWT_CYCCNT")
+
+
+N6_LOADER = "MX66UW1G45G_STM32N6570-NUCLEO.stldr"
+
+
+def n6_external_flash(app) -> dict:
+    """64 Ko de la flash externe XSPI (0x70100000) programmés par le chargeur externe de
+    STM32CubeProgrammer, relus par sa fonction Read, puis effacés."""
+    from gdbtrace.core.flashalgo import find_external_loader
+    if find_external_loader(N6_LOADER) is None:
+        return {"absent": f"{N6_LOADER} introuvable (STM32CubeProgrammer, ExternalLoader)"}
+    return boards.flash_by_algorithm(app, N6_LOADER, None, 0x70100000)
+
+
+def test_coresight_and_mpu(run):
+    """Tables ROM d'un Cortex-M55 (classe 9, composants nommés par DEVARCH : ETMv4, CTI, PMU) ;
+    MPU ARMv8-M lue en entier."""
+    boards.system_checks(run["extra"]["systeme"], {"ROM", "SCS", "DWT", "FPB", "ITM", "ETM", "CTI", "PMU"},
+                         4, "ARMv8-M Mainline")
+
+
+def test_external_flash_by_cubeprogrammer_loader(run):
+    """Chargeur externe .stldr exécuté par gdb sur la N6 : flash XSPI programmée et relue."""
+    res = run["extra"]["flash"]
+    if "absent" in res:
+        pytest.skip(res["absent"])
+    assert not res["différences"] and res["programmé"]["octets"] == 0x10000, res

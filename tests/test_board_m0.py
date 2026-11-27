@@ -103,6 +103,7 @@ def run_control(app) -> dict:
     attempt("go_till", till)
     attempt("chrono", lambda: boards.chrono_passes(app))
     attempt("rtt", lambda: boards.rtt_live(app))
+    attempt("systeme", lambda: boards.system_passes(app))
     return out
 
 
@@ -271,3 +272,9 @@ def test_log_breakpoint_internal_stops(run):
 def test_go_till_watchpoint(run):
     g = run["extra"]["go_till"]
     assert g.get("produced") == g.get("attendu") and g.get("func") == "producer_task", g
+
+
+def test_coresight_without_etm(run):
+    """Tables ROM d'un Cortex-M0/M0+ : SCS, DWT, BPU, pas d'ETM (refus dit) ; MPU ARMv6-M
+    (le M0+ du G0 en a une de 8 régions, le M0 du F072 aucune)."""
+    boards.system_checks(run["extra"]["systeme"], {"ROM", "SCS", "DWT", "BPU"}, None, "ARMv6-M")

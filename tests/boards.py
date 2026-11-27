@@ -257,6 +257,58 @@ def rtt_checks(passed: dict) -> None:
     assert passed["ecriture"] and "consumer: commande" in passed["texte"], passed
 
 
+# ====================================================================== système : CoreSight, MPU
+def system_passes(app) -> dict:
+    """Tables ROM CoreSight relues et MPU décodée (cible arrêtée)."""
+    import contextlib
+    import io
+    api = app.api
+    with contextlib.redirect_stdout(io.StringIO()):
+        comps = api.coresight()
+    st = api.mpu(quiet=True)
+    return {"coresight": [c.as_dict() | {"etm": c.etm_version} for c in comps],
+            "mpu": {"arch": st.arch, "regions_mpu": st.dregion, "active": st.enabled, "note": st.note,
+                    "lues": [r.as_dict() for r in st.regions]},
+            "sans_etm": app.trace.no_etm_reason()}
+
+
+def system_checks(passed: dict, kinds: set[str], etm: int | None, arch: str) -> None:
+    """Les composants attendus de la puce sont dans ses tables ROM (ETM et sa version, ou son
+    absence dite) ; la MPU est lue en entier (la sonde écrit MPU_RNR)."""
+    found = {c["type"] for c in passed["coresight"]}
+    assert kinds <= found, (kinds - found, passed["coresight"])
+    etms = [c["etm"] for c in passed["coresight"] if c["type"] == "ETM"]
+    if etm is None:
+        assert not etms and "pas d'ETM" in (passed["sans_etm"] or ""), passed
+    else:
+        assert etms == [etm], passed["coresight"]
+    m = passed["mpu"]
+    assert m["arch"] == arch, m
+    if m["regions_mpu"]:
+        assert len(m["lues"]) == m["regions_mpu"] and not m["note"], m
+
+
+def flash_by_algorithm(app, loader: str, ram: str | None, base: int, size: int = 0x10000) -> dict:
+    """Un motif programmé par un algorithme de flash (FLM du pack, .stldr de CubeProgrammer)
+    puis relu par lui, puis la mémoire effacée ; durée de la programmation. La cible est
+    remise à zéro d'abord (l'algorithme prend sa RAM : le firmware repart au reset suivant)."""
+    import os
+    import time as _t
+    api, s = app.api, app.session
+    s.reset()                                    # cœur arrêté au reset : aucune interruption
+    data = bytes((i * 31 + 7) & 0xFF for i in range(size))
+    ld = api.flash_loader(loader, ram)
+    s.flash_loaders = [ld]
+    t0 = _t.monotonic()
+    st = ld.program([(base, data)])
+    bad = ld.verify([(base, data)])
+    seconds = _t.monotonic() - t0
+    ld.erase(base, base + size)
+    s.flash_loaders = []
+    return {"chargeur": os.path.basename(ld.algo.path), "programmé": st, "différences": bad,
+            "secondes": seconds, "appels": ld.calls}
+
+
 # ====================================================================== session GUI pilotée
 def run_gui(argv: list[str], name: str, ready, cleanup=None, extra=None) -> dict:
     """La session GUI complète, par le vrai point d'entrée (`main(argv)`), `App.mainloop`
