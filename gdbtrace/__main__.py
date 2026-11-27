@@ -226,6 +226,18 @@ def setup_mtb(args, trace, session, log=print) -> None:
     log(describe(base, trace.setup_mtb(session, base, *buffer, autohalt=args.mtb_autohalt)))
 
 
+def chip_core_warning(chip, trace) -> str | None:
+    """Le cœur que décrit le pack (Dcore) n'est pas celui qui répond (CPUID) : dit."""
+    if chip is None or not chip.core or trace.core is None:
+        return None
+    seen = trace.core_name or ""
+    want = chip.core.replace("Cortex-", "").upper()
+    if want and want != seen.replace("Cortex-", "").upper():
+        return (f"attention : le pack décrit {chip.name} avec un {chip.core}, la cible répond "
+                f"{seen} (CPUID) : autre puce, ou mauvais --device ?")
+    return None
+
+
 def build_flash_loaders(args, session, device=None) -> list:
     """Chargeurs de flash des options (`--flash-loader`, `--flash-ram`) pour cette session :
     `session.flash_loaders`. `device` : la puce du CMSIS-Pack (`--flash-loader pack`)."""
@@ -269,7 +281,10 @@ class BatchSession:
         s.on_event(on_event)
         self.live = None
         self.trace = TraceManager(on_error=log)
-        for ld in build_flash_loaders(args, s):  # avant la programmation de la connexion
+        self.chip = getattr(args, "chip", None)  # CMSIS-Pack (--device)
+        if self.chip is not None:
+            log(f"puce : {self.chip.title}")
+        for ld in build_flash_loaders(args, s, self.chip):   # avant la programmation
             log(f"chargeur de flash : {ld.describe()}")
         try:
             s.connect(elf, target, load)
@@ -296,6 +311,9 @@ class BatchSession:
             msg = trace.setup_etm(elf, symbols, cycle_accurate=args.etm_cycle_accurate)
             trace.detect_core(s)                 # ARMv6-M : ni ITM ni ETM, refusés clairement
             trace.discover(s)                    # tables ROM : ETM présent ou non, sa version
+            warning = chip_core_warning(self.chip, trace)
+            if warning:
+                log(warning)
             if trace.etm is not None:
                 trace.detect_etm(s)              # ETMv3 (M3/M4) ou ETMv4 (M7)
         if args.etm_sim or args.mtb_sim is not None:
@@ -308,6 +326,7 @@ class BatchSession:
                 trace.enable_qemu_sim(live)
                 trace.attach_session(s)
         self.api = api = ScriptAPI(s, live, device)
+        api.chip = self.chip
         api.trace = trace
         api.symbols = symbols
         api.cpu_hz = args.cpu_hz
@@ -371,6 +390,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="avec --stlink : image exécutée en RAM (STM32N6, démarrage de développement) : "
                         "reset système, chargement, sp / pc pris dans sa table des vecteurs")
     p.add_argument("--svd", metavar="FICHIER", help="description CMSIS-SVD des périphériques")
+    p.add_argument("--device", metavar="NOM",
+                   help="puce décrite par son CMSIS-Pack (STM32F446RE…) : SVD, mémoires, algorithmes "
+                        "de flash (--flash-loader pack) ; cherchée dans --pack, sinon dans les packs "
+                        "installés (CMSIS_PACK_ROOT, ~/.cache/arm/packs)")
+    p.add_argument("--pack", metavar="FICHIER",
+                   help="CMSIS-Pack de la puce : fichier .pack, .pdsc, ou son dossier ; avec --device")
     p.add_argument("--rtos", nargs="?", const="auto", metavar="TYPE",
                    help="avec --openocd : support RTOS d'OpenOCD (tâches vues comme threads gdb)")
     t = p.add_argument_group("trace SWO/ITM")
@@ -511,6 +536,8 @@ def validate(args) -> list[str]:
                                or args.trace_file or (args.etm_config and args.etm_port == "swo")):
         errors.append("--var-trace : avec une capture SWO ou de trace (--swo-config, --swo, "
                       "--swo-file, --etm-config --etm-port swo, --trace)")
+    if args.pack and not args.device:
+        errors.append("--pack : avec --device (la puce du pack)")
     if args.flash_loader:
         stldr = [f for f in args.flash_loader if f.lower().endswith(".stldr")]
         others = [f for f in args.flash_loader if f not in stldr and f != "pack"]
@@ -623,9 +650,22 @@ def resolve_session(p: argparse.ArgumentParser, args) -> tuple:
     if errors:
         p.error(errors[0])
     svd_warning = None
+    args.chip = None
+    if args.device:                      # CMSIS-Pack : la puce, son SVD, ses algorithmes
+        from .core.pack import PackError, resolve
+        try:
+            args.chip = resolve(args.pack, args.device)
+        except PackError as exc:
+            p.error(str(exc))
+        if not args.svd and args.chip.svd:
+            try:
+                args.svd = args.chip.svd_file()
+            except PackError as exc:
+                svd_warning = str(exc)
     if args.svd:                         # nom seul : cherché dans STM32CubeIDE
         from .core.svd import locate
-        args.svd, svd_warning = locate(args.svd)
+        args.svd, warning = locate(args.svd)
+        svd_warning = svd_warning or warning
     program = args.program is not None
     verify = not args.no_verify
     if args.elf is None and (args.batch or program):
@@ -696,7 +736,8 @@ def start_gui_session(app, args) -> None:
     app.verify_program = verify
     app.verify_var.set(verify)
     app.target_factory = lambda e: build_target(args, e)     # Fichier › Programmer un ELF…
-    app.flash_loader_factory = lambda s: build_flash_loaders(args, s)   # --flash-loader
+    app.chip = getattr(args, "chip", None)                   # CMSIS-Pack (--device)
+    app.flash_loader_factory = lambda s: build_flash_loaders(args, s, app.chip)   # --flash-loader
     # valeurs initiales de Trace › ETM par SWO…
     app.swo_hz, app.swo_port, app.etm_stall, app.stm32 = args.swo_hz, args.swo_port, args.etm_stall, args.stm32
     if args.svd and app.wants_svd(args.svd):        # pas deux lectures du même SVD
@@ -710,6 +751,9 @@ def start_gui_session(app, args) -> None:
             log(f"couverture : {app.api.cov.export(path)}")
 
     def after_connect(_res=None) -> None:
+        warning = chip_core_warning(app.chip, app.trace)
+        if warning:
+            app.report_error(warning)
         # journal de la mise en route de la trace dans la console (pas sur le terminal)
         app.safe(setup_trace, args, app.trace, app.session, app.session.target or target, log)
         if args.semihosting or args.rtt:

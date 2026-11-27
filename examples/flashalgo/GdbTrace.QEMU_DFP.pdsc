@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Pack de démonstration de GdbTrace (CMSIS-Pack) : la carte QEMU mps2-an385 (Cortex-M3),
+     son SVD, et l'algorithme de test ram-flash.FLM, qui programme une flash émulée dans la
+     SSRAM1 (0x00300000, 1 Mo). Empaqueté par le Makefile (GdbTrace.QEMU_DFP.1.0.0.pack). -->
+<package schemaVersion="1.7.7" xmlns:xs="http://www.w3.org/2001/XMLSchema-instance"
+         xs:noNamespaceSchemaLocation="PACK.xsd">
+  <vendor>GdbTrace</vendor>
+  <name>QEMU_DFP</name>
+  <description>Pack de démonstration de GdbTrace pour QEMU mps2-an385</description>
+  <releases>
+    <release version="1.0.0">Première version</release>
+  </releases>
+  <devices>
+    <family Dfamily="QEMU MPS2" Dvendor="ARM:82">
+      <processor Dcore="Cortex-M3" DcoreVersion="r2p0" Dfpu="NO_FPU" Dmpu="MPU" Dendian="Little-endian"
+                 Dclock="25000000"/>
+      <debug svd="SVD/mps2-an385.svd"/>
+      <description>Cortex-M3 de la carte MPS2 (AN385), émulée par QEMU</description>
+      <device Dname="GDBTRACE-AN385">
+        <memory name="SSRAM1" access="rx" start="0x00000000" size="0x00300000" startup="1" default="1"/>
+        <memory name="FLASH" access="rx" start="0x00300000" size="0x00100000"/>
+        <memory id="IRAM1" start="0x20000000" size="0x00400000" default="1"/>
+        <algorithm name="Flash/ram-flash.FLM" start="0x00300000" size="0x00100000"
+                   RAMstart="0x20100000" RAMsize="0x00010000" default="1"/>
+      </device>
+    </family>
+  </devices>
+</package>

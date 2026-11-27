@@ -272,6 +272,9 @@ TOOLS = [
           "HardFault, BusFault…) : cause en clair, adresse et instruction fautives, fonction et "
           "ligne, cadre empilé. `catch` : true pose l'arrêt à l'entrée de toute faute, false le "
           "retire.", {"catch": _B}),
+    _tool("chip", "Puce (CMSIS-Pack)", "La puce décrite par son CMSIS-Pack (connect avec --device, "
+          "--pack) : cœur, horloge maximale, mémoires, algorithmes de flash, SVD ; et le cœur lu sur "
+          "la cible (CPUID), comparé au pack.", read_only=True),
     _tool("flash_info", "Chargeurs de flash", "Chargeurs de flash de la session (--flash-loader : "
           "FLM, .stldr, pack) : mémoire couverte, page, secteurs, RAM de l'algorithme. Sans "
           "chargeur, la flash passe par le serveur gdb.", read_only=True),
@@ -1023,6 +1026,10 @@ class GdbTraceMcp:
 
     def tool_itm(self, port: int = 0) -> str:
         return self.api.itm(port) or f"(rien reçu sur le port {port})"
+
+    def tool_chip(self) -> str:
+        self.api.chip_info()
+        return ""
 
     def tool_flash_info(self) -> str:
         self.api.flash_info()

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Callable
 
 from ..core.config import (CIBLE_KEYS, OS_TYPES, SERVER_TYPES, ConfigError, SessionConfig)
@@ -132,17 +132,64 @@ class ConfigEditor(tk.Toplevel):
         self._row(f, 0, "Nom", "", "nom")
         self._row(f, 1, "Chemin de l'ELF", "cible", "elf", browse="elf")
         self._row(f, 2, "SVD (fichier, ou nom cherché dans STM32CubeIDE)", "cible", "svd", browse="svd")
-        self._row(f, 3, "Fréquence du cœur (Hz)", "cible", "cpu-hz")
-        self._row(f, 4, "Programmer l'ELF à la connexion", "cible", "programmer", "bool")
-        self._row(f, 5, "Vérifier après programmation", "cible", "verifier", "bool")
-        self._row(f, 6, "Lancer le programme après la connexion (Go)", "cible", "go", "bool")
-        self._row(f, 7, "Arrêt sur faute (HardFault, BusFault…)", "cible", "break-on-fault", "bool")
-        self._row(f, 8, "Image à programmer au lieu de l'ELF (HEX, S-record, binaire@adresse)",
+        self._row(f, 3, "CMSIS-Pack (.pack, .pdsc ; vide : packs installés)", "cible", "pack", browse="pack")
+        self._row(f, 4, "Puce du pack (SVD, mémoires, algorithmes de flash)", "cible", "device")
+        ttk.Button(f, text="Choisir…", command=self._choose_device).grid(row=4, column=2, padx=(4, 0), pady=1)
+        self._row(f, 5, "Fréquence du cœur (Hz)", "cible", "cpu-hz")
+        self._row(f, 6, "Programmer l'ELF à la connexion", "cible", "programmer", "bool")
+        self._row(f, 7, "Vérifier après programmation", "cible", "verifier", "bool")
+        self._row(f, 8, "Lancer le programme après la connexion (Go)", "cible", "go", "bool")
+        self._row(f, 9, "Arrêt sur faute (HardFault, BusFault…)", "cible", "break-on-fault", "bool")
+        self._row(f, 10, "Image à programmer au lieu de l'ELF (HEX, S-record, binaire@adresse)",
                   "cible", "image")
-        self._row(f, 9, "Symboles d'autres ELF (un par ligne, ELF[@décalage])", "cible", "add-symbols", "list")
-        self._row(f, 10, "Chargeurs de flash (un par ligne : .FLM, .stldr, « pack »)", "cible", "flash-loader",
+        self._row(f, 11, "Symboles d'autres ELF (un par ligne, ELF[@décalage])", "cible", "add-symbols", "list")
+        self._row(f, 12, "Chargeurs de flash (un par ligne : .FLM, .stldr, « pack »)", "cible", "flash-loader",
                   "list")
-        self._row(f, 11, "RAM de l'algorithme de flash (ADRESSE:TAILLE)", "cible", "flash-ram")
+        self._row(f, 13, "RAM de l'algorithme de flash (ADRESSE:TAILLE)", "cible", "flash-ram")
+
+    def _choose_device(self) -> None:
+        """Liste des puces du pack choisi (ou des packs installés), avec un filtre."""
+        from ..core.pack import PackError, list_devices
+        pack = self.vars[("cible", "pack")].get().strip() or None
+        if pack and not os.path.isabs(pack):
+            pack = os.path.join(self.original.base_dir, pack)
+        try:
+            devices = list_devices(pack)
+        except PackError as exc:
+            messagebox.showerror("Puce du pack", str(exc), parent=self)
+            return
+        if not devices:
+            messagebox.showinfo("Puce du pack", "aucune puce : donner un CMSIS-Pack (--pack), ou installer "
+                                "des packs (cmsis-toolbox : cpackget)", parent=self)
+            return
+        top = tk.Toplevel(self)
+        top.title("Puce du CMSIS-Pack")
+        top.transient(self)
+        filt = tk.StringVar()
+        ttk.Entry(top, textvariable=filt, width=40).pack(fill="x", padx=6, pady=4)
+        lb = tk.Listbox(top, height=16, width=60)
+        lb.pack(fill="both", expand=True, padx=6)
+        shown: list = []
+
+        def fill(*_a) -> None:
+            lb.delete(0, "end")
+            shown.clear()
+            low = filt.get().lower()
+            for d in devices:
+                if low in d.name.lower():
+                    shown.append(d)
+                    lb.insert("end", f"{d.name}  ({d.core}, {d.pack.vendor}.{d.pack.name})")
+
+        def pick(*_a) -> None:
+            sel = lb.curselection()
+            if sel:
+                self.vars[("cible", "device")].set(shown[sel[0]].name)
+            top.destroy()
+        filt.trace_add("write", fill)
+        lb.bind("<Double-1>", pick)
+        ttk.Button(top, text="Choisir", command=pick).pack(pady=4)
+        fill()
+        self.choose_window = top
 
     def _build_server(self, f) -> None:
         self.server_var = tk.StringVar(value="qemu")
@@ -225,7 +272,8 @@ class ConfigEditor(tk.Toplevel):
             types = {"elf": [("Exécutables ELF", "*.elf *.axf *.out"), ("Tous", "*")],
                      "svd": [("CMSIS-SVD", "*.svd *.xml"), ("Tous", "*")],
                      "cfg": [("OpenOCD", "*.cfg"), ("Tous", "*")],
-                     "py": [("Python", "*.py"), ("Tous", "*")]}.get(what, [("Tous", "*")])
+                     "py": [("Python", "*.py"), ("Tous", "*")],
+                     "pack": [("CMSIS-Pack", "*.pack *.pdsc"), ("Tous", "*")]}.get(what, [("Tous", "*")])
             path = filedialog.askopenfilename(parent=self, initialdir=base, filetypes=types)
         if not path:
             return

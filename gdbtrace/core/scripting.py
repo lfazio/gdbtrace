@@ -151,6 +151,8 @@ class ScriptAPI:
         self.symbols = None
         #: fréquence du cœur (conversion cycles → µs de l'analyse temporelle)
         self.cpu_hz = 25_000_000
+        #: puce décrite par son CMSIS-Pack (--device : core/pack.Device), ou None
+        self.chip = None
         #: appelé après chaque programmation avec le chemin de l'ELF (l'interface s'y recâble)
         self.on_program: Callable[[str], None] | None = None
         #: Var.Watch : ajoute une expression à la vue Watch (fourni par l'interface)
@@ -412,6 +414,44 @@ class ScriptAPI:
         for line in describe(comps):
             print(f"  {line}")
         return comps
+
+    # puce du CMSIS-Pack (SYStem.CPU)
+    def chip_rows(self):
+        """(titre, sections) de la puce pour la vue Système : le pack, puis ce que la cible
+        répond (cœur par CPUID, accord avec le pack). None sans puce ni cible."""
+        rows = []
+        title = self.chip.title if self.chip is not None else "aucune puce décrite par un CMSIS-Pack (--device)"
+        if self.chip is not None:
+            rows = self.chip.rows()
+        seen = []
+        tm = self.trace
+        if tm is not None and tm.core is not None:
+            ok = ""
+            if self.chip is not None and self.chip.core:
+                ok = ("conforme au pack" if self.chip.core.replace("Cortex-", "").upper()
+                      == (tm.core_name or "").replace("Cortex-", "").upper() else f"le pack dit {self.chip.core}")
+            seen.append(("cœur (CPUID)", tm.core_name or "?", ok))
+            if tm.components:
+                etm = next((c for c in tm.components if c.kind == "ETM"), None)
+                seen.append(("ETM (table ROM)", etm.name if etm else "absent", ""))
+        if seen:
+            rows.append(("Lu sur la cible", seen))
+        return (title, rows) if rows else None
+
+    def chip_info(self):
+        """La puce décrite par son CMSIS-Pack (--pack, --device) : cœur, horloge, mémoires,
+        algorithmes de flash, SVD ; et le cœur lu sur la cible. Rend le `Device` du pack."""
+        info = self.chip_rows()
+        if info is None:
+            print("aucune puce décrite par un CMSIS-Pack (--device, --pack)")
+            return None
+        title, rows = info
+        print(title)
+        for section, items in rows:
+            print(f"  {section}")
+            for name, value, detail in items:
+                print(f"    {name:<22} {value:<26} {detail}")
+        return self.chip
 
     # chargeurs de flash (FLASH.Create, FLASH.Erase)
     def flash_loader(self, spec: str, ram=None, clock: int | None = None):

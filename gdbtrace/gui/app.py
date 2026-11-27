@@ -131,6 +131,8 @@ class App:
         self.gdb_path = "gdb-multiarch"
         #: chargeurs de flash d'une session (build_flash_loaders des options), ou None
         self.flash_loader_factory = None
+        #: puce décrite par son CMSIS-Pack (--device, core/pack.Device), ou None
+        self.chip = None
         self.target_factory: Callable[[str], TargetServer] | None = None
         self.verify_program = True
         self.recent_elfs: list[str] = []
@@ -283,6 +285,7 @@ class App:
         self.console = Console(self.api, lambda s: self.pump.post(self.write_console, s, ""))
         session.on_event(lambda kind, data: self.pump.post(self._on_event, kind, data))
         self.api.device = self.device
+        self.api.chip = self.chip
         self.api.trace = self.trace
         self.api.on_program = lambda elf: self.pump.post(self._program_changed, elf)
         self.api.on_var_watch = lambda expr, fmt: self.pump.post(self.add_watch, expr, fmt)

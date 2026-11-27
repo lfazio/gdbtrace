@@ -51,8 +51,8 @@ SERVER_KEYS = {
     "remote": ["remote", "tcl", "remote-exec", "args", "cwd", "non-stop"],
 }
 SERVER_COMMON = ["gdb", "gdb-port", "no-load"]
-CIBLE_KEYS = ["elf", "svd", "cpu-hz", "programmer", "verifier", "go", "break-on-fault", "add-symbols",
-              "flash-loader", "flash-ram"]
+CIBLE_KEYS = ["elf", "svd", "pack", "device", "cpu-hz", "programmer", "verifier", "go", "break-on-fault",
+              "add-symbols", "flash-loader", "flash-ram"]
 COUVERTURE_KEYS = ["fusionner", "exporter"]
 #: options de trace de la ligne de commande, dans l'ordre de --help
 TRACE_KEYS = ["swo", "swo-file", "swo-formatter", "swo-config", "swo-hz", "swo-port", "var-trace",
@@ -64,7 +64,7 @@ TOP_KEYS = ["gdbtrace", "nom", "cible", "serveur", "os", "script", "couverture",
 
 #: clés dont la valeur est un chemin de fichier (relatif au YAML)
 PATH_KEYS = {("cible", "elf"), ("cible", "svd"), ("cible", "programmer"), ("cible", "add-symbols"),
-             ("cible", "flash-loader"),
+             ("cible", "flash-loader"), ("cible", "pack"),
              ("serveur", "openocd"), ("serveur", "cwd"),
              ("", "script"), ("couverture", "fusionner"), ("couverture", "exporter"),
              ("trace", "swo-file"), ("trace", "trace-file")}
@@ -284,7 +284,8 @@ class SessionConfig:
             srv = {k: v for k, v in (d.get("serveur") or {}).items() if k in SERVER_COMMON}
             for key, v in srv.items():
                 argv += _option(p, "serveur", key, v)
-        for key in ("svd", "cpu-hz", "go", "break-on-fault", "add-symbols", "flash-loader", "flash-ram"):
+        for key in ("svd", "pack", "device", "cpu-hz", "go", "break-on-fault", "add-symbols", "flash-loader",
+                    "flash-ram"):
             if key in cible:
                 argv += _option(p, "cible", key, cible[key])
         if isinstance(cible.get("programmer"), str):    # image HEX, S-record, binaire@adresse
@@ -326,8 +327,13 @@ class SessionConfig:
         cible: dict[str, Any] = {}
         if args.elf:
             cible["elf"] = os.path.abspath(args.elf)
-        if args.svd:
+        if args.svd and not (getattr(args, "chip", None) and args.chip.svd and args.pack is not None
+                             and args.svd == args.chip.svd_file()):     # SVD tiré du pack : pas écrit
             cible["svd"] = os.path.abspath(args.svd) if os.path.exists(args.svd) else args.svd
+        if args.pack:
+            cible["pack"] = os.path.abspath(args.pack)
+        if args.device:
+            cible["device"] = args.device
         if changed("cpu_hz"):
             cible["cpu-hz"] = args.cpu_hz
         if args.program is not None:

@@ -168,7 +168,7 @@ class SystemView(View):
         t = self.dev_tree
         t.delete(*t.get_children())
         api = self.app.api
-        info = api.device_rows() if api is not None and hasattr(api, "device_rows") else None
+        info = api.chip_rows() if api is not None and hasattr(api, "chip_rows") else None
         if not info:
             self.dev_info.configure(text="aucune puce décrite (--pack, --device)")
             return
