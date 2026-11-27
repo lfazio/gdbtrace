@@ -302,7 +302,12 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
   `max_nodes` → nœud « … » ; invariant : somme des nets de l'arbre = somme des nets par
   fonction). Exceptions : `trace/irqstats.py` (`IrqStats` : durée sans les imbriquées, période,
   gigue, préemptions, enchaînements), remplies par `TimingAnalyzer` (`TimingResult.irq`) et par
-  `ExceptionStats` (ITM, `trace/swo.py`). `listing.py` : les lignes de Trace.List
+  `ExceptionStats` (ITM, `trace/swo.py`). Distributions (`trace/distribution.py`,
+  `Reservoir` : compte/min/max exacts, échantillon uniforme à graine fixe, plus grandes valeurs
+  avec leur position) : `TimingResult.durations` (brut de chaque appel complet, position =
+  index du listing, marques de cycles comptées), tranches de `TaskTraceSink`, valeurs d'une
+  variable tracée ; onglet Distribution, `gdbtrace.distribution()`, outil MCP ; la vue Trace
+  va à une position (`TraceView.goto_index`, fenêtre `offset`). `listing.py` : les lignes de Trace.List
   (`TraceRow`), communes à la vue, à `trace_list`/`trace_find`/`trace_export` et au MCP ;
   `find_rows` (adresse, entrées de fonction, exceptions, texte), export CSV.
 - ETMv4 (Cortex-M7, Cortex-M55) : `etm4.py` (paquets) → `flow4.py` (file de spéculation,

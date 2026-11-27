@@ -756,6 +756,7 @@ gdbtrace.thread("consumer")
 | `calls(n)` | flot des appels, retours et exceptions | idem |
 | `timing(top, unit="us")`, `timeline(n)` | durées par fonction, chronogramme en texte | idem |
 | `call_tree(depth=4, min_pct=1.0)` | arbre d'appels : durées par chemin d'appel → `dict` imbriqués | idem |
+| `distribution(nom, bins=20, unit="us", log=None)` | histogramme des durées d'une fonction, d'une exception ou des tranches d'une tâche (valeurs d'une variable tracée), centiles, appels les plus longs avec leur index → `Distribution` | trace ETM ou MTB ; temps des tâches ; variable tracée |
 | `irq_stats()` | exceptions : entrées, durée, période et gigue, préemptions, enchaînements | trace ETM ou MTB, sinon trace des exceptions de l'ITM |
 | `snoop(expr, period_ms=10)`, `snoop_stop(expr=None)` | variable lue par le canal mémoire toutes les N ms, sans trace ; échantillons par `var_samples` | canal mémoire en marche |
 | `counters()`, `counters_reset()`, `counters_off()` | compteurs de performance de la dernière exécution (DWT, ou PMU d'un M55) ; le premier appel les arme | M3, M4, M7, M55 sur carte |
@@ -801,6 +802,8 @@ gdbtrace.break_("fib")
 gdbtrace.go(); gdbtrace.wait(10)
 gdbtrace.go(); gdbtrace.wait(10)
 tree = gdbtrace.call_tree(depth=4, min_pct=0)   # main › update_sensor › fib…
+d = gdbtrace.distribution("fib", bins=8)        # histogramme, p50/p90/p99, plus longs (index)
+assert d.count >= 1 and d.min <= d.percentiles[50] <= d.max
 assert any(n["nom"] == "[SysTick]" for n in tree)       # une exception : sa propre racine
 irq = gdbtrace.irq_stats()                      # SysTick : entrées, durée, période, gigue
 assert irq and irq[0]["entrees"] > 0
@@ -1120,6 +1123,7 @@ gdbtrace.cov.export("couverture.html")
 | `trace_list(n=30)`, `calls(n=40)` | Trace.List, flot d'appels |
 | `trace_find(requête, n=50000, show=20)`, `trace_export(fichier, n=100000)` | Trace.FindAll (adresse, fonction, « exception SysTick », texte) ; listing en CSV |
 | `timing(top=20, unit="us", n=None, kind=None)`, `timeline(n=30, unit="us")` | durées |
+| `distribution(nom, bins=20, unit="us", log=None, n=None, show=True)` | Trace.STATistic.DISTribution → `Distribution` (`bins`, `percentiles`, `longest`, `summary()`) |
 | `cov.summary()`, `cov.list(top, file=None)`, `cov.files()` | couverture |
 | `cov.save(f)`, `cov.load(f, merge=True)`, `cov.export(f)`, `cov.reset()` | campagnes, rapports |
 | `mtb(n=20)`, `mtb_stats()`, `mtb_probe()` | MTB (Cortex-M0+) |

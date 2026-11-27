@@ -35,6 +35,9 @@ class TraceView(View):
         e.bind("<Return>", lambda _e: self.render(force=True))
         ttk.Button(bar, text="Rafraîchir", command=lambda: self.render(force=True)).pack(side="left", padx=2)
         ttk.Button(bar, text="Effacer", command=self._clear).pack(side="left")
+        # fenêtre plus ancienne (aller à un index lointain : appel le plus long d'une distribution)
+        self.offset = 0
+        self.end_button = ttk.Button(bar, text="Fin", width=4, command=self._to_end)
         self.info = ttk.Label(bar, text="")
         self.info.pack(side="left", padx=6)
 
@@ -108,6 +111,7 @@ class TraceView(View):
         # dessinée à la notification qui suit la fin du décodage, ou par refresh() à l'arrêt
         if not self.winfo_exists() or self.etm is None:
             return
+        self.offset = 0                  # nouvelle trace : les index ont changé
         if self.trace_settling:
             self._update_info()
         else:
@@ -120,6 +124,7 @@ class TraceView(View):
         self.render()
 
     def _clear(self) -> None:
+        self.offset = 0
         if self.etm is not None:
             self.etm.reset()             # la trace ; la couverture a sa propre remise à zéro
         self.render(force=True)
@@ -162,13 +167,16 @@ class TraceView(View):
         except ValueError:
             n = 2000
         self._locs.clear()
-        self._render_listing(etm.last(n))
+        events = etm.last(n + self.offset)
+        if self.offset:
+            events = events[:max(0, len(events) - self.offset)]
+        self._render_listing(events)
         self._render_flow(etm.call_flow(max(n, 20_000))[-n:])
 
     def _render_listing(self, events) -> None:
         tv = self.listing
         tv.delete(*tv.get_children())
-        self.rows = listing_rows(events, self.etm.image, self.app.symbols)
+        self.rows = listing_rows(events, self.etm.image, self.app.symbols, self.offset)
         self._row_iids = []
         self._hits, self._hit_pos = [], -1
         prev_func = None
@@ -192,6 +200,40 @@ class TraceView(View):
         kids = tv.get_children()
         if kids:
             tv.see(kids[-1])
+        if self.offset and not self.end_button.winfo_ismapped():
+            self.end_button.pack(side="left", padx=2, after=self.info)
+        elif not self.offset and self.end_button.winfo_ismapped():
+            self.end_button.pack_forget()
+
+    def _to_end(self) -> None:
+        self.offset = 0
+        self.render(force=True)
+
+    def goto_index(self, index: int) -> bool:
+        """Montre la ligne d'index `index` (-1 : le dernier événement) dans le listing ; une
+        position plus ancienne que le listing déplace sa fenêtre (bouton Fin pour revenir)."""
+        if self.etm is None or index is None:
+            return False
+        try:
+            n = max(10, min(int(self.count_var.get()), 50_000))
+        except ValueError:
+            n = 2000
+        if not -(n + self.offset) <= index < -self.offset:
+            self.offset = max(0, -index - n // 2)
+            self.render(force=True)
+        pos = next((i for i, r in enumerate(self.rows) if r.index == index), None)
+        if pos is None:
+            self.app.status.set(f"index {index} hors de la trace gardée")
+            return False
+        iid = self._row_iids[pos]
+        self.tabs.select(0)
+        self.listing.selection_set(iid)
+        self.listing.focus(iid)
+        self.listing.see(iid)
+        self.find_info.configure(text=f"index {index}" + (f" (fenêtre : {self.offset} événements "
+                                                           "plus récents cachés, « Fin » pour revenir)"
+                                                           if self.offset else ""))
+        return True
 
     # ------------------------------------------------------------------ Trace.Find
     def _search(self) -> list[int]:

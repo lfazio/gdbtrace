@@ -1,4 +1,5 @@
-"""Trace.STATistic.Func / Trace.Chart.Func : durées par fonction et chronogramme d'appels.
+"""Trace.STATistic.Func / Trace.Chart.Func : durées par fonction et chronogramme d'appels ;
+Trace.STATistic.DISTribution : distribution des durées d'une fonction (onglet Distribution).
 
 Calculé depuis la trace ETM : cycles **mesurés** (ETM cycle-accurate) ou **estimés** (modèle
 de cycles, cas de l'ETM simulé sous QEMU) — l'origine est toujours affichée.
@@ -58,10 +59,11 @@ class TimingView(View):
 
         self.tabs = ttk.Notebook(self)
         self.tabs.pack(fill="both", expand=True)
-        f_tab, f_tree, f_irq, f_chart = (ttk.Frame(self.tabs) for _ in range(4))
+        f_tab, f_tree, f_irq, f_dist, f_chart = (ttk.Frame(self.tabs) for _ in range(5))
         self.tabs.add(f_tab, text="Fonctions")
         self.tabs.add(f_tree, text="Arbre d'appels")
         self.tabs.add(f_irq, text="Exceptions")
+        self.tabs.add(f_dist, text="Distribution")
         self.tabs.add(f_chart, text="Chronogramme")
 
         cols = [("kind", "Type", 72), ("calls", "Appels", 56), ("partial", "Partiels", 60),
@@ -123,6 +125,7 @@ class TimingView(View):
         self.irqs.pack(side="left", fill="both", expand=True)
         isb.pack(side="right", fill="y")
 
+        self.dist = DistributionPanel(f_dist, self)
         self.chart = FlameChart(f_chart, self)
         self.result: TimingResult | None = None
         self.color_of: dict[str, str] = {}
@@ -230,6 +233,7 @@ class TimingView(View):
         self._render_table()
         self._render_tree()
         self._render_irqs()
+        self.dist.set_result(r)
         self.chart.set_data(r)
 
     def _sort(self, key: str) -> None:
@@ -322,12 +326,192 @@ class TimingView(View):
             self.app.show_source(le.file, le.line)
 
     def get_state(self) -> dict:
-        return {"unit": self.unit_var.get(), "tab": self.tabs.index("current")}
+        return {"unit": self.unit_var.get(), "tab": self.tabs.index("current"),
+                "distribution": self.dist.get_state()}
 
     def set_state(self, state: dict) -> None:
         self.unit_var.set(state.get("unit", "µs"))
+        self.dist.set_state(state.get("distribution", {}))
         if "tab" in state:
             self.tabs.select(state["tab"])
+
+
+class DistributionPanel:
+    """Onglet Distribution (Trace.STATistic.DISTribution) : histogramme des durées brutes des
+    appels complets d'une fonction ou d'une exception, centiles, appels les plus longs ;
+    double-clic sur un appel : la vue Trace à sa position. Une seule série : une teinte (slot
+    1), barres fines séparées de 2 px, posées sur la ligne de base ; axes et textes en encre
+    de texte, grille récessive."""
+
+    PAD_L, PAD_R, PAD_T, PAD_B = 52, 12, 14, 30
+
+    def __init__(self, master, view: "TimingView"):
+        self.view = view
+        top = ttk.Frame(master)
+        top.pack(fill="x")
+        ttk.Label(top, text="Fonction :").pack(side="left", padx=(2, 0))
+        self.name_var = tk.StringVar(master)
+        self.names = ttk.Combobox(top, textvariable=self.name_var, state="readonly", width=28)
+        self.names.pack(side="left", padx=2)
+        self.names.bind("<<ComboboxSelected>>", lambda _e: self.render())
+        ttk.Label(top, text="Classes :").pack(side="left", padx=(8, 0))
+        self.bins_var = tk.StringVar(master, value="20")
+        sp = ttk.Spinbox(top, from_=4, to=60, textvariable=self.bins_var, width=4, command=self.render)
+        sp.pack(side="left", padx=2)
+        sp.bind("<Return>", lambda _e: self.render())
+        ttk.Label(top, text="Échelle :").pack(side="left", padx=(8, 0))
+        self.scale_var = tk.StringVar(master, value="auto")
+        cb = ttk.Combobox(top, textvariable=self.scale_var, values=["auto", "linéaire", "log"],
+                          state="readonly", width=8)
+        cb.pack(side="left", padx=2)
+        cb.bind("<<ComboboxSelected>>", lambda _e: self.render())
+        self.info = ttk.Label(top, text="", foreground=MUTED)
+        self.info.pack(side="left", padx=8)
+        body = ttk.PanedWindow(master, orient="horizontal")
+        body.pack(fill="both", expand=True)
+        left = ttk.Frame(body)
+        self.canvas = tk.Canvas(left, background=SURFACE, highlightthickness=0, height=220)
+        self.canvas.pack(fill="both", expand=True)
+        self.tip = ttk.Label(left, text="", foreground=INK2)
+        self.tip.pack(fill="x", padx=4)
+        right = ttk.Frame(body)
+        body.add(left, weight=3)
+        body.add(right, weight=1)
+        self.table = ttk.Treeview(right, columns=("value", "where"), show="tree headings", selectmode="browse")
+        self.table.heading("#0", text="")
+        self.table.heading("value", text="Durée")
+        self.table.heading("where", text="Index")
+        self.table.column("#0", width=110, stretch=False)
+        self.table.column("value", width=90, anchor="e", stretch=False)
+        self.table.column("where", width=80, anchor="e", stretch=True)
+        self.table.pack(fill="both", expand=True)
+        self.table.bind("<Double-1>", lambda _e: self._goto_call())
+        self.canvas.bind("<Configure>", lambda _e: self.draw())
+        self.canvas.bind("<Motion>", self._motion)
+        self.canvas.bind("<Leave>", lambda _e: self.tip.configure(text=""))
+        self.result: TimingResult | None = None
+        self.dist = None
+        self._where: dict[str, int] = {}
+
+    # ------------------------------------------------------------------ données
+    def set_result(self, result: TimingResult) -> None:
+        self.result = result
+        names = sorted(result.durations, key=lambda n: (-result.stats[n].gross if n in result.stats else 0, n))
+        self.names.configure(values=names)
+        if self.name_var.get() not in names:
+            self.name_var.set(names[0] if names else "")
+        self.render()
+
+    def render(self) -> None:
+        r, name = self.result, self.name_var.get()
+        if r is None or not name:
+            self.dist = None
+            self.draw()
+            return
+        try:
+            bins = max(4, min(60, int(self.bins_var.get())))
+        except ValueError:
+            bins = 20
+        log = {"auto": None, "linéaire": False, "log": True}[self.scale_var.get()]
+        v = self.view
+        cycles = v.unit == "cycles"
+        self.dist = r.distribution(name, bins, log, 1.0 if cycles else 1e6 / v.app.cpu_hz,
+                                   "cycles" if cycles else "µs")
+        d = self.dist
+        self.info.configure(text=f"{d.count} appels complets" + (" — échelle logarithmique" if d.log else "")
+                                 + (" — centiles sur un échantillon" if d.sampled else ""))
+        self._fill_table()
+        self.draw()
+
+    def _fill_table(self) -> None:
+        t, d = self.table, self.dist
+        t.delete(*t.get_children())
+        self._where.clear()
+        fmt = self._fmt
+        for label, value in (("minimum", d.min), ("p50", d.percentiles.get(50)), ("p90", d.percentiles.get(90)),
+                             ("p99", d.percentiles.get(99)), ("maximum", d.max), ("moyenne", d.mean)):
+            t.insert("", "end", text=label, values=(fmt(value), ""))
+        if d.longest:
+            node = t.insert("", "end", text="plus longs", open=True, values=("", ""))
+            for value, where in d.longest:
+                iid = t.insert(node, "end", text="", values=(fmt(value), "" if where is None else where))
+                if where is not None:
+                    self._where[iid] = where
+
+    def _fmt(self, v) -> str:
+        if v is None:
+            return ""
+        return f"{v:,.0f}".replace(",", " ") if abs(v) >= 1000 or self.view.unit == "cycles" else f"{v:.2f}"
+
+    def _goto_call(self) -> None:
+        where = self._where.get(self.table.focus())
+        if where is None:
+            return
+        from .trace import TraceView
+        tv = self.view.app.views.show(TraceView, "bottom")
+        if tv is not None:
+            tv.goto_index(where)
+
+    # ------------------------------------------------------------------ dessin
+    def draw(self) -> None:
+        c = self.canvas
+        c.delete("all")
+        d = self.dist
+        if d is None or not d.count:
+            c.create_text(8, 16, anchor="w", fill=MUTED,
+                          text="Pas d'appel complet : lancez la cible, arrêtez-la, puis Analyser.")
+            return
+        w, h = max(c.winfo_width(), 200), max(c.winfo_height(), 120)
+        x0, x1, y0, y1 = self.PAD_L, w - self.PAD_R, self.PAD_T, h - self.PAD_B
+        peak = max(b.count for b in d.bins) or 1
+        step = nice_step(peak, 4)
+        k = 1
+        while k * step <= peak:                       # grille horizontale récessive
+            y = y1 - (y1 - y0) * k * step / peak
+            c.create_line(x0, y, x1, y, fill=GRID)
+            c.create_text(x0 - 4, y, anchor="e", text=f"{k * step:g}", fill=MUTED, font=("TkDefaultFont", 8))
+            k += 1
+        n = len(d.bins)
+        slot = (x1 - x0) / n
+        for i, b in enumerate(d.bins):                # barres : 1 px de fond de chaque côté
+            if not b.count:
+                continue
+            top = y1 - (y1 - y0) * b.count / peak
+            c.create_rectangle(x0 + i * slot + 1, min(top, y1 - 1), x0 + (i + 1) * slot - 1, y1,
+                               fill=SLOTS[0], outline="")
+        c.create_line(x0, y1, x1, y1, fill=INK2)       # ligne de base
+        for i in sorted({0, n // 2, n}):              # bornes : début, milieu, fin
+            edge = d.bins[i].low if i < n else d.bins[-1].high
+            c.create_text(x0 + i * slot, y1 + 4, anchor="n" if 0 < i < n else ("nw" if i == 0 else "ne"),
+                          text=self._fmt(edge), fill=INK2, font=("TkDefaultFont", 8))
+        c.create_text(x1, h - 2, anchor="se", text=d.unit, fill=MUTED, font=("TkDefaultFont", 8))
+        c.create_text(x0 - 4, y0 - 4, anchor="se", text="appels", fill=MUTED, font=("TkDefaultFont", 8))
+
+    def bin_at(self, x: float):
+        d = self.dist
+        if d is None or not d.bins:
+            return None
+        w = max(self.canvas.winfo_width(), 200)
+        x0, x1 = self.PAD_L, w - self.PAD_R
+        if not x0 <= x < x1:
+            return None
+        return d.bins[min(len(d.bins) - 1, int((x - x0) / ((x1 - x0) / len(d.bins))))]
+
+    def _motion(self, e) -> None:
+        b = self.bin_at(e.x)
+        self.tip.configure(text="" if b is None else
+                           f"{self._fmt(b.low)} – {self._fmt(b.high)} {self.dist.unit} : {b.count} appel(s)")
+
+    def get_state(self) -> dict:
+        return {"name": self.name_var.get(), "bins": self.bins_var.get(), "scale": self.scale_var.get()}
+
+    def set_state(self, state: dict) -> None:
+        if state.get("name"):
+            self.name_var.set(state["name"])
+        if state.get("bins"):
+            self.bins_var.set(state["bins"])
+        if state.get("scale") in ("auto", "linéaire", "log"):
+            self.scale_var.set(state["scale"])
 
 
 class FlameChart:

@@ -28,11 +28,17 @@ l'empilement (le chemin du cadre du dessous, plus son nom) ; une exception est l
 son propre arbre. Les mêmes statistiques sont tenues par chemin (`TimingResult.tree`) : la
 somme des nets de l'arbre égale celle des fonctions. Profondeur et nombre de nœuds sont
 plafonnés (`MAX_DEPTH`, `max_nodes`) : au-delà, un nœud « … » réunit le reste.
+
+Distribution (Trace.STATistic.DISTribution) : le brut de chaque appel complet est gardé par
+fonction et par exception (`TimingResult.durations`, réservoirs de trace/distribution.py),
+avec la position de l'appel dans la trace (index du listing : -1 = dernier événement) ;
+`TimingResult.distribution(nom)` en tire histogramme, centiles et appels les plus longs.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
+from .distribution import Distribution, Reservoir, distribution
 from .etm.image import DIRECT, INDIRECT
 from .etm.qemu_log import MARKS, CycleMark, Event, ExcEntry, ExcReturn, Step, TraceGap
 from .irqstats import IrqStats
@@ -129,6 +135,27 @@ class TimingResult:
     tree: dict[tuple, FuncStats] = field(default_factory=dict)
     #: exceptions : nom (« [SysTick] ») → entrées, durées, période, préemptions
     irq: dict[str, IrqStats] = field(default_factory=dict)
+    #: brut de chaque appel complet, par nom, avec sa position dans la trace
+    durations: dict[str, Reservoir] = field(default_factory=dict)
+
+    def distribution(self, name: str, bins: int = 20, log: bool | None = None,
+                     scale: float = 1.0, unit: str = "cycles") -> Distribution:
+        """Distribution des durées brutes des appels complets de `name` (fonction, ou
+        exception « [SysTick] » ; « SysTick » suffit). `scale` : cycles → unité."""
+        key = self.find(name)
+        return distribution(key, self.durations.get(key, Reservoir()), bins, log, scale, unit)
+
+    def find(self, name: str) -> str:
+        """Nom tel que dans les statistiques : exact, ou exception sans crochets."""
+        if name in self.stats:
+            return name
+        if f"[{name}]" in self.stats:
+            return f"[{name}]"
+        low = name.lower()
+        for n in self.stats:
+            if n.lower() in (low, f"[{low}]"):
+                return n
+        raise KeyError(f"« {name} » absent de la trace analysée")
 
     def rows(self, kind: str | None = None) -> list[FuncStats]:
         out = [s for s in self.stats.values() if kind is None or s.kind == kind]
@@ -166,6 +193,7 @@ class _Frame:
     piece: int = -1              # début du morceau visible courant (reprises de tâche)
     resumed: bool = False
     path: tuple = ()             # chemin d'appel (arbre d'appels)
+    pos: int | None = None       # position de l'entrée dans la trace (index du listing)
 
     def __post_init__(self):
         if self.piece < 0:
@@ -208,7 +236,12 @@ class TimingAnalyzer:
         self.switches = 0
         self.suspended: list[_Suspended] = []
         self.after_exc = False                  # le pas suit un retour d'exception
-        for e in measured_cycles(events):
+        self.durations: dict[str, Reservoir] = {}
+        # position de chaque événement retenu dans la liste d'origine (marques retirées)
+        where = [i - len(events) for i, e in enumerate(events) if not isinstance(e, MARKS)]
+        self.pos: int | None = None
+        for k, e in enumerate(measured_cycles(events)):
+            self.pos = where[k] if k < len(where) else None
             if isinstance(e, Step):
                 self._step(e)
             elif isinstance(e, ExcEntry):
@@ -224,7 +257,8 @@ class TimingAnalyzer:
         self.suspended = []
         if len(self.intervals) > self.max_intervals:
             self.intervals = self.intervals[-self.max_intervals:]
-        return TimingResult(self.stats, self.intervals, self.t, self.switches, self.tree, self.irq)
+        return TimingResult(self.stats, self.intervals, self.t, self.switches, self.tree, self.irq,
+                            self.durations)
 
     # ------------------------------------------------------------------ outils
     def _func(self, addr: int):
@@ -257,7 +291,7 @@ class TimingAnalyzer:
         parent = self.stack[-1].path if self.stack else ()
         self.stack.append(_Frame(name, FUNCTION, self.t, len(self.stack), ret=ret, entry=addr,
                                  func_start=fstart, partial_start=partial,
-                                 path=self._path(parent, name)))
+                                 path=self._path(parent, name), pos=self.pos))
 
     def _close(self, i: int, complete_end: bool = True) -> None:
         """Ferme les cadres i..sommet (le sommet d'abord) à l'instant courant."""
@@ -284,6 +318,11 @@ class TimingAnalyzer:
             name = fr.path[-1] if fr.path else fr.name
             node = self.tree[fr.path] = FuncStats(name, fr.kind, entry=fr.entry if name == fr.name else None)
         _add(node, gross, fr.self_c, complete)
+        if complete:
+            res = self.durations.get(fr.name)
+            if res is None:
+                res = self.durations[fr.name] = Reservoir()
+            res.add(gross, fr.pos)
         if fr.kind == EXCEPTION and complete:
             self._irq(fr.name).on_duration(gross)
 
@@ -452,7 +491,7 @@ class TimingAnalyzer:
                                             cycles=e.cycles)
         self.stack.append(_Frame(label, EXCEPTION, self.t, len(self.stack), entry=e.handler,
                                  handler=e.handler, saved_prev=self.prev,
-                                 path=self._path((), label)))
+                                 path=self._path((), label), pos=self.pos))
         self.prev = None
         self.stack[-1].self_c += e.cycles       # latence d'entrée
         self.t += e.cycles

@@ -242,6 +242,13 @@ TOOLS = [
           "moins couvertes (`top`, défaut 20) ; `export` : rapport dans ce fichier (.html, "
           ".info LCOV, .json) ; `reset` : remet la couverture à zéro.",
           {"top": _I, "export": _S, "reset": _B}),
+    _tool("distribution", "Distribution des durées", "Trace.STATistic.DISTribution : "
+          "histogramme des durées de `name` (fonction ou exception — « SysTick » — de la trace "
+          "d'instructions, tâche du temps des tâches, ou valeurs d'une variable tracée), "
+          "centiles p50/p90/p99, et les appels les plus longs avec leur index dans la trace "
+          "(celui de `trace_list`). `bins` classes (défaut 20), `unit` « us » ou « cycles », "
+          "`log` : classes logarithmiques (défaut : selon l'étalement).",
+          {"name": _S, "bins": _I, "unit": _S, "log": _B}, read_only=True),
     _tool("call_tree", "Arbre d'appels", "Arbre d'appels d'après la trace (brut et net par "
           "chemin d'appel ; une exception est la racine de son arbre) : `depth` niveaux (défaut "
           "4), nœuds d'au moins `min_pct` % du temps (défaut 1).",
@@ -1001,6 +1008,14 @@ class GdbTraceMcp:
     def tool_timing(self, top: int = 20) -> str:
         self._settle()
         self.api.timing(top)
+        return ""
+
+    def tool_distribution(self, name: str, bins: int = 20, unit: str = "us", log: bool | None = None) -> str:
+        self._settle()
+        try:
+            self.api.distribution(name, bins=bins, unit=unit, log=log)
+        except (KeyError, ValueError, RuntimeError) as exc:
+            raise ToolError(str(exc).strip("'\"")) from None
         return ""
 
     def tool_call_tree(self, depth: int = 4, min_pct: float = 1.0) -> str:

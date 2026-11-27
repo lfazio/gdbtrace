@@ -23,6 +23,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable
 
+from .distribution import Reservoir, distribution
 from .itm import ExceptionTrace, Instrumentation, LocalTimestamp, Packet
 
 TASK_PORT = 31
@@ -64,6 +65,8 @@ class _Acc:
     isr: int = 0
     max_slice: int = 0
     slices: list = field(default_factory=list)
+    #: durée brute de chaque tranche terminée (Trace.STATistic.DISTribution), et son rang
+    durations: Reservoir = field(default_factory=Reservoir)
 
 
 class TaskTraceSink:
@@ -126,6 +129,7 @@ class TaskTraceSink:
             a.gross += dur
             a.isr += min(cur.isr, dur)
             a.max_slice = max(a.max_slice, dur)
+            a.durations.add(dur, self.switches)
             self.slices.append(cur)
         self._acc.setdefault(tcb, _Acc()).activations += 1
         self._cur = TaskSlice(tcb, ts, ts)
@@ -178,6 +182,24 @@ class TaskTraceSink:
         out = [TaskTime(self.name(tcb), tcb, a.activations, a.gross, a.isr, a.max_slice)
                for tcb, a in acc.items()]
         return sorted(out, key=lambda t: (-t.gross, t.name))
+
+    def distribution(self, task, bins: int = 20, log: bool | None = None, scale: float = 1.0,
+                     unit: str = "cycles"):
+        """Distribution des durées des tranches terminées d'une tâche (nom ou TCB) ; la
+        position d'une tranche est son rang parmi les changements de tâche."""
+        with self._lock:
+            tcbs = [t for t in self._acc if task == t or self.names.get(t) == task]
+            if not tcbs:
+                tcbs = [t for t in self._acc if self.name(t) == task]
+            if not tcbs:
+                raise KeyError(f"tâche inconnue : {task}")
+            res = self._acc[tcbs[0]].durations
+        return distribution(self.name(tcbs[0]), res, bins, log, scale, unit)
+
+    def task_names(self) -> list[str]:
+        with self._lock:
+            tcbs = list(self._acc)
+        return [self.name(t) for t in tcbs]
 
     @property
     def exception_cycles(self) -> int:

@@ -1,6 +1,6 @@
 Un agent peut déboguer à votre place, ou avec vous : `python -m gdbtrace.mcp` est un serveur
 MCP (Model Context Protocol) sur stdio. L'agent ouvre une session GdbTrace sans interface,
-comme le mode batch, et la pilote par 62 outils.
+comme le mode batch, et la pilote par 63 outils.
 
 ### Mise en route pas à pas
 
@@ -90,7 +90,7 @@ nouveau `connect` ferme la précédente.
 | `threads` (`select`), `rtos`, `task`, `queues`, `task_times` | threads d'un programme de l'hôte ; tâches FreeRTOS, contexte d'une tâche, queues et mutex, temps par tâche |
 | `trace_list`, `trace_find`, `trace_export`, `calls` | trace d'instructions de l'exécution qui précède l'arrêt (décodée avant d'être rendue) : listing, recherche, export CSV, flot d'appels |
 | `etm_filter`, `coverage` | filtre de la trace ETM (`ranges`, `start`, `stop`) ; couverture, `export` (.html, .info, .json), `reset` |
-| `timing`, `call_tree`, `irq_stats` | durées par fonction, arbre d'appels, statistiques des exceptions |
+| `timing`, `call_tree`, `irq_stats`, `distribution` | durées par fonction, arbre d'appels, statistiques des exceptions ; histogramme et centiles des durées d'une fonction, d'une exception ou d'une tâche, appels les plus longs avec leur index (`trace_list`) |
 | `var_trace`, `snoop`, `var_samples` | variable tracée par le DWT, ou échantillonnée par le canal mémoire ; ses valeurs |
 | `chrono`, `counters`, `profile`, `itm`, `terminal` | temps de la dernière exécution, compteurs de performance, profil statistique, texte ITM, terminal (semihosting, RTT) |
 | `fault` | analyse de la faute en cours ; `catch` : arrêt sur faute |

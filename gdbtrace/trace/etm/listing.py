@@ -24,11 +24,12 @@ class TraceRow:
                 "instruction": self.text, "fichier": self.file, "ligne": self.line}
 
 
-def listing_rows(events, image, symbols) -> list[TraceRow]:
-    """Lignes du listing pour ces événements (marques de cycles omises)."""
+def listing_rows(events, image, symbols, offset: int = 0) -> list[TraceRow]:
+    """Lignes du listing pour ces événements (marques de cycles omises). `offset` : nombre
+    d'événements plus récents, non listés (fenêtre plus ancienne de la trace)."""
     from ..itm import exception_name
     rows: list[TraceRow] = []
-    total = len(events)
+    total = len(events) + offset
     for i, e in enumerate(events):
         idx = i - total
         if isinstance(e, ExcEntry):

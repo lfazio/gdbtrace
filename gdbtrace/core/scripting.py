@@ -754,6 +754,56 @@ class ScriptAPI:
                   f"{fmt(st.net):>12}")
         return r
 
+    def distribution(self, name: str, bins: int = 20, unit: str = "us", log: bool | None = None,
+                     n: int | None = None, show: bool = True):
+        """Trace.STATistic.DISTribution : distribution des durées de `name` — fonction ou
+        exception (« SysTick ») de la trace d'instructions, tâche (tranches du temps des
+        tâches), ou variable tracée / échantillonnée (ses valeurs). Histogramme en `bins`
+        classes (logarithmiques si `log`, ou si les durées s'étalent sur plus de deux
+        décades), centiles p50, p90, p99, et les appels les plus longs avec leur position dans
+        la trace (index de `trace_list`, -1 : le dernier). Rend une `Distribution`."""
+        from ..trace.datatrace import value_distribution
+        from ..trace.timing import TimingAnalyzer
+        conv, u = self._time_unit(unit)
+        scale = conv(1.0)
+        d = None
+        tm = self.trace
+        if tm is not None and tm.etm is not None:
+            etm = self._etm()                   # attend la fin du décodage
+            if etm.history:
+                r = TimingAnalyzer(etm.image, self._symbols()).analyze(
+                    etm.last(n or etm.history.maxlen or 200_000))
+                try:
+                    d = r.distribution(name, bins, log, scale, u)
+                except KeyError:
+                    d = None
+        if d is None and tm is not None:
+            tt = tm.tasktrace
+            self._poll_task_log()
+            self._task_namer()
+            try:
+                d = tt.distribution(name, bins, log, scale, u)
+            except KeyError:
+                d = None
+            if d is None:
+                var = next((v for v in tm.datatrace.vars.values() if v.expr == name), None)
+                if var is not None:
+                    d = value_distribution(var, bins, log)
+        if d is None:
+            raise KeyError(f"« {name} » : ni fonction ou exception de la trace, ni tâche, ni "
+                           "variable tracée")
+        if show:
+            print(d.summary())
+            peak = max((b.count for b in d.bins), default=0) or 1
+            for b in d.bins:
+                bar = "█" * round(30 * b.count / peak)
+                print(f"  {b.low:>12,.2f} – {b.high:<12,.2f} {b.count:>7}  {bar}".replace(",", " "))
+            if d.longest and d.unit:
+                print("  plus longs : " + ", ".join(
+                    f"{v:,.2f} {d.unit}".replace(",", " ") + (f" (index {w})" if w is not None else "")
+                    for v, w in d.longest[:5]))
+        return d
+
     def call_tree(self, depth: int = 4, min_pct: float = 1.0, unit: str = "us",
                   n: int | None = None) -> list[dict]:
         """Trace.STATistic.TREE : durées par chemin d'appel (une exception est la racine de

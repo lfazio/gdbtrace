@@ -188,3 +188,32 @@ def test_decoded_trace_gives_same_timing(qemu_paths, elf):
     got = TimingAnalyzer(img, sym).analyze(decoded)
     key = lambda r: {n: (x.calls, x.partial, x.gross, x.net, x.min, x.max) for n, x in r.stats.items()}
     assert pk.errors == 0 and key(got) == key(ref) and got.total == ref.total
+
+
+# ====================================================================== distribution
+def test_durations_with_their_trace_position():
+    """Brut de chaque appel complet gardé, avec la position de l'appel dans la trace (index
+    du listing, marques de cycles comptées) : centiles exacts, appel le plus long retrouvé."""
+    from gdbtrace.trace.etm.qemu_log import CycleMark
+    ev = [S(0x100, 1)]
+    for c in (1, 5, 2):                            # trois appels de g, bruts 1+3, 5+3, 2+3
+        ev += [S(0x102, 3), S(0x200, 2), S(0x202, 3), S(0x300, c), S(0x302, 3), S(0x206, 1),
+               S(0x208, 3), S(0x106, 1)]
+    ev.insert(1, CycleMark(0))                     # une marque : les positions la comptent
+    r = run(ev)
+    d = r.distribution("g", bins=3, log=False)
+    assert (d.count, d.min, d.max) == (3, 4, 8) and d.percentiles[50] == 5
+    (longest, pos), *_ = d.longest
+    assert longest == 8 and isinstance(ev[pos], Step) and ev[pos].addr == 0x300
+    assert ev[pos - 1].addr == 0x202                # l'appel qui précède : le 2ᵉ tour
+    assert len(ev) + pos == 2 + 8 + 3            # g du 2ᵉ tour : après main, la marque, un tour
+    assert r.distribution("f").count == 3 and r.find("main") == "main"
+    with pytest.raises(KeyError):
+        r.distribution("absente")
+
+
+def test_exception_durations_by_short_name():
+    r = run([S(0x100, 1), ExcEntry(15, 0x500, cycles=12), S(0x500, 4), S(0x502, 3),
+             ExcReturn(cycles=10), S(0x102, 1)])
+    d = r.distribution("SysTick", scale=0.5, unit="µs")
+    assert d.name == "[SysTick]" and d.count == 1 and d.max == 14.5 and d.unit == "µs"

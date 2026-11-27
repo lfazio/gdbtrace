@@ -83,6 +83,20 @@ class TracedVar:
                                     signed=k in ("int", "schar")))
 
 
+def value_distribution(var: TracedVar, bins: int = 20, log: bool | None = False):
+    """Distribution des valeurs d'une variable tracée ou échantillonnée (échantillons gardés,
+    accès complets de valeur numérique) ; la position d'une valeur est son rang d'échantillon
+    depuis le plus récent (-1)."""
+    from .distribution import Reservoir, distribution
+    res = Reservoir()
+    samples = list(var.samples)
+    for i, smp in enumerate(samples):
+        v = var.number(smp)
+        if v is not None:
+            res.add(v, i - len(samples))
+    return distribution(var.expr, res, bins, log)
+
+
 def mask_for(addr: int, size: int) -> int:
     """MASK du comparateur : bloc aligné de 2^k octets qui contient [addr, addr + size[."""
     k = 0
