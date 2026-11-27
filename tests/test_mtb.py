@@ -150,7 +150,7 @@ def test_configure_read_wrap_restart():
 def test_find_mtb_in_rom_table():
     regs = {}
 
-    def component(addr, part, cls, designer=0x43B):
+    def component(addr, part, cls, designer=0x23B):
         for i, b in enumerate((0x0D, cls << 4, 0x05, 0xB1)):
             regs[addr + 0xFF0 + 4 * i] = b
         regs[addr + 0xFE0] = part & 0xFF

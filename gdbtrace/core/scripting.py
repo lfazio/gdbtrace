@@ -405,11 +405,33 @@ class ScriptAPI:
         return out
 
     def mtb_probe(self):
-        """Composants CoreSight de la cible (tables ROM) : MTB, ETM, TPIU..."""
-        from ..trace.mtb import rom_components
-        comps = rom_components(self.s.read_u32)
+        """Composants CoreSight de la cible, tables ROM du cœur et des fabricants connus
+        (où se trouve une MTB) ; voir aussi `coresight()`."""
+        from ..trace.coresight import CORE_ROOTS, ROM_ROOTS, describe, walk
+        comps = walk(self.s.read_memory, CORE_ROOTS + ROM_ROOTS[1:])
+        for line in describe(comps):
+            print(f"  {line}")
+        return comps
+
+    def coresight(self, refresh: bool = True) -> list:
+        """Composants CoreSight de la puce, par ses tables ROM (cible arrêtée) : SCS, DWT, FPB,
+        ITM, TPIU, ETM (et sa version), CTI, MTB, PMU… Rend la liste (`Component` : `addr`,
+        `name`, `kind`, `part`, `designer`, `depth`) ; vide sans table (QEMU)."""
+        tm = self.trace
+        if refresh or tm is None:
+            self._need_stopped()
+            from ..trace.coresight import walk
+            comps = walk(self.s.read_memory)
+            if tm is not None:
+                tm.components = comps
+        else:
+            comps = tm.components
+        if not comps:
+            print("pas de table ROM CoreSight lisible (QEMU n'en a pas)")
+            return comps
         for c in comps:
-            print(f"  {'  ' * c.depth}{c.addr:#010x}  {c.name}")
+            print(f"  {'  ' * c.depth}{c.addr:#010x}  {c.name:<34} {c.kind or '?':<8} "
+                  f"pièce {c.part:#05x}  {c.designer_name}  rév. {c.revision}")
         return comps
 
     def trace_list(self, n: int = 30):

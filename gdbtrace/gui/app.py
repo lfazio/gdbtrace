@@ -42,9 +42,10 @@ def view_classes() -> dict[str, type[View]]:
     from ..views.symbols import SymbolsView
     from ..views.terminal import TerminalView
     from ..views.counters import CountersView
+    from ..views.system import SystemView
     classes = [FilesView, SymbolsView, SourceView, DisasmView, TraceView, TimingView, CoverageView, RegistersView, WatchView,
-               PeripheralsView, RtosView, ThreadsView, StackView, BreakpointsView, FaultView, MemoryView, ConsoleView,
-               TerminalView, ItmView, ProfileView, VarTraceView, TaskTimeView, CountersView]
+               PeripheralsView, SystemView, RtosView, ThreadsView, StackView, BreakpointsView, FaultView, MemoryView,
+               ConsoleView, TerminalView, ItmView, ProfileView, VarTraceView, TaskTimeView, CountersView]
     return {c.kind: c for c in classes}
 
 
@@ -63,6 +64,7 @@ DEFAULT_LAYOUT = [
     {"kind": "registers", "where": "data"},
     {"kind": "watch", "where": "data"},
     {"kind": "peripherals", "where": "data"},
+    {"kind": "system", "where": "data"},
     {"kind": "rtos", "where": "data"},
     {"kind": "threads", "where": "data"},
     {"kind": "stack", "where": "data"},
@@ -469,6 +471,7 @@ class App:
                     self.report_error(msg)
         if self.session is not None and self.session.state == "stopped" and not self.native:
             self.safe(self.trace.detect_core, self.session)     # ARMv6-M : ni ITM ni ETM
+            self.safe(self.trace.discover, self.session)        # tables ROM CoreSight
             if self.trace.etm is not None:
                 self.safe(self.trace.detect_etm, self.session)  # ETMv3 (M3/M4) ou ETMv4 (M7)
         if isinstance(target, QemuTarget) and (target.etm_sim or target.mtb_sim is not None) \

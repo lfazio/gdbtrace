@@ -40,6 +40,7 @@ import struct
 from dataclasses import dataclass, field
 from typing import Callable
 
+from .coresight import ROM_ROOTS, Component, identify, rom_components  # noqa: F401
 from .etm.image import DIRECT, INDIRECT
 from .etm.qemu_log import Event, ExcEntry, ExcReturn, Step
 
@@ -178,82 +179,7 @@ def restart(write_u32: Callable[[int, int], None], base: int, st: MtbState) -> N
 
 
 # ====================================================================== découverte CoreSight
-#: tables ROM explorées : celle du cœur Cortex-M0+, puis celles de fabricants connus
-ROM_ROOTS = (0xE00FF000, 0xF0002000, 0x41003000)
-#: noms indicatifs de pièces ARM courantes (numéro de pièce CoreSight) ; les autres sont
-#: affichées par leur numéro
-PART_NAMES = {0x932: "MTB-M0+", 0x008: "SCS (M0/M0+)", 0x00A: "DWT (M0/M0+)", 0x00B: "BPU (M0/M0+)",
-              0x000: "SCS (M3)", 0x001: "ITM", 0x002: "DWT", 0x003: "FPB", 0x00C: "SCS (M4)",
-              0x923: "TPIU (M3)", 0x9A1: "TPIU (M4)", 0x924: "ETM-M3", 0x925: "ETM-M4",
-              0x975: "ETM-M7 (ETMv4, non pris en charge)"}
-
-
-@dataclass
-class Component:
-    addr: int
-    part: int
-    cls: int                     # classe CoreSight : 1 = table ROM, 9 = composant de débogage
-    designer: int                # JEP106 (0x43B : ARM)
-    depth: int = 0
-
-    @property
-    def name(self) -> str:
-        if self.cls == 1 and self.part not in PART_NAMES:
-            return "table ROM"
-        if self.designer == 0x43B:
-            return PART_NAMES.get(self.part, f"pièce ARM {self.part:#05x}")
-        return f"pièce {self.part:#05x} (fabricant {self.designer:#05x})"
-
-
-def identify(read_u32: Callable[[int], int], addr: int) -> Component | None:
-    """Composant CoreSight à `addr` (CIDR/PIDR), ou None (rien de lisible ni d'identifiable)."""
-    try:
-        cidr = [read_u32(addr + 0xFF0 + 4 * i) & 0xFF for i in range(4)]
-        if cidr[0] != 0x0D or cidr[2] != 0x05 or cidr[3] != 0xB1:
-            return None
-        pidr = [read_u32(addr + 0xFE0 + 4 * i) & 0xFF for i in range(3)]
-        pidr4 = read_u32(addr + 0xFD0) & 0xFF
-    except Exception:  # noqa: BLE001 - adresse non mappée
-        return None
-    part = pidr[0] | (pidr[1] & 0x0F) << 8
-    designer = (pidr[1] >> 4) | (pidr[2] & 0x07) << 4 | (pidr4 & 0x0F) << 7
-    return Component(addr, part, cidr[1] >> 4, designer)
-
-
-def rom_components(read_u32: Callable[[int], int], roots=ROM_ROOTS) -> list[Component]:
-    """Parcours des tables ROM CoreSight (récursif) : tous les composants trouvés."""
-    out: list[Component] = []
-    seen: set[int] = set()
-
-    def walk(table: int, depth: int) -> None:
-        if table in seen or depth > 3:
-            return
-        seen.add(table)
-        for i in range(0, 0x3C0, 4):
-            try:
-                entry = read_u32(table + i)
-            except Exception:  # noqa: BLE001
-                return
-            if entry == 0:
-                break
-            if not entry & 1:
-                continue
-            comp = identify(read_u32, (table + (entry & 0xFFFFF000)) & 0xFFFFFFFF)
-            if comp is None:
-                continue
-            comp.depth = depth
-            out.append(comp)
-            if comp.cls == 1:
-                walk(comp.addr, depth + 1)
-
-    for root in roots:
-        top = identify(read_u32, root)
-        if top is not None and top.cls == 1 and root not in seen:
-            out.append(top)
-            walk(root, 1)
-    return out
-
-
+# Parcours des tables ROM : trace/coresight.py (rom_components, identify, réexportés ici).
 def find_mtb(read_u32: Callable[[int], int], candidates: list[int] | None = None) -> int | None:
     """Registres de la MTB : d'abord par les tables ROM, puis aux adresses connues.
     Identification par le numéro de pièce (0x932, MTB-M0+)."""

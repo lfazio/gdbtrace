@@ -182,11 +182,11 @@ def setup_trace(args, trace, session, target, log=print) -> None:
             for line in trace.configure_etm(cfg, session):
                 log(line)
     if args.mtb_probe:
-        from .trace.mtb import rom_components
-        comps = rom_components(session.read_u32)
+        from .trace.coresight import CORE_ROOTS, ROM_ROOTS, describe, walk
+        comps = walk(session.read_memory, CORE_ROOTS + ROM_ROOTS[1:])
         log("Composants CoreSight :" if comps else "Aucune table ROM CoreSight lisible")
-        for c in comps:
-            log(f"  {'  ' * c.depth}{c.addr:#010x}  {c.name}")
+        for line in describe(comps):
+            log(f"  {line}")
     if args.mtb is not None:
         setup_mtb(args, trace, session, log)
     if args.trace:                       # port parallèle : formateur TPIU, ETM + ITM
@@ -270,6 +270,7 @@ class BatchSession:
         if not target.native:                    # trace d'instructions : Cortex-M seulement
             msg = trace.setup_etm(elf, symbols, cycle_accurate=args.etm_cycle_accurate)
             trace.detect_core(s)                 # ARMv6-M : ni ITM ni ETM, refusés clairement
+            trace.discover(s)                    # tables ROM : ETM présent ou non, sa version
             if trace.etm is not None:
                 trace.detect_etm(s)              # ETMv3 (M3/M4) ou ETMv4 (M7)
         if args.etm_sim or args.mtb_sim is not None:

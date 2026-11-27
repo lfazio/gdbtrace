@@ -109,6 +109,8 @@ class TraceManager:
         #: dernier échec de sa mise en route, montrés par les vues (`trace_status`)
         self.etm_swo = False
         self.core: int | None = None        # CPUID.PARTNO de la cible (detect_core)
+        #: composants CoreSight des tables ROM (discover) ; vide : pas de table (QEMU)
+        self.components: list = []
         self.setup_log: list[str] = []
         self.setup_error: str | None = None
         #: filtre de la trace ETM : effectif (tel que le matériel l'applique), spécifications
@@ -255,6 +257,41 @@ class TraceManager:
                 "tâches (journal gdbtrace_task_log en RAM) ou % CPU de la vue RTOS ; entre deux "
                 "arrêts : chrono de la barre d'état (SysTick)")
 
+    def discover(self, session) -> list:
+        """Composants CoreSight de la cible arrêtée, par ses tables ROM (trace/coresight.py) :
+        ETM présent ou non, sa version, TPIU, CTI, MTB, PMU. Liste vide sans table lisible
+        (QEMU) : rien n'en dépend alors."""
+        from .coresight import walk
+        try:
+            self.components = walk(session.read_memory)
+        except Exception:  # noqa: BLE001 - cible qui ne répond pas : pas de table
+            self.components = []
+        return self.components
+
+    def has_component(self, kind: str) -> bool | None:
+        """La table ROM liste-t-elle un composant de ce type ? None : pas de table lue."""
+        if not self.components:
+            return None
+        return any(c.kind == kind for c in self.components)
+
+    def no_etm_reason(self) -> str | None:
+        """Pourquoi la cible n'a pas d'ETM (ARMv6-M, ou table ROM sans ETM), ou None."""
+        reason = self.no_trace_reason()
+        if reason:
+            return reason
+        if self.has_component("ETM") is False:
+            name = self.core_name or "ce cœur"
+            return (f"la table ROM CoreSight de cette puce ({name}) n'a pas d'ETM : pas de trace "
+                    "d'instructions ; ITM, profil et trace de données restent possibles")
+        return None
+
+    def _require_etm(self) -> None:
+        """Refuse clairement une trace ETM sur une puce qui n'en a pas."""
+        reason = self.no_etm_reason()
+        if reason:
+            self.setup_error = reason
+            raise RuntimeError(reason)
+
     def _require_itm(self) -> None:
         """Refuse clairement une trace ITM, SWO ou ETM sur un cœur qui n'en a pas : sinon les
         écritures dans des registres absents échouent sans dire pourquoi."""
@@ -271,7 +308,11 @@ class TraceManager:
         part = self.detect_core(session)
         if part in ARMV6M:                       # pas d'ETM : le décodeur garde sa version
             return self.etm.version if self.etm is not None else 3
-        v = etm_version(session.read_u32)
+        from .coresight import find
+        listed = find(self.components, "ETM")
+        v = listed.etm_version if listed is not None else None
+        if v is None:
+            v = etm_version(session.read_u32)
         if v not in (2, 3, 4):                   # pas d'ETM lisible (QEMU)
             v = 4 if part == CORTEX_M7 else 3
         v = 4 if v == 4 else 3
@@ -605,7 +646,7 @@ class TraceManager:
     def configure_etm(self, cfg, session) -> list[str]:
         """Programme l'ETM et le TPIU (cible arrêtée) ; le décodeur suit l'architecture de
         l'ETM détectée (v3 ou v4)."""
-        self._require_itm()
+        self._require_etm()
         if self.etm is not None:                # ETM illisible (QEMU) : version déjà détectée
             cfg.version = self.etm.version
         cfg.dwt_reserved = tuple(self.datatrace.vars)   # comparateurs de la trace de données
@@ -772,7 +813,7 @@ class TraceManager:
         from .etm.config import EtmConfig
         self.setup_error = None
         try:
-            self._require_itm()
+            self._require_etm()
             served = isinstance(target, OpenOcdTarget) or (isinstance(target, RemoteTarget)
                                                            and bool(target.tcl_port))
             if not (served or swo or swo_file):
@@ -821,7 +862,7 @@ class TraceManager:
         from .tmc import EtrCapture, buffer_from_symbols
         self.setup_error = None
         try:
-            self._require_itm()
+            self._require_etm()
             if self.etm is None:
                 raise RuntimeError("trace ETM indisponible (capstone requis, ou pas d'ELF)")
             chip = chip or detect_chip(session.read_u32)
@@ -914,8 +955,8 @@ class TraceManager:
                     f"{st['erreurs']} erreurs")
         src, sess = self.source, self.session
         if src is None:
-            if self.no_trace_reason():
-                return self.setup_error or self.no_trace_reason()
+            if self.no_etm_reason():
+                return self.setup_error or self.no_etm_reason()
             hint = ("aucune capture de trace d'instructions : Trace › ETM par SWO… (ou --etm-config "
                     "--etm-port swo), --etm-config --trace HOST:PORT (sonde parallèle), --mtb (M0+)")
             return f"{self.setup_error} — {hint}" if self.setup_error else hint

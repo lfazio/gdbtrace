@@ -185,6 +185,10 @@ TOOLS = [
           "(bootloader, image chargée à part) à ceux de la session ; `offset` : décalage de "
           "chargement (0x100000). gdb, profil, trace et couverture les connaissent ensuite.",
           {"path": _S, "offset": _S}, ("path",)),
+    _tool("coresight", "Composants CoreSight", "Composants de débogage et de trace de la puce, "
+          "par ses tables ROM (cible arrêtée) : SCS, DWT, FPB, ITM, TPIU, ETM et sa version, CTI, "
+          "MTB, PMU, ETF/ETR… ; dit s'il n'y a pas d'ETM. Vide sous QEMU (pas de table ROM).",
+          read_only=True),
     _tool("peripheral", "Périphérique (SVD)", "PER.view : registres décodés d'un périphérique "
           "(champs en clair) d'après le SVD de la session (--svd) ou `svd` (fichier, chargé "
           "d'abord). Sans `name` : la liste des périphériques. Les registres à lecture "
@@ -829,6 +833,13 @@ class GdbTraceMcp:
             raise ToolError(f"offset : entier attendu (0x100000), pas « {offset} »") from None
         self.api.add_symbols(os.path.abspath(path), off)
         return f"symboles de {path} ajoutés" + (f" (décalage {off:#x})" if off else "")
+
+    def tool_coresight(self) -> str:
+        self._stopped()
+        api = self.api
+        api.coresight()
+        reason = api.trace.no_etm_reason() if api.trace is not None else None
+        return f"trace d'instructions : {reason}" if reason else ""
 
     def tool_peripheral(self, name: str = "", svd: str | None = None, force: bool = False) -> str:
         api = self.api
