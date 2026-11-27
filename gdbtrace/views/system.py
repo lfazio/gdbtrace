@@ -1,10 +1,12 @@
 """Vue Système : ce que la puce a vraiment. Onglets :
 - CoreSight : composants de débogage et de trace des tables ROM (trace/coresight.py) ;
-- MPU : régions de la MPU décodées (core/mpu.py) ;
+- MPU : régions de la MPU décodées (core/mpu.py) ; TrustZone : celle de l'état courant ou la
+  non sécurisée (alias du SCS, depuis l'état sécurisé) ;
+- SAU : attribution de sécurité (core/security.py), cœurs TrustZone ;
 - Puce : la puce décrite par son CMSIS-Pack (core/pack.py) et son identité lue sur la cible.
 
-Les tables ROM sont lues à la connexion (TraceManager.discover) et sur demande ; la MPU à
-chaque arrêt, si l'onglet est visible."""
+Les tables ROM sont lues à la connexion (TraceManager.discover) et sur demande ; la MPU et le
+SAU à chaque arrêt, si l'onglet est visible."""
 from __future__ import annotations
 
 import tkinter as tk
@@ -58,10 +60,23 @@ class SystemView(View):
         self.mpu_info = ttk.Label(mp, text="cible non arrêtée", wraplength=700, justify="left")
         self.mpu_info.pack(fill="x", padx=4, pady=2)
         self.mpu_info.bind("<Configure>", lambda e: self.mpu_info.configure(wraplength=max(200, e.width - 8)))
+        self.mpu_ns = tk.BooleanVar(self, value=False)
+        self.mpu_ns_check = ttk.Checkbutton(mp, text="MPU non sécurisée (TrustZone)", variable=self.mpu_ns,
+                                            command=lambda: self.refresh_mpu(force=True))
         self.mpu_tree = _tree(mp, [("on", "Active", 50), ("base", "Début", 95), ("end", "Fin", 95),
                                    ("size", "Taille", 80), ("sub", "Sous-régions", 110), ("ap", "Accès", 190),
                                    ("xn", "XN", 40), ("mem", "Type mémoire", 260)], ("Région", 70))
         self.mpu_stop = -1
+
+        # --- SAU (TrustZone)
+        sa = ttk.Frame(self.nb)
+        self.nb.add(sa, text="SAU")
+        self.sau_info = ttk.Label(sa, text="cible non arrêtée", wraplength=700, justify="left")
+        self.sau_info.pack(fill="x", padx=4, pady=2)
+        self.sau_info.bind("<Configure>", lambda e: self.sau_info.configure(wraplength=max(200, e.width - 8)))
+        self.sau_tree = _tree(sa, [("on", "Active", 50), ("base", "Début", 95), ("end", "Fin", 95),
+                                   ("size", "Taille", 80), ("attr", "Attribut", 80)], ("Région", 70))
+        self.sau_stop = -1
 
         # --- Puce
         dv = ttk.Frame(self.nb)
@@ -85,19 +100,24 @@ class SystemView(View):
             self.render_coresight()
         elif tab == "MPU":
             self.refresh_mpu()
+        elif tab == "SAU":
+            self.refresh_sau()
         elif tab == "Puce":
             self.render_device()
 
     def on_running(self) -> None:
         if self._tab() == "MPU" and not self.stopped:     # événement en retard sur un arrêt
             self.mpu_info.configure(text="cible en marche : la MPU se relit à l'arrêt")
+        if self._tab() == "SAU" and not self.stopped:
+            self.sau_info.configure(text="cible en marche : le SAU se relit à l'arrêt")
 
     def on_disconnected(self) -> None:
-        for t in (self.cs_tree, self.mpu_tree, self.dev_tree):
+        for t in (self.cs_tree, self.mpu_tree, self.sau_tree, self.dev_tree):
             t.delete(*t.get_children())
         self.cs_info.configure(text="pas de session")
         self.mpu_info.configure(text="pas de session")
-        self.mpu_stop = -1
+        self.sau_info.configure(text="pas de session")
+        self.mpu_stop = self.sau_stop = -1
 
     # ------------------------------------------------------------------ CoreSight
     def _reread(self) -> None:
@@ -149,7 +169,13 @@ class SystemView(View):
         api = self.app.api
         if api is None or not hasattr(api, "mpu"):
             return
-        state = self.app.safe(lambda: api.mpu(quiet=True))
+        trustzone = getattr(self.app, "security", None) is not None
+        if trustzone and not self.mpu_ns_check.winfo_ismapped():
+            self.mpu_ns_check.pack(anchor="w", padx=4, before=self.mpu_tree.master)
+        elif not trustzone and self.mpu_ns_check.winfo_ismapped():
+            self.mpu_ns_check.pack_forget()
+        nonsecure = trustzone and self.mpu_ns.get()
+        state = self.app.safe(lambda: api.mpu(quiet=True, nonsecure=nonsecure))
         self.mpu_stop = self.session.stop_count
         self.render_mpu(state)
 
@@ -162,6 +188,34 @@ class SystemView(View):
         for r in state.regions:
             t.insert("", "end", text=str(r.number), tags=() if r.enabled else ("off",),
                      values=r.row())
+
+    # ------------------------------------------------------------------ SAU
+    def refresh_sau(self, force: bool = False) -> None:
+        if self.session is None:
+            return
+        if not self.stopped:
+            self.sau_info.configure(text="cible en marche : le SAU se relit à l'arrêt")
+            return
+        if getattr(self.app, "native", False) or getattr(self.app, "security", None) is None:
+            self.sau_tree.delete(*self.sau_tree.get_children())
+            self.sau_info.configure(text="pas d'extension de sécurité (TrustZone) sur ce cœur")
+            return
+        if not force and self.sau_stop == self.session.stop_count:
+            return
+        from ..core.security import session_sau
+        state = self.app.safe(lambda: session_sau(self.session, self.app.security))
+        self.sau_stop = self.session.stop_count
+        self.render_sau(state)
+
+    def render_sau(self, state) -> None:
+        t = self.sau_tree
+        t.delete(*t.get_children())
+        if state is None:
+            return
+        sec = getattr(self.app, "security", None)
+        self.sau_info.configure(text=state.summary() + (f"\ncœur : {sec.text()}" if sec else ""))
+        for r in state.regions:
+            t.insert("", "end", text=str(r.number), tags=() if r.enabled else ("off",), values=r.row())
 
     # ------------------------------------------------------------------ Puce
     def render_device(self) -> None:

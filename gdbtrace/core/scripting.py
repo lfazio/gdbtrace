@@ -508,13 +508,14 @@ class ScriptAPI:
         print(f"{total} secteur(s) effacé(s)")
         return total
 
-    def mpu(self, quiet: bool = False):
+    def mpu(self, quiet: bool = False, nonsecure: bool = False):
         """MPU du cœur (cible arrêtée) : régions décodées (début, fin, sous-régions, accès
         privilégié et non privilégié, XN, type mémoire), ARMv7-M ou ARMv8-M. Rend un `MpuState`
-        (`regions`, `enabled`, `summary()`, `region_at(adresse)`)."""
+        (`regions`, `enabled`, `summary()`, `region_at(adresse)`). TrustZone : la MPU de l'état
+        courant, ou la non sécurisée (`nonsecure`, lue par l'alias depuis l'état sécurisé)."""
         from .mpu import session_mpu
         self._need_stopped()
-        state = session_mpu(self.s)
+        state = session_mpu(self.s, nonsecure=nonsecure)
         if not quiet:
             print(state.summary())
             for r in state.regions:
@@ -522,6 +523,64 @@ class ScriptAPI:
                 print(f"  {r.number:>2} {on:<3} {base}-{end} {size:>7}  {access:<36} {xn:<6} {mem}"
                       + (f"  sous-régions {subs}" if subs else ""))
         return state
+
+    def security(self, quiet: bool = False):
+        """TrustZone (ARMv8-M) : état de sécurité du cœur arrêté (sécurisé ou non, mode, pile en
+        service, d'après DSCSR.CDS ou la pile) et ses registres bancaires (msp_s, psp_ns,
+        control_s…). Rend un `SecurityState` (`secure`, `label` « S »/« NS », `text()`,
+        `banked`), ou None : le cœur n'a pas l'extension de sécurité."""
+        from .security import security_state
+        self._need_stopped()
+        state = security_state(self.s)
+        if not quiet:
+            if state is None:
+                print("pas d'extension de sécurité (TrustZone) sur ce cœur")
+            else:
+                print(f"état : {state.text()}")
+                for world, suffix in (("sécurisé", "_s"), ("non sécurisé", "_ns")):
+                    vals = [f"{k[:-len(suffix)]} {v:#010x}" for k, v in state.banked.items()
+                            if k.endswith(suffix)]
+                    print(f"  {world:<13} " + "  ".join(vals))
+        return state
+
+    def sau(self, quiet: bool = False):
+        """SAU (TrustZone) : régions décodées (début, fin, NS ou NSC), activé ou non, ALLNS ;
+        lisible depuis l'état sécurisé seulement. Rend un `SauState` (`regions`, `enabled`,
+        `summary()`, `attribution(adresse)` : « S », « NS », « NSC »)."""
+        from .security import session_sau
+        self._need_stopped()
+        state = session_sau(self.s)
+        if not quiet:
+            print(state.summary())
+            for r in state.regions:
+                on, base, end, size, attr = r.row()
+                print(f"  {r.number:>2} {on:<3} {base}-{end} {size:>7}  {attr}")
+        return state
+
+    def stack(self, quiet: bool = False) -> list:
+        """Pile d'appels complète (cible arrêtée), à travers les mondes sécurisé et non
+        sécurisé d'un cœur TrustZone (gdb s'arrête au changement de monde) : liste de
+        `WorldFrame` (`frame`, `world` « S »/« NS »/None, `note`). Sans TrustZone : la pile de
+        gdb, monde None."""
+        from .security import world_backtrace
+        self._need_stopped()
+        frames = world_backtrace(self.s, secure_read=self._secure_read())
+        if not quiet:
+            self._print_stack(frames)
+        return frames
+
+    def _secure_read(self):
+        """Lecture de la mémoire sécurisée quand gdb la refuse (QEMU : espace physique)."""
+        return getattr(self.live, "read_physical", None)
+
+    @staticmethod
+    def _print_stack(frames) -> None:
+        for i, wf in enumerate(frames):
+            f = wf.frame
+            loc = f"{f.file}:{f.line}" if f.file else ""
+            world = f"[{wf.world}] " if wf.world else ""
+            note = f"  ({wf.note})" if wf.note else ""
+            print(f"#{i} {world}{f.pc:08x} {f.func or '??'} {loc}{note}")
 
     def coresight(self, refresh: bool = True) -> list:
         """Composants CoreSight de la puce, par ses tables ROM (cible arrêtée) : SCS, DWT, FPB,
@@ -1131,6 +1190,12 @@ class ScriptAPI:
             print("   ".join(f"{n:>5} {v:08x}" for n, v in regs[i:i + 4]))
 
     def bt(self) -> None:
+        """Pile d'appels en texte ; TrustZone : à travers les deux mondes, chaque cadre avec
+        le sien (`stack()`)."""
+        from .security import has_security
+        if has_security(self.s):
+            self.stack()
+            return
         for i, f in enumerate(self.s.backtrace()):
             loc = f"{f.file}:{f.line}" if f.file else ""
             print(f"#{i} {f.pc:08x} {f.func or '??'} {loc}")

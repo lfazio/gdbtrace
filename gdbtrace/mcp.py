@@ -191,7 +191,14 @@ TOOLS = [
           read_only=True),
     _tool("mpu", "Régions de la MPU", "Régions de la MPU décodées (cible arrêtée) : début, fin, "
           "sous-régions désactivées, accès privilégié et non privilégié, XN, type mémoire "
-          "(TEX/C/B en ARMv7-M, MAIR en ARMv8-M), et si la MPU est activée.", read_only=True),
+          "(TEX/C/B en ARMv7-M, MAIR en ARMv8-M), et si la MPU est activée. TrustZone : celle "
+          "de l'état courant, ou la non sécurisée (`nonsecure`).", {"nonsecure": _B},
+          read_only=True),
+    _tool("security", "TrustZone", "Cœur ARMv8-M à extension de sécurité (cible arrêtée) : "
+          "état courant (sécurisé ou non, mode, pile en service), registres bancaires (msp_s, "
+          "psp_ns, control_s…), SAU (régions NS / NSC, lisible depuis l'état sécurisé), et la "
+          "pile d'appels à travers les deux mondes (appels SG et BLXNS, FNC_RETURN).",
+          read_only=True),
     _tool("peripheral", "Périphérique (SVD)", "PER.view : registres décodés d'un périphérique "
           "(champs en clair) d'après le SVD de la session (--svd) ou `svd` (fichier, chargé "
           "d'abord). Sans `name` : la liste des périphériques. Les registres à lecture "
@@ -854,9 +861,21 @@ class GdbTraceMcp:
         reason = api.trace.no_etm_reason() if api.trace is not None else None
         return f"trace d'instructions : {reason}" if reason else ""
 
-    def tool_mpu(self) -> str:
+    def tool_mpu(self, nonsecure: bool = False) -> str:
         self._stopped()
-        self.api.mpu()
+        try:
+            self.api.mpu(nonsecure=nonsecure)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from None
+        return ""
+
+    def tool_security(self) -> str:
+        self._stopped()
+        if self.api.security() is None:
+            return ""
+        self.api.sau()
+        print("pile :")
+        self.api.stack()
         return ""
 
     def tool_peripheral(self, name: str = "", svd: str | None = None, force: bool = False) -> str:

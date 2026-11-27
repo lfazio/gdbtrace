@@ -99,10 +99,12 @@ class StackedFrame:
     exc_return: int
     regs: dict[str, int]             # r0, r1, r2, r3, r12, lr, pc, xpsr
     exact: bool = True               # False : base déduite de MSP/PSP, prologue du gestionnaire inconnu
+    world: str = ""                  # TrustZone : monde du contexte empilé (« S », « NS »)
 
     @property
     def stack(self) -> str:
-        return "PSP" if self.exc_return & 0x4 else "MSP"
+        sp = "PSP" if self.exc_return & 0x4 else "MSP"
+        return f"{sp}_{self.world}" if self.world else sp
 
     @property
     def thread_mode(self) -> bool:
@@ -115,7 +117,8 @@ class StackedFrame:
     def describe(self) -> str:
         mode = "Thread" if self.thread_mode else "Handler"
         fp = ", contexte flottant empilé" if self.fp_context else ""
-        return f"EXC_RETURN {self.exc_return:#010x} : retour en mode {mode}, pile {self.stack}{fp}"
+        world = {"S": ", monde sécurisé", "NS": ", monde non sécurisé"}.get(self.world, "")
+        return f"EXC_RETURN {self.exc_return:#010x} : retour en mode {mode}{world}, pile {self.stack}{fp}"
 
 
 @dataclass
@@ -135,6 +138,7 @@ class FaultReport:
     instruction: str | None = None
     address: int | None = None                  # adresse de la donnée fautive, si connue
     deduced: bool = False                       # causes déduites de l'instruction (ARMv6-M)
+    security: str = ""                          # TrustZone : état du cœur arrêté
 
     @property
     def exception(self) -> str | None:
@@ -178,6 +182,7 @@ class FaultReport:
             "registres": dict(self.registers), "adresse": self.address,
             "pc": self.fault_pc, "fonction": self.fault_func, "fichier": self.fault_file,
             "ligne": self.fault_line, "instruction": self.instruction, "deduit": self.deduced,
+            "sécurité": self.security,
             "cadre": None if self.frame is None else {
                 "base": self.frame.base, "exc_return": self.frame.exc_return,
                 "pile": self.frame.stack, **self.frame.regs},
@@ -192,6 +197,8 @@ class FaultReport:
             out.append(f"  instruction : {self.instruction}")
         for n in self.notes:
             out.append(f"  note : {n}")
+        if self.security:
+            out.append(f"  cœur : {self.security}")
         if self.registers:
             out.append("  " + "  ".join(f"{k} {v:#010x}" for k, v in self.registers.items()))
         if self.frame is not None:
@@ -264,12 +271,26 @@ def find_stacked_frame(session, arch: str):
             base = session.register("psp" if lr & 0x4 else "msp")
         except Exception:  # noqa: BLE001 - serveur sans msp/psp : sp courant
             base = session.register("sp")
+    world = ""
+    if exc & 0xFF000000 == 0xFF000000 and arch.startswith("ARMv8-M"):
+        from .security import has_security
+        if has_security(session):
+            # TrustZone : le contexte empilé est sur la pile de son monde (EXC_RETURN.S) ; gdb
+            # donne sp du gestionnaire. Pile d'un autre monde, ou PSP : intacte, donc exacte.
+            world = "S" if exc >> 6 & 1 else "NS"
+            handler_world = "S" if exc & 1 else "NS"
+            name = ("psp" if exc & 0x4 else "msp") + ("_s" if world == "S" else "_ns")
+            if world != handler_world or exc & 0x4:
+                try:
+                    base, exact = session.register(name), True
+                except Exception:  # noqa: BLE001 - registre bancaire illisible : sp de gdb
+                    pass
     regs_at = base
     if arch == "ARMv8-M Mainline" and not exc & (1 << 5) and exc & 0xFF000000 == 0xFF000000:
         regs_at += 0x28              # DCRS = 0 : signature et r4-r11 empilés avant le cadre de base
     data = session.read_memory(regs_at, 32)
     regs = {name: int.from_bytes(data[4 * k:4 * k + 4], "little") for k, name in enumerate(STACKED)}
-    frame = StackedFrame(base=regs_at, exc_return=exc, regs=regs, exact=exact)
+    frame = StackedFrame(base=regs_at, exc_return=exc, regs=regs, exact=exact, world=world)
     caller = bt[level] if level is not None and level < len(bt) else None
     return frame, caller, level
 
@@ -343,7 +364,22 @@ def analyze(session) -> FaultReport:
                 sfsr = sfar = 0
             if sfsr:
                 report.registers.update({"SFSR": sfsr, "SFAR": sfar})
-        report.causes = _bits(hfsr, HFSR_BITS) + _bits(cfsr, CFSR_BITS) + _bits(sfsr, SFSR_BITS)
+        ns_causes = []
+        if arch.startswith("ARMv8-M"):
+            from .security import SCS_NS_OFFSET, security_state
+            sec = security_state(session)
+            if sec is not None:
+                report.security = sec.text()
+                if sec.secure:          # fautes du monde non sécurisé : CFSR bancaire, par l'alias
+                    try:
+                        cfsr_ns = session.read_u32(CFSR + SCS_NS_OFFSET)
+                    except Exception:  # noqa: BLE001
+                        cfsr_ns = 0
+                    if cfsr_ns:
+                        report.registers["CFSR_NS"] = cfsr_ns
+                        ns_causes = [(f"{n} (NS)", t) for n, t in _bits(cfsr_ns, CFSR_BITS)]
+        report.causes = (_bits(hfsr, HFSR_BITS) + _bits(cfsr, CFSR_BITS) + ns_causes
+                         + _bits(sfsr, SFSR_BITS))
         if sfsr >> 6 & 1:
             report.address = sfar
         elif cfsr >> 15 & 1:
@@ -375,9 +411,15 @@ def analyze(session) -> FaultReport:
                 report.instruction = ins[0].get("inst", "").replace("\t", " ")
         except Exception:  # noqa: BLE001 - PC hors du code (saut invalide)
             report.instruction = None
+        if report.registers.get("SFSR", 0) & 1:
+            report.instruction = None       # INVEP : le PC empilé est la cible, pas une instruction fautive
         if (report.registers.get("CFSR", 0) >> 10) & 1:
             report.notes.append("faute imprécise : l'instruction fautive précède le PC empilé")
-        if not frame.regs["xpsr"] >> 24 & 1 or (report.registers.get("CFSR", 0) >> 17) & 1:
+        if frame.world:
+            report.notes.append("contexte interrompu " + ("sécurisé" if frame.world == "S" else
+                                "non sécurisé") + f" (EXC_RETURN.S), pile {frame.stack}")
+        if not frame.regs["xpsr"] >> 24 & 1 or (report.registers.get("CFSR", 0) >> 17) & 1 \
+                or report.registers.get("SFSR", 0) & 1:      # INVEP : le PC empilé est la cible
             lr = frame.regs["lr"]       # saut invalide : le PC empilé est la destination
             try:
                 origin = session.symbol_at(lr & ~1).split(" in section")[0]

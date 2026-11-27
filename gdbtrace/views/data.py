@@ -549,6 +549,9 @@ class WatchView(View):
             self.add(e)
 
 
+NORMAL_STACK_COLUMNS = ("lvl", "pc", "func", "loc")
+
+
 class StackView(View):
     """Frame.view : pile d'appels et variables locales de la frame courante."""
     title = "Pile"
@@ -561,8 +564,10 @@ class StackView(View):
         top, bottom = ttk.Frame(pw), ttk.Frame(pw)
         pw.add(top, weight=1)
         pw.add(bottom, weight=1)
+        # monde et note (TrustZone) en dernier : l'ordre des valeurs des autres reste le même
         self.frames = _tree(top, [("lvl", "#", 30), ("pc", "PC", 80), ("func", "Fonction", 120),
-                                  ("loc", "Source", 200)])
+                                  ("loc", "Source", 200), ("world", "Monde", 44), ("note", "", 200)])
+        self.frames.configure(displaycolumns=NORMAL_STACK_COLUMNS)
         self.frames.bind("<Double-1>", self._goto)
         self.locals = _tree(bottom, [("name", "Locale", 120), ("value", "Valeur", 200)])
         self.locals.bind("<Button-3>", self._menu)
@@ -588,12 +593,23 @@ class StackView(View):
     def refresh(self) -> None:
         if not self.stopped:
             return
-        self.bt = self.session.backtrace()
+        if getattr(self.app, "security", None) is not None:   # TrustZone : les deux mondes
+            from ..core.security import world_backtrace
+            worlds = world_backtrace(self.session, self.app.security,
+                                     secure_read=self.app.secure_read())
+            self.frames.configure(displaycolumns=("lvl", "world", "pc", "func", "loc", "note"))
+        else:
+            from ..core.security import WorldFrame
+            worlds = [WorldFrame(f, None) for f in self.session.backtrace()]
+            self.frames.configure(displaycolumns=NORMAL_STACK_COLUMNS)
+        self.bt = [w.frame for w in worlds]
         self.frames.delete(*self.frames.get_children())
-        for i, f in enumerate(self.bt):
+        for i, w in enumerate(worlds):
+            f = w.frame
             # nom du fichier seul : avec un chemin absolu (build CMake), la ligne sortait du champ
             loc = f"{os.path.basename(f.file)}:{f.line}" if f.file else ""
-            self.frames.insert("", "end", iid=str(i), values=(i, f"{f.pc:08x}", f.func or "??", loc))
+            self.frames.insert("", "end", iid=str(i), values=(i, f"{f.pc:08x}", f.func or "??", loc,
+                                                              w.world or "", w.note))
         self.locals.delete(*self.locals.get_children())
         cur = {}
         for v in self.session.locals():

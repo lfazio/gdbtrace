@@ -111,6 +111,8 @@ class App:
         self.live_period_ms = 200
         self.live: LiveMemory | None = None
         self.poller: LivePoller | None = None
+        self.security = None                   # TrustZone : SecurityState du cœur arrêté
+        self._has_security = None
         self.current_task: str | None = None   # tâche RTOS courante (vue RTOS)
         self._rtos_layout = None               # disposition FreeRTOS (calculée à l'arrêt)
         # trace SWO/ITM (capture, texte ITM, exceptions) et fréquence du cœur pour la configurer
@@ -259,6 +261,8 @@ class App:
         bar.pack(side="bottom", fill="x")
         self.state_label = tk.Label(bar, width=12, text="", fg="white", bg="#777")
         self.state_label.pack(side="left")
+        # TrustZone : monde du cœur arrêté (S / NS), placé après l'état quand il y en a un
+        self.secure_label = tk.Label(bar, width=4, text="", fg="white", bg="#aaaaaa")
         self.live_label = tk.Label(bar, width=6, text="LIVE", fg="white", bg="#aaaaaa")
         self.live_label.pack(side="left", padx=(2, 0))
         self.task_label = ttk.Label(bar, text="", width=22)
@@ -279,6 +283,8 @@ class App:
     def attach(self, session: Session) -> None:
         """Associe une session déjà connectée (ou en cours) à la GUI."""
         self.session = session
+        self.security = None
+        self._has_security = None
         self.api = ScriptAPI(session)
         self.api.cpu_hz = self.cpu_hz
         self.api._config = self.config.data if self.config is not None else None
@@ -626,6 +632,7 @@ class App:
                 self.write_console(text, tag)
         elif kind == "disconnected":
             self.current_frame = None
+            self.security = self._has_security = None
             self.fault_catch_var.set(False)
             self.views.disconnected_all()
             self.trace.close()
@@ -642,9 +649,29 @@ class App:
             self.current_frame = s.frame()
         except Exception:  # noqa: BLE001
             self.current_frame = None
+        self._update_security()
         self._load_breakpoints()
         self.views.refresh_all()
         self.update_status()
+
+    def _update_security(self) -> None:
+        """TrustZone : état sécurisé / non sécurisé du cœur arrêté (`self.security`, pour la
+        barre d'état et les vues Registres, Pile, Système), avant le rafraîchissement des vues."""
+        from ..core import security
+        s = self.session
+        if self.native or s is None:
+            self.security = None
+            return
+        if self._has_security is None:
+            self._has_security = security.has_security(s)
+        try:
+            self.security = security.security_state(s) if self._has_security else None
+        except Exception:  # noqa: BLE001 - registres illisibles : état inconnu
+            self.security = None
+
+    def secure_read(self):
+        """Lecture de la mémoire sécurisée quand gdb la refuse (QEMU : espace physique)."""
+        return getattr(self.live, "read_physical", None)
 
     def _load_breakpoints(self) -> None:
         try:
@@ -663,6 +690,14 @@ class App:
                   "exited": ("TERMINÉ", "#555588"), "disconnected": ("DÉCONNECTÉ", "#777777")}
         text, bg = colors.get(state, (state, "#777"))
         self.state_label.configure(text=text, bg=bg)
+        sec = getattr(self, "security", None)
+        if sec is not None and state in ("stopped", "running"):
+            color = {True: "#8a3c00", False: "#1f5f8b"}.get(sec.secure, "#777777")
+            self.secure_label.configure(text=sec.label, bg=color if state == "stopped" else "#aaaaaa")
+            if not self.secure_label.winfo_ismapped():
+                self.secure_label.pack(side="left", padx=(2, 0), after=self.state_label)
+        elif self.secure_label.winfo_ismapped():
+            self.secure_label.pack_forget()
         # LIVE vert : canal mémoire latéral disponible (vues rafraîchies en marche)
         self.live_label.configure(bg="#208020" if self.live is not None else "#aaaaaa")
         fr = self.current_frame

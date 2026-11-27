@@ -1419,6 +1419,10 @@ class Session:
                              line=int(f["line"]) if f.get("line") else None))
         return out
 
+    def register_names(self) -> list[str]:
+        """Noms des registres de gdb, par numéro (« » : numéro sans registre)."""
+        return list(self._reg_names)
+
     def registers(self) -> list[tuple[str, int]]:
         vals = self.gdb.command("-data-list-register-values x").get("register-values", [])
         out = []

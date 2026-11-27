@@ -13,8 +13,9 @@ Registres (SCB, cible arrêtée) : MPU_TYPE (0xE000ED90, DREGION = nombre de ré
 Chaque région se lit en écrivant RNR ; RNR est remis à sa valeur à la fin. Un serveur qui
 ignore cette écriture (le gdbstub de QEMU 8.2, pour tout registre de périphérique) : seule la
 région déjà choisie est lisible (ARMv7-M), ou son groupe de quatre par les alias (ARMv8-M) ;
-la note le dit, rien n'est inventé. MPU sécurisée et non sécurisée de TrustZone : la MPU vue
-est celle de l'état courant du cœur.
+la note le dit, rien n'est inventé. MPU sécurisée et non sécurisée de TrustZone : à
+0xE000ED90, celle de l'état courant du cœur ; depuis l'état sécurisé, la MPU non sécurisée par
+l'alias du SCS (0xE002ED90, `session_mpu(nonsecure=True)`).
 """
 from __future__ import annotations
 
@@ -144,18 +145,20 @@ class MpuState:
     regions: list[MpuRegion] = field(default_factory=list)
     note: str = ""
     separate: bool = False       # MPU_TYPE.SEPARATE (toujours 0 sur un Cortex-M)
+    world: str = ""              # TrustZone : « sécurisée », « non sécurisée »
 
     @property
     def enabled(self) -> bool:
         return bool(self.ctrl & 1)
 
     def summary(self) -> str:
+        name = f"MPU {self.world}".rstrip()
         if self.dregion == 0:
-            return f"{self.arch} : pas de MPU (MPU_TYPE.DREGION = 0)"
+            return f"{self.arch} : pas de {name} (MPU_TYPE.DREGION = 0)"
         flags = [n for bit, n in ((1, "HFNMIENA"), (2, "PRIVDEFENA")) if self.ctrl >> bit & 1]
         state = "activée" if self.enabled else "désactivée (carte mémoire par défaut)"
         on = sum(1 for r in self.regions if r.enabled)
-        text = (f"MPU {self.arch}, {self.dregion} régions, {state}"
+        text = (f"{name} {self.arch}, {self.dregion} régions, {state}"
                 + (f" ({', '.join(flags)})" if flags else "")
                 + f" ; {len(self.regions)} lue(s), {on} active(s)")
         return text + (f" — {self.note}" if self.note else "")
@@ -193,10 +196,15 @@ def decode_v8(number: int, rbar: int, rlar: int, mair: int) -> MpuRegion:
 
 
 def read_mpu(read_u32: Callable[[int], int], write_u32: Callable[[int, int], None] | None,
-             arch: str) -> MpuState:
+             arch: str, offset: int = 0) -> MpuState:
     """MPU de la cible arrêtée. `arch` : « ARMv6-M », « ARMv7-M », « ARMv8-M Mainline »,
     « ARMv8-M Baseline » (core/fault.core_arch). `write_u32` None : pas de sélection de région
-    (seules les régions lisibles sans écrire RNR)."""
+    (seules les régions lisibles sans écrire RNR). `offset` : 0x20000 pour la MPU non sécurisée
+    vue depuis l'état sécurisé (alias du SCS)."""
+    if offset:
+        rd, wr = read_u32, write_u32
+        read_u32 = lambda a: rd(a + offset)                     # noqa: E731
+        write_u32 = None if wr is None else (lambda a, v: wr(a + offset, v))   # noqa: E731
     mtype = read_u32(MPU_TYPE)
     dregion = (mtype >> 8) & 0xFF
     state = MpuState(arch, dregion, read_u32(MPU_CTRL) if dregion else 0, separate=bool(mtype & 1))
@@ -244,10 +252,21 @@ def read_mpu(read_u32: Callable[[int], int], write_u32: Callable[[int, int], Non
     return state
 
 
-def session_mpu(session) -> MpuState:
-    """MPU d'une session arrêtée, architecture d'après CPUID."""
+def session_mpu(session, nonsecure: bool = False) -> MpuState:
+    """MPU d'une session arrêtée, architecture d'après CPUID. TrustZone : celle de l'état
+    courant, ou la non sécurisée (`nonsecure`, par l'alias depuis l'état sécurisé)."""
     from .fault import core_arch
+    from .security import SCS_NS_OFFSET, security_state
     arch = core_arch(session.read_u32(0xE000ED00))
+    sec = security_state(session) if arch.startswith("ARMv8-M") else None
+    if nonsecure and sec is None:
+        raise ValueError("MPU non sécurisée : le cœur n'a pas l'extension de sécurité (TrustZone)")
+    if sec is not None:
+        alias = nonsecure and sec.secure is True
+        state = read_mpu(session.read_u32, session.write_u32, arch, SCS_NS_OFFSET if alias else 0)
+        state.world = "non sécurisée" if nonsecure or sec.secure is False else (
+            "sécurisée" if sec.secure else "")
+        return state
     if arch == "ARMv6-M":
         try:
             dregion = (session.read_u32(MPU_TYPE) >> 8) & 0xFF

@@ -89,9 +89,12 @@ class FaultView(View):
                 t.insert(where, "end", text="adresse", values=(f"{r.address:#010x}", "donnée fautive"))
             for note in r.notes:
                 t.insert(where, "end", text="note", values=("", note), tags=("dim",))
+        if r.security:                  # TrustZone : monde du cœur arrêté
+            t.insert("", "end", text="Cœur", values=("", r.security))
         if r.registers:
             regs = t.insert("", "end", text="Registres du SCB", open=True)
-            tables = {"CFSR": fault.CFSR_BITS, "HFSR": fault.HFSR_BITS, "SFSR": fault.SFSR_BITS}
+            tables = {"CFSR": fault.CFSR_BITS, "CFSR_NS": fault.CFSR_BITS, "HFSR": fault.HFSR_BITS,
+                      "SFSR": fault.SFSR_BITS}
             for name, value in r.registers.items():
                 bits = ", ".join(n for n, _ in fault._bits(value, tables.get(name, [])))
                 t.insert(regs, "end", text=name, values=(f"{value:#010x}", bits),

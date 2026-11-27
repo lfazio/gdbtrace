@@ -241,18 +241,27 @@ class QemuQmp(LiveMemory):
         return self.execute("human-monitor-command", **{"command-line": command})
 
     def read(self, addr: int, length: int) -> bytes:
+        return self._read(addr, length, "x")
+
+    def read_physical(self, addr: int, length: int) -> bytes:
+        """Lecture dans l'espace physique (`xp`), sans les droits de l'état courant du cœur :
+        la pile sécurisée d'un Cortex-M33 arrêté dans le monde non sécurisé (que gdb et `x`
+        ne lisent pas). Pas le SCS (0xE000xxxx), propre au cœur."""
+        return self._read(addr, length, "xp")
+
+    def _read(self, addr: int, length: int, cmd: str) -> bytes:
         out = bytearray()
         pos = 0
         while pos < length:
             n = min(self.CHUNK, length - pos)
-            out += self._read_chunk(addr + pos, n)
+            out += self._read_chunk(addr + pos, n, cmd)
             pos += n
         return bytes(out)
 
-    def _read_chunk(self, addr: int, n: int) -> bytes:
+    def _read_chunk(self, addr: int, n: int, cmd: str = "x") -> bytes:
         size = 4 if addr % 4 == 0 and n % 4 == 0 else 1
         count = n // size
-        text = self.hmp(f"x /{count}x{'w' if size == 4 else 'b'} {addr:#x}")
+        text = self.hmp(f"{cmd} /{count}x{'w' if size == 4 else 'b'} {addr:#x}")
         values = []
         for line in text.splitlines():
             head, sep, rest = line.partition(":")
@@ -262,9 +271,9 @@ class QemuQmp(LiveMemory):
                 int(head.strip(), 16)  # préfixe d'adresse attendu
                 values += [int(v, 16) for v in rest.split()]
             except ValueError:
-                raise LiveMemoryError(f"x {addr:#x} : {text.strip()}") from None
+                raise LiveMemoryError(f"{cmd} {addr:#x} : {text.strip()}") from None
         if len(values) != count:
-            raise LiveMemoryError(f"x {addr:#x} : {len(values)} valeurs au lieu de {count} "
+            raise LiveMemoryError(f"{cmd} {addr:#x} : {len(values)} valeurs au lieu de {count} "
                                   f"({text.strip()[:80]})")
         return b"".join(v.to_bytes(size, "little") for v in values)
 
