@@ -201,6 +201,7 @@ def test_gui_chip_tab_and_device_chooser(pdsc, tmp_path):
     from gdbtrace.views.system import SystemView
     app = App(layout_file=os.devnull)
     orig = app.api
+    ed = None
     try:
         view = app.views.find(SystemView) or app.views.open(SystemView, "data")
         view.render_device()
@@ -230,7 +231,10 @@ def test_gui_chip_tab_and_device_chooser(pdsc, tmp_path):
         btn = next(w for w in top.winfo_children() if w.winfo_class() == "TButton")
         btn.invoke()
         assert ed.vars[("cible", "device")].get() == "ACME32F446ZETx"
-        ed.destroy()
     finally:
+        if ed is not None:                      # rien ne doit survivre à l'App (tests suivants)
+            if getattr(ed, "choose_window", None) is not None and ed.choose_window.winfo_exists():
+                ed.choose_window.destroy()
+            ed.destroy()
         app.api = orig
         close_app(app)

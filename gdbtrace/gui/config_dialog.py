@@ -68,7 +68,7 @@ class ConfigEditor(tk.Toplevel):
         self.result: SessionConfig | None = None
         self.vars: dict[tuple[str, str], tk.Variable] = {}
         self.texts: dict[tuple[str, str], tk.Text] = {}
-        self.error_var = tk.StringVar()
+        self.error_var = tk.StringVar(self)
 
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True, padx=6, pady=6)
@@ -101,7 +101,7 @@ class ConfigEditor(tk.Toplevel):
         return f
 
     def _var(self, section: str, key: str, kind: str = "str") -> tk.Variable:
-        v = tk.BooleanVar() if kind == "bool" else tk.StringVar()
+        v = tk.BooleanVar(self) if kind == "bool" else tk.StringVar(self)
         self.vars[(section, key)] = v
         return v
 
@@ -165,7 +165,7 @@ class ConfigEditor(tk.Toplevel):
         top = tk.Toplevel(self)
         top.title("Puce du CMSIS-Pack")
         top.transient(self)
-        filt = tk.StringVar()
+        filt = tk.StringVar(top)               # celle de cette fenêtre, pas l'interpréteur par défaut
         ttk.Entry(top, textvariable=filt, width=40).pack(fill="x", padx=6, pady=4)
         lb = tk.Listbox(top, height=16, width=60)
         lb.pack(fill="both", expand=True, padx=6)
@@ -192,7 +192,7 @@ class ConfigEditor(tk.Toplevel):
         self.choose_window = top
 
     def _build_server(self, f) -> None:
-        self.server_var = tk.StringVar(value="qemu")
+        self.server_var = tk.StringVar(self, value="qemu")
         types = ttk.LabelFrame(f, text="Serveur gdb", padding=6)
         types.pack(fill="x")
         for kind, label in SERVER_TYPES.items():
