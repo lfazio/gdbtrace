@@ -113,6 +113,8 @@ class App:
         self.poller: LivePoller | None = None
         self.security = None                   # TrustZone : SecurityState du cœur arrêté
         self._has_security = None
+        self.core_set = None                   # plusieurs cœurs (--core) : core/cores.CoreSet
+        self.main_session: Session | None = None
         self.current_task: str | None = None   # tâche RTOS courante (vue RTOS)
         self._rtos_layout = None               # disposition FreeRTOS (calculée à l'arrêt)
         # trace SWO/ITM (capture, texte ITM, exceptions) et fréquence du cœur pour la configurer
@@ -205,6 +207,8 @@ class App:
                                ("Step Out (Go.Return)", self.out, "Shift+F11"),
                                ("Step instruction", self.stepi, "F7"), ("Reset", self.reset, "")]:
             r.add_command(label=label, command=fn, accelerator=key)
+        r.add_command(label="Go (tous les cœurs)", command=self.go_all)
+        r.add_command(label="Break (tous les cœurs)", command=self.halt_all)
         r.add_separator()
         r.add_command(label="Go.Till (jusqu'à une condition)…", command=self._ask_go_till)
         r.add_command(label="Step.Till / Step.Change…", command=self._ask_step_loop)
@@ -263,6 +267,11 @@ class App:
         self.state_label.pack(side="left")
         # TrustZone : monde du cœur arrêté (S / NS), placé après l'état quand il y en a un
         self.secure_label = tk.Label(bar, width=4, text="", fg="white", bg="#aaaaaa")
+        # plusieurs cœurs : le cœur que montrent les vues (placé quand il y en a plusieurs)
+        self.core_var = tk.StringVar(self.root)
+        self.core_box = ttk.Combobox(bar, textvariable=self.core_var, state="readonly", width=24)
+        self.core_box.bind("<<ComboboxSelected>>",
+                           lambda _e: self.select_core(self.core_var.get().split(" ")[0]))
         self.live_label = tk.Label(bar, width=6, text="LIVE", fg="white", bg="#aaaaaa")
         self.live_label.pack(side="left", padx=(2, 0))
         self.task_label = ttk.Label(bar, text="", width=22)
@@ -289,7 +298,9 @@ class App:
         self.api.cpu_hz = self.cpu_hz
         self.api._config = self.config.data if self.config is not None else None
         self.console = Console(self.api, lambda s: self.pump.post(self.write_console, s, ""))
-        session.on_event(lambda kind, data: self.pump.post(self._on_event, kind, data))
+        self.main_session = session
+        self._drop_cores()
+        session.on_event(lambda kind, data, s=session: self.pump.post(self._session_event, s, kind, data))
         self.api.device = self.device
         self.api.chip = self.chip
         self.api.trace = self.trace
@@ -438,6 +449,8 @@ class App:
             self.breakpoints_changed()
 
     def disconnect(self) -> None:
+        if self.core_set is not None and self.main_session is not None:
+            self.select_core(self.core_set.cores[0].name)   # la session principale d'abord
         if self.session:
             s = self.session
             self.pump.background(s.disconnect)
@@ -454,6 +467,10 @@ class App:
                 self.safe(v.stop)
         self.trace.close()
         self._teardown_live()
+        if self.core_set is not None:
+            self.core_set.close()
+            self.core_set = None
+            self.session = self.main_session
         if self.session and self.session.state != "disconnected":
             try:
                 self.session.disconnect()
@@ -742,6 +759,102 @@ class App:
             else:
                 self.status.set("Programme terminé sur la cible : reprogrammer l'ELF ou "
                                 "relancer la session")
+
+    # ================================================================== cœurs (--core)
+    def setup_cores(self, specs, gdb: str, log) -> None:
+        """Ajoute les cœurs décrits (`--core`) à la session connectée, en tâche de fond."""
+        from ..core.cores import CoreSet
+        session = self.session
+
+        def build():
+            return CoreSet.build(session, specs, gdb, lambda line: self.pump.post(log, line))
+        self.run_action(build, then=self.set_cores)
+
+    def set_cores(self, core_set) -> None:
+        if core_set is None:
+            return
+        self.core_set = core_set
+        if self.api is not None:
+            self.api.core_set = core_set
+        for c in core_set.cores:
+            if c.own_session:
+                c.session.on_event(lambda kind, data, s=c.session:
+                                   self.pump.post(self._session_event, s, kind, data))
+        self._update_cores()
+
+    def _drop_cores(self) -> None:
+        cs, self.core_set = self.core_set, None
+        if cs is not None:
+            self.pump.background(cs.close)
+        if hasattr(self, "core_box") and self.core_box.winfo_ismapped():
+            self.core_box.pack_forget()
+
+    def _session_event(self, session, kind: str, data: dict) -> None:
+        """Événement d'une session : celle des vues le traite ; une autre (cœur d'un autre
+        serveur) met à jour le sélecteur de cœur."""
+        if kind == "disconnected" and session is self.main_session and session is not self.session:
+            self.session = session              # vues sur un autre cœur : retour à la session
+            if self.api is not None:
+                self.api.s = session
+        if session is self.session:
+            if kind == "stopped" and self.core_set is not None:
+                self.core_set.follow_stop(session)
+            self._on_event(kind, data)
+            if kind == "disconnected" and session is self.main_session:
+                self._drop_cores()
+        if self.core_set is not None:
+            self._update_cores()
+
+    def _update_cores(self) -> None:
+        cs = self.core_set
+        if cs is None or len(cs.cores) < 2:
+            if self.core_box.winfo_ismapped():
+                self.core_box.pack_forget()
+            return
+        values = [f"{c.name} ({c.state()})" for c in cs.cores]
+        self.core_box.configure(values=values)
+        if cs.current is not None:
+            self.core_var.set(values[cs.cores.index(cs.current)])
+        if not self.core_box.winfo_ismapped():
+            self.core_box.pack(side="left", padx=(4, 0), after=self.live_label)
+
+    def select_core(self, name: str) -> None:
+        """Le cœur `name` devient celui des vues, des pas et de Go / Break. Un cœur d'un autre
+        serveur a sa propre session : elle devient la session de l'interface."""
+        cs = self.core_set
+        if cs is None:
+            return
+        try:
+            core = cs.select(name)
+        except Exception as exc:  # noqa: BLE001
+            self.report_error(str(exc))
+            return
+        if core.session is not self.session:
+            self.session = core.session
+            if self.api is not None:
+                self.api.s = core.session
+            self.security = self._has_security = None
+            self.current_frame = None
+        if self.session.state == "stopped":
+            self.refresh_all()
+        else:
+            self.views.running_all()
+        self._update_cores()
+        self.update_status()
+        self.status.set(f"Cœur {core.name} : {core.source}")
+
+    def go_all(self) -> None:
+        """Run › Go (tous les cœurs)."""
+        if self.core_set is None:
+            self.go()
+        elif not self._refuse_if_busy():
+            self.run_action(self.core_set.go_all)
+
+    def halt_all(self) -> None:
+        if self.core_set is None:
+            self.halt()
+        else:
+            self.run_action(self.core_set.halt_all)
 
     def select_thread(self, thread_id: str) -> None:
         """Le thread devient le thread courant (vues Threads, console). En non-stop, il devient

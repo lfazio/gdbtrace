@@ -52,7 +52,7 @@ SERVER_KEYS = {
 }
 SERVER_COMMON = ["gdb", "gdb-port", "no-load"]
 CIBLE_KEYS = ["elf", "svd", "pack", "device", "cpu-hz", "programmer", "verifier", "go", "break-on-fault",
-              "add-symbols", "flash-loader", "flash-ram"]
+              "add-symbols", "flash-loader", "flash-ram", "coeurs"]
 COUVERTURE_KEYS = ["fusionner", "exporter"]
 #: options de trace de la ligne de commande, dans l'ordre de --help
 TRACE_KEYS = ["swo", "swo-file", "swo-formatter", "swo-config", "swo-hz", "swo-port", "var-trace",
@@ -64,12 +64,13 @@ TOP_KEYS = ["gdbtrace", "nom", "cible", "serveur", "os", "script", "couverture",
 
 #: clés dont la valeur est un chemin de fichier (relatif au YAML)
 PATH_KEYS = {("cible", "elf"), ("cible", "svd"), ("cible", "programmer"), ("cible", "add-symbols"),
-             ("cible", "flash-loader"), ("cible", "pack"),
+             ("cible", "flash-loader"), ("cible", "pack"), ("cible", "coeurs"),
              ("serveur", "openocd"), ("serveur", "cwd"), ("serveur", "qemu-load"),
              ("", "script"), ("couverture", "fusionner"), ("couverture", "exporter"),
              ("trace", "swo-file"), ("trace", "trace-file")}
 #: clé → option de la ligne de commande (quand le nom diffère)
-OPTION_OF = {("cible", "programmer"): "--program", ("couverture", "fusionner"): "--coverage-merge",
+OPTION_OF = {("cible", "programmer"): "--program", ("cible", "coeurs"): "--core",
+             ("couverture", "fusionner"): "--coverage-merge",
              ("couverture", "exporter"): "--coverage"}
 #: une option qui choisit le serveur (groupe exclusif de la ligne de commande)
 SERVER_DESTS = ("qemu", "openocd", "stlink", "remote", "native", "pid")
@@ -134,7 +135,14 @@ def _map_paths(data: dict, fn) -> dict:
         if not isinstance(holder, dict) or key not in holder:
             continue
         v = holder[key]
-        holder[key] = [fn(section, key, x) for x in v] if isinstance(v, list) else fn(section, key, v)
+        f = fn
+        if (section, key) == ("cible", "coeurs"):            # NOM[=SOURCE][,ELF] : l'ELF seul
+            def f(sec, k, x, _fn=fn):
+                if not isinstance(x, str) or "," not in x:
+                    return x
+                head, _, elf = x.partition(",")
+                return f"{head},{_fn(sec, k, elf)}"
+        holder[key] = [f(section, key, x) for x in v] if isinstance(v, list) else f(section, key, v)
     return out
 
 
@@ -285,7 +293,7 @@ class SessionConfig:
             for key, v in srv.items():
                 argv += _option(p, "serveur", key, v)
         for key in ("svd", "pack", "device", "cpu-hz", "go", "break-on-fault", "add-symbols", "flash-loader",
-                    "flash-ram"):
+                    "flash-ram", "coeurs"):
             if key in cible:
                 argv += _option(p, "cible", key, cible[key])
         if isinstance(cible.get("programmer"), str):    # image HEX, S-record, binaire@adresse
@@ -351,6 +359,11 @@ class SessionConfig:
             cible["flash-loader"] = [os.path.abspath(p) if os.path.exists(p) else p for p in args.flash_loader]
         if args.flash_ram:
             cible["flash-ram"] = args.flash_ram
+        if args.core:
+            from .cores import parse_core
+            specs = [parse_core(c) for c in args.core]
+            cible["coeurs"] = [c if not sp.elf else c.rpartition(",")[0] + "," + os.path.abspath(sp.elf)
+                               for c, sp in zip(args.core, specs)]
         if cible:
             d["cible"] = cible
         srv: dict[str, Any] = {}

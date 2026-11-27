@@ -303,6 +303,10 @@ class BatchSession:
             from .core.memtools import split_address
             path, offset = split_address(spec)
             s.add_symbols(path, offset or 0)
+        self.cores = None
+        if args.core:                            # autres cœurs : processus du serveur ou autre serveur
+            from .core.cores import CoreSet, parse_core
+            self.cores = CoreSet.build(s, [parse_core(c) for c in args.core], args.gdb, log)
         self.live = live = target.live_memory()
         trace = self.trace
         trace.live = live                        # SNOOPer
@@ -331,6 +335,7 @@ class BatchSession:
         api.trace = trace
         api.symbols = symbols
         api.cpu_hz = args.cpu_hz
+        api.core_set = self.cores
         api.on_program = lambda e: trace.retarget(e, api._symbols(), args.etm_cycle_accurate)
         api._config = config.data if config is not None else None
 
@@ -351,6 +356,8 @@ class BatchSession:
             self.trace.close()
             if self.live:
                 self.live.close()
+            if self.cores is not None:
+                self.cores.close()
         finally:
             self.s.disconnect(halt=not leave_running)
 
@@ -506,6 +513,11 @@ def build_parser() -> argparse.ArgumentParser:
     g2.add_argument("--add-symbols", action="append", default=[], metavar="ELF[@DÉCALAGE]",
                     help="symboles d'un autre ELF en plus (bootloader, image chargée à part) ; "
                          "répétable")
+    g2.add_argument("--core", action="append", default=[], metavar="NOM[=SOURCE][,ELF]",
+                    help="plusieurs cœurs : sans SOURCE, le nom du cœur de la session ; SOURCE = N : "
+                         "processus N du même serveur (QEMU mps2-an521 : 2), = HÔTE:PORT : autre "
+                         "serveur gdb (second port d'OpenOCD) ; ELF : ses symboles (défaut : "
+                         "l'ELF de la session) ; répétable")
     g2.add_argument("--break-on-fault", action="store_true",
                     help="arrêter la cible à l'entrée de toute faute (HardFault, BusFault…) : vector "
                          "catch, sinon breakpoints sur les gestionnaires ; vue Faute")
@@ -543,6 +555,12 @@ def validate(args) -> list[str]:
                       "--swo-file, --etm-config --etm-port swo, --trace)")
     if args.pack and not args.device:
         errors.append("--pack : avec --device (la puce du pack)")
+    if args.core:
+        from .core.cores import check_cores
+        errors += check_cores(args.core)
+        if args.native or args.pid or args.remote_exec:
+            errors.append("--core : cœurs d'une cible Cortex-M, pas d'un programme de l'hôte "
+                          "(ses threads : vue Threads)")
     if args.flash_loader:
         stldr = [f for f in args.flash_loader if f.lower().endswith(".stldr")]
         others = [f for f in args.flash_loader if f not in stldr and f != "pack"]
@@ -769,6 +787,9 @@ def start_gui_session(app, args) -> None:
             app.toggle_fault_catch()
         for spec in args.add_symbols:
             app.add_symbols(spec)
+        if args.core:                            # autres cœurs (processus du serveur, autre serveur)
+            from .core.cores import parse_core
+            app.setup_cores([parse_core(c) for c in args.core], args.gdb, log)
         for path in args.coverage_merge:
             app.safe(app.api.cov.load, path)
             log(f"couverture fusionnée : {path}")

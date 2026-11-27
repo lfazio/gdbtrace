@@ -161,6 +161,9 @@ class ScriptAPI:
         self.cov = CoverageAPI(self)
         self._until: str | None = None      # breakpoint temporaire de go(until=…)
         self._config: dict | None = None    # configuration de session (menu Configuration)
+        #: plusieurs cœurs (--core : core/cores.CoreSet), ou None
+        self.core_set = None
+        self._main_session = session
         #: RunTime : temps du cœur entre la reprise et l'arrêt (SysTick, DWT_CYCCNT)
         from .chrono import Chrono
         self._chrono = Chrono(session, core=lambda: self.trace.core if self.trace is not None else None)
@@ -523,6 +526,66 @@ class ScriptAPI:
                 print(f"  {r.number:>2} {on:<3} {base}-{end} {size:>7}  {access:<36} {xn:<6} {mem}"
                       + (f"  sous-régions {subs}" if subs else ""))
         return state
+
+    def cores(self, quiet: bool = False) -> list:
+        """Cœurs de la session (--core) : nom, source (la session, un processus du même
+        serveur, un autre serveur gdb), état ; « * » : le cœur choisi. Rend la liste des `Core`
+        (`name`, `session`, `thread`, `source`, `elf`) ; un seul cœur sans --core."""
+        from .cores import Core
+        cs = self.core_set
+        if cs is not None and cs.current is not None and cs.current.session.state == "stopped":
+            cs.follow_stop(cs.current.session)      # même serveur : le cœur arrêté par gdb
+            self.s = cs.current.session
+        cores = cs.cores if cs is not None else [Core("cœur 0", self.s, source="session",
+                                                      elf=self.s.elf or "")]
+        if not quiet:
+            for c in cores:
+                mark = "*" if cs is None or c is cs.current else " "
+                print(f"{mark} {c.name:<12} {c.state():<10} {c.source}"
+                      + (f"  ({os.path.basename(c.elf)})" if c.elf else ""))
+        return cores
+
+    def core(self, name) -> list:
+        """Choisit le cœur `name` (ou son rang, 0 : celui de la session) : registres, pile,
+        variables, pas à pas, breakpoints, Go et Break portent désormais sur lui. Cœurs d'un
+        même serveur : Go les relance tous, et un arrêt les arrête tous. La trace, le chrono et
+        les compteurs restent ceux du cœur de la session. Rend la pile du cœur."""
+        if self.core_set is None:
+            raise RuntimeError("un seul cœur : --core (ou cible.coeurs) en déclare d'autres")
+        c = self.core_set.select(str(name))
+        self.s = c.session
+        print(f"cœur {c.name} ({c.source}) : {c.state()}")
+        if self.s.state == "stopped":
+            self.bt()
+            return self.s.backtrace()
+        return []
+
+    def cti_sync(self, enable: bool = True):
+        """Arrêt synchrone des cœurs par leurs CTI (cibles arrêtées) : l'arrêt d'un cœur
+        demande l'arrêt des autres en quelques cycles (canal 0 de la matrice), acquitté avant
+        chaque reprise. CTI trouvés dans les tables ROM ; aucun sous QEMU. `enable` False :
+        coupé. Rend un `CtiSync` (`ctis` : adresses par cœur, `summary()`)."""
+        from .cti import setup
+        cores = [(c.name, c.session) for c in self.cores(quiet=True)]
+        if any(s.state != "stopped" for _n, s in cores):
+            raise RuntimeError("cti_sync : arrêter tous les cœurs d'abord (halt_all())")
+        res = setup(cores, enable)
+        print(res.summary())
+        return res
+
+    def go_all(self) -> None:
+        """Relance tous les cœurs (chaque session de cœur arrêtée)."""
+        if self.core_set is None:
+            self.go()
+            return
+        self.core_set.go_all()
+
+    def halt_all(self) -> None:
+        """Arrête tous les cœurs en marche."""
+        if self.core_set is None:
+            self.halt()
+            return
+        self.core_set.halt_all()
 
     def security(self, quiet: bool = False):
         """TrustZone (ARMv8-M) : état de sécurité du cœur arrêté (sécurisé ou non, mode, pile en

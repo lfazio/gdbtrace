@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Iterable, Iterator
 
-_TRACE = re.compile(r"^Trace \d+: 0x[0-9a-f]+ \[[0-9a-f]+/([0-9a-f]+)/")
+_TRACE = re.compile(r"^Trace (\d+): 0x[0-9a-f]+ \[[0-9a-f]+/([0-9a-f]+)/")
 _STOPPED = re.compile(r"^Stopped execution of TB chain before 0x[0-9a-f]+ \[([0-9a-f]+)\]")
 _TAKING = re.compile(r"\.\.\.taking pending (?:non)?secure exception (\d+)")
 _NEWPC = re.compile(r"\.\.\.loaded new PC 0x([0-9a-f]+)")
@@ -83,22 +83,31 @@ Event = Step | ExcEntry | ExcReturn | TraceGap | CycleMark | TimeMark
 MARKS = (CycleMark, TimeMark)
 
 
-def parse(lines: Iterable[str]) -> Iterator[Event]:
+def parse(lines: Iterable[str], cpu: int | None = 0) -> Iterator[Event]:
+    """Événements du cœur `cpu` (numéro de « Trace N: », 0 : le premier ; None : tous).
+    Plusieurs CPU (mps2-an521) : leurs lignes s'entremêlent ; celles d'exception suivent la
+    ligne « Trace » du CPU qui les produit."""
     pending: int | None = None          # dernière instruction annoncée, pas encore confirmée
     number: int | None = None
     tailchain = False
     held_return = False                 # ExcReturn retenu : annulé si enchaînement
     stopped: int | None = None          # instruction devant laquelle l'exécution s'est arrêtée
+    other = False                       # lignes d'un autre CPU que `cpu`
     for line in lines:
         m = _TRACE.match(line)
         if m:
+            other = cpu is not None and int(m.group(1)) != cpu
+            if other:
+                continue
             if pending is not None:
                 yield Step(pending)
             if held_return:
                 yield ExcReturn()
                 held_return = False
-            pending = int(m.group(1), 16)
+            pending = int(m.group(2), 16)
             stopped = None
+            continue
+        if other:
             continue
         m = _STOPPED.match(line)
         if m:

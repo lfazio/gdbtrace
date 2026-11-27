@@ -194,6 +194,12 @@ TOOLS = [
           "(TEX/C/B en ARMv7-M, MAIR en ARMv8-M), et si la MPU est activée. TrustZone : celle "
           "de l'état courant, ou la non sécurisée (`nonsecure`).", {"nonsecure": _B},
           read_only=True),
+    _tool("core", "Cœurs", "Plusieurs cœurs (option --core de `connect`) : sans `name`, la "
+          "liste (« * » : le cœur choisi, état, source : la session, un processus du même "
+          "serveur, un autre serveur gdb) ; avec `name` (nom ou rang), ce cœur devient celui de "
+          "toutes les autres commandes (registres, pile, pas, breakpoints, Go, halt) et sa pile "
+          "est donnée. Cœurs d'un même serveur : un arrêt les arrête tous, Go les relance tous.",
+          {"name": _S}),
     _tool("security", "TrustZone", "Cœur ARMv8-M à extension de sécurité (cible arrêtée) : "
           "état courant (sécurisé ou non, mode, pile en service), registres bancaires (msp_s, "
           "psp_ns, control_s…), SAU (régions NS / NSC, lisible depuis l'état sécurisé), et la "
@@ -866,6 +872,17 @@ class GdbTraceMcp:
         try:
             self.api.mpu(nonsecure=nonsecure)
         except ValueError as exc:
+            raise ToolError(str(exc)) from None
+        return ""
+
+    def tool_core(self, name: str = "") -> str:
+        from .core.cores import CoreError
+        if not name:
+            self.api.cores()
+            return ""
+        try:
+            self.api.core(name)
+        except (RuntimeError, CoreError) as exc:
             raise ToolError(str(exc)) from None
         return ""
 

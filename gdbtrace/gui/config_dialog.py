@@ -146,6 +146,8 @@ class ConfigEditor(tk.Toplevel):
         self._row(f, 12, "Chargeurs de flash (un par ligne : .FLM, .stldr, « pack »)", "cible", "flash-loader",
                   "list")
         self._row(f, 13, "RAM de l'algorithme de flash (ADRESSE:TAILLE)", "cible", "flash-ram")
+        self._row(f, 14, "Cœurs (un par ligne : NOM, NOM=N processus du serveur, NOM=HÔTE:PORT ; ,ELF)",
+                  "cible", "coeurs", "list")
 
     def _choose_device(self) -> None:
         """Liste des puces du pack choisi (ou des packs installés), avec un filtre."""

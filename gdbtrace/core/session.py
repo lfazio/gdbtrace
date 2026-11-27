@@ -1587,6 +1587,36 @@ class Session:
                 frame=frame, current=t.get("id") == current))
         return out
 
+    def current_thread(self) -> str | None:
+        """Identifiant (global) du thread courant de gdb."""
+        return self.gdb.command("-thread-info").get("current-thread-id")
+
+    def inferior_thread(self, group: str) -> str | None:
+        """Premier thread de l'inférieur `group` (« i1 », « i2 »…), ou None."""
+        threads = self.gdb.command(f"-list-thread-groups {group}").get("threads", [])
+        return threads[0].get("id") if threads else None
+
+    def add_process(self, number: int, elf: str) -> str:
+        """Autre processus du même serveur gdb (QEMU : cœur d'un autre cluster) : nouvel
+        inférieur de gdb, ses symboles, attaché. Go les relance ensuite tous
+        (`schedule-multiple`) ; un pas n'avance que le cœur choisi (`scheduler-locking step`).
+        Rend l'identifiant global de son thread."""
+        if self.state != "stopped":
+            raise GdbError("ajout d'un cœur : cible arrêtée seulement")
+        inf = self.gdb.command("-add-inferior")["inferior"]
+        self.gdb.console(f"inferior {inf[1:]}")
+        try:
+            self.gdb.command(f'-file-exec-and-symbols "{elf}"')
+            self.gdb.command(f"-target-attach {number}", timeout=20)
+        finally:
+            self.gdb.console("inferior 1")
+        self.gdb.command("-gdb-set schedule-multiple on")
+        self.gdb.command("-gdb-set scheduler-locking step")   # un pas n'avance que le cœur choisi
+        thread = self.inferior_thread(inf)
+        if thread is None:
+            raise GdbError(f"processus {number} attaché sans thread : le serveur ne l'a pas")
+        return thread
+
     def select_thread(self, thread_id: str) -> Frame | None:
         """Le thread devient le thread courant : registres, pile, variables locales et pas à
         pas portent désormais sur lui."""
