@@ -155,7 +155,10 @@ mais avec son firmware de test.
   seul chemin de lancement (`main()` et Configuration › Connecter) ; ouvrir une configuration
   (`App.apply_config`) ne connecte pas ; `App.apply_os_views` (FreeRTOS : rtos, tasktime ;
   Pthread : threads) et `os_hidden` retiré de `known_kinds` du layout ; un Connecter en
-  attente est annulé par Fermer (`_start_token`). Boîte de dialogue : `gui/config_dialog.py`
+  attente est annulé par Fermer (`_start_token`). Pendant `App.connect`, les arrêts de la
+  connexion (arrivée, programmation) ne rafraîchissent pas les vues (`_connecting`) : elles
+  n'ont pas encore le programme (vue Mémoire en 0x20000000, illisible sur une N6) ; `done`
+  rafraîchit tout, `_end_connect` aussi en cas d'échec. Boîte de dialogue : `gui/config_dialog.py`
   (`ConfigEditor`, non bloquante, `on_ok`).
 - Fautes (`core/fault.py`) : cadre empilé et EXC_RETURN pris au pseudo-cadre « <signal handler
   called> » de gdb (`$sp` = base, `$pc` = EXC_RETURN, MI `--thread --frame`) ; ARMv6-M et
@@ -433,11 +436,15 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
   TrustZone et plusieurs cœurs validés sous QEMU seulement (an505, an521) ; CTI pas passé. Validé sur Nucleo-F446RE (`tests/test_board_f446.py`) :
   ETMv3 par SWO (décodage = OpenCSD sur une vraie capture), filtres plage et start/stop,
   ETMFFLR. Un ETMv3 par SWO sans filtre prend toute la broche : l'ITM n'y passe plus et un
-  firmware qui attend sa FIFO se fige (dit par `EtmConfig.summary()`). Validés sur la F072 :
-  chrono par SysTick (`boards.chrono_passes`, comparé au compte des ticks) et journal des
-  tâches en RAM lu en marche ; prêts, pas encore passés : chrono par `DWT_CYCCNT` (F746, N6),
-  et du jalon 22 : tables ROM (F746, F446, N6, F072), MPU relue en entier, FLM d'un pack (F446),
-  chargeur externe de la flash XSPI (N6) (`boards.system_passes`, `flash_by_algorithm`). Non validé sur sonde
+  firmware qui attend sa FIFO se fige (dit par `EtmConfig.summary()`). Validés sur carte
+  (jalons 18-22) : chrono (`boards.chrono_passes`, comparé au compte des ticks : SysTick sur la
+  F072, `DWT_CYCCNT` sur F746, F446 et N6), journal des tâches en RAM lu en marche (F072), RTT
+  en marche (F072, F746, F446, N6), compteurs du DWT (F746, F446) et de la PMU (N6), tables ROM
+  et MPU (F746, F446, N6 ; la STM32F746 n'intègre pas le CTI du Cortex-M7 : entrée de la
+  table non présente). Prêts, pas encore passés : tables ROM de la F072, FLM d'un pack (F446),
+  chargeur externe de la flash XSPI (N6) (`boards.system_passes`, `flash_by_algorithm`). Un
+  firmware recompilé déplace `worker_step` : `etm-stop` de `nucleo-f446re.yaml` est son
+  `bx lr` (vérifié par le test). Non validé sur sonde
   réelle : `--rtos`, port de trace parallèle, MTB (dont le sens de
   l'adresse source d'une entrée d'exception : prise comme adresse de retour). ETMv4 : M7 (ETMv4.0, par SWO) et M55 (ETMv4.5, par l'ETR d'un
   STM32N6), cycle-accurate et horodatage compris ; la branche d'un BF* (v8.1-M) n'est pas

@@ -146,6 +146,9 @@ class App:
         self.recent_configs: list[str] = []
         self.os_hidden: set[str] = set()
         self._start_token = 0                   # Connecter en attente (annulé par Fermer)
+        #: session en cours de connexion : ses arrêts (arrivée, programmation) ne rafraîchissent
+        #: pas les vues, qui ne connaissent encore ni le programme ni la cible (voir connect)
+        self._connecting: Session | None = None
         #: question « Enregistrer la configuration ? » : True, False, ou None (annuler)
         self.ask_save: Callable[[str, str], bool | None] = messagebox.askyesnocancel
         # description des périphériques (CMSIS-SVD)
@@ -332,7 +335,26 @@ class App:
             self.refresh_all()
             if then:
                 then()
-        self.pump.background(session.connect, elf, target, load, then=done)
+
+        def run():
+            # Les arrêts de la connexion (arrivée sur la cible, programmation) arrivent avant
+            # done : les vues n'ont pas encore le programme (la vue Mémoire lirait 0x20000000,
+            # illisible sur une STM32N6). done rafraîchit tout ; un échec aussi (_end_connect).
+            ok = False
+            try:
+                res = session.connect(elf, target, load)
+                ok = True
+                return res
+            finally:
+                self.pump.post(self._end_connect, session, ok)
+        self._connecting = session
+        self.pump.background(run, then=done)
+
+    def _end_connect(self, session: Session, ok: bool) -> None:
+        if self._connecting is session:
+            self._connecting = None
+            if not ok and session is self.session:
+                self.refresh_all()              # connexion ou programmation en échec
 
     # ================================================================== programmation
     def program_elf(self, path: str, verify: bool | None = None,
@@ -611,7 +633,8 @@ class App:
     def _on_event(self, kind: str, data: dict) -> None:
         if kind == "stopped":
             self.update_chrono()
-            self.refresh_all()
+            if self._connecting is None or self._connecting is not self.session:
+                self.refresh_all()
             reason = data.get("reason", "")
             if reason == "signal-received":
                 reason = f"signal {data.get('signal-name', '')}"

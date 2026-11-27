@@ -212,6 +212,9 @@ def test_chrono_by_cyccnt(run):
 
 
 def test_coresight_and_mpu(run):
-    """Tables ROM d'un Cortex-M7 (tables imbriquées, ETMv4, CTI) ; MPU ARMv7-M lue en entier."""
-    boards.system_checks(run["extra"]["systeme"], {"ROM", "SCS", "DWT", "FPB", "ITM", "ETM", "CTI"},
-                         4, "ARMv7-M")
+    """Tables ROM d'un Cortex-M7 (tables imbriquées : celle de ST, du cœur, du PPB ; ETMv4,
+    TPIU) ; MPU ARMv7-M lue en entier. Pas de CTI : la STM32F746 ne l'intègre pas, l'entrée de
+    la table du cœur (0xFFF45002 → 0xE0043000) a son bit « présent » à 0 et la zone se lit à 0."""
+    sysinfo = run["extra"]["systeme"]
+    boards.system_checks(sysinfo, {"ROM", "SCS", "DWT", "FPB", "ITM", "ETM", "TPIU"}, 4, "ARMv7-M")
+    assert "CTI" not in {c["type"] for c in sysinfo["coresight"]}, sysinfo["coresight"]
