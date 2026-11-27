@@ -413,6 +413,61 @@ class ScriptAPI:
             print(f"  {line}")
         return comps
 
+    # chargeurs de flash (FLASH.Create, FLASH.Erase)
+    def flash_loader(self, spec: str, ram=None, clock: int | None = None):
+        """Ajoute un algorithme de flash à la session : FLM d'un CMSIS-Pack ou chargeur externe
+        .stldr (un nom seul est cherché dans STM32CubeProgrammer). `ram` : (adresse, taille) ou
+        « 0x20000000:0x4000 », obligatoire pour un FLM. `program()` écrit ensuite la mémoire
+        de l'algorithme par lui. Rend le `FlashLoader`."""
+        import os
+
+        from .flashalgo import FlashLoader, find_external_loader, load_algo, parse_ram
+        path = spec if os.path.isfile(spec) else find_external_loader(spec)
+        if path is None:
+            raise FileNotFoundError(f"chargeur de flash introuvable : {spec}")
+        if isinstance(ram, str):
+            ram = parse_ram(ram)
+        loader = FlashLoader(self.s, load_algo(path), ram, clock or self.cpu_hz)
+        self.s.flash_loaders = [ld for ld in self.s.flash_loaders
+                                if ld.device.start != loader.device.start] + [loader]
+        print(f"chargeur de flash : {loader.describe()}")
+        return loader
+
+    def flash_info(self) -> list:
+        """Chargeurs de flash de la session : mémoire, page, secteurs, RAM de l'algorithme."""
+        loaders = self.s.flash_loaders
+        if not loaders:
+            print("aucun chargeur de flash : la flash passe par le serveur gdb (load)")
+        for ld in loaders:
+            d, pl = ld.device, ld.placement
+            sectors = d.sector_list()
+            sizes = sorted({n for _a, n in sectors})
+            print(f"{ld.describe()}\n  secteurs : {len(sectors)} ({', '.join(f'{n // 1024} Ko' if n >= 1024 else f'{n} o' for n in sizes)}), "
+                  f"valeur effacée {d.erased:#04x} ; algorithme en RAM {pl.image[0][0]:#010x}, "
+                  f"pile {pl.sp:#010x}, tampon {pl.buffer:#010x}+{pl.buffer_size:#x}")
+        return loaders
+
+    def flash_erase(self, addr=None, n: int | None = None) -> int:
+        """FLASH.Erase : efface les secteurs de [addr, addr+n) par le chargeur qui couvre `addr`
+        (sans argument : toute la mémoire de chaque chargeur). Cible arrêtée ; rend le nombre de
+        secteurs effacés."""
+        self._need_stopped()
+        loaders = self.s.flash_loaders
+        if not loaders:
+            raise RuntimeError("aucun chargeur de flash (--flash-loader, gdbtrace.flash_loader)")
+        total = 0
+        if addr is None:
+            for ld in loaders:
+                total += ld.erase()
+        else:
+            a, n = self._where(addr, n)
+            ld = next((x for x in loaders if x.device.covers(a)), None)
+            if ld is None:
+                raise ValueError(f"{a:#x} : hors de la mémoire des chargeurs de flash")
+            total = ld.erase(a, a + (n or 1))
+        print(f"{total} secteur(s) effacé(s)")
+        return total
+
     def mpu(self, quiet: bool = False):
         """MPU du cœur (cible arrêtée) : régions décodées (début, fin, sous-régions, accès
         privilégié et non privilégié, XN, type mémoire), ARMv7-M ou ARMv8-M. Rend un `MpuState`

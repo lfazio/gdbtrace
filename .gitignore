@@ -14,3 +14,6 @@ tests/artifacts/
 examples/nucleo-f746/nucleo-f746.elf
 examples/nucleo-n6/nucleo-n6.elf
 .claude/settings.local.json
+examples/flashalgo/*.FLM
+examples/flashalgo/*.stldr
+examples/flashalgo/*.pack

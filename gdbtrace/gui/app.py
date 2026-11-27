@@ -129,6 +129,8 @@ class App:
         self._last_step: tuple | None = None
         # programmation : exécutable gdb, fabrique de cible (ligne de commande), ELF récents
         self.gdb_path = "gdb-multiarch"
+        #: chargeurs de flash d'une session (build_flash_loaders des options), ou None
+        self.flash_loader_factory = None
         self.target_factory: Callable[[str], TargetServer] | None = None
         self.verify_program = True
         self.recent_elfs: list[str] = []
@@ -297,6 +299,9 @@ class App:
                 load: bool | None = None, then: Callable[[], None] | None = None) -> None:
         session = Session(gdb)
         self.gdb_path = gdb
+        if self.flash_loader_factory is not None:      # --flash-loader : avant la programmation
+            for ld in self.safe(self.flash_loader_factory, session) or []:
+                self.write_console(f"chargeur de flash : {ld.describe()}\n", "gdb")
         self.attach(session)
         self.status.set(f"Connexion à {target.remote}…")
 

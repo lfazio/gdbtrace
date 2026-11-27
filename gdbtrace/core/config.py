@@ -51,7 +51,8 @@ SERVER_KEYS = {
     "remote": ["remote", "tcl", "remote-exec", "args", "cwd", "non-stop"],
 }
 SERVER_COMMON = ["gdb", "gdb-port", "no-load"]
-CIBLE_KEYS = ["elf", "svd", "cpu-hz", "programmer", "verifier", "go", "break-on-fault", "add-symbols"]
+CIBLE_KEYS = ["elf", "svd", "cpu-hz", "programmer", "verifier", "go", "break-on-fault", "add-symbols",
+              "flash-loader", "flash-ram"]
 COUVERTURE_KEYS = ["fusionner", "exporter"]
 #: options de trace de la ligne de commande, dans l'ordre de --help
 TRACE_KEYS = ["swo", "swo-file", "swo-formatter", "swo-config", "swo-hz", "swo-port", "var-trace",
@@ -63,6 +64,7 @@ TOP_KEYS = ["gdbtrace", "nom", "cible", "serveur", "os", "script", "couverture",
 
 #: clés dont la valeur est un chemin de fichier (relatif au YAML)
 PATH_KEYS = {("cible", "elf"), ("cible", "svd"), ("cible", "programmer"), ("cible", "add-symbols"),
+             ("cible", "flash-loader"),
              ("serveur", "openocd"), ("serveur", "cwd"),
              ("", "script"), ("couverture", "fusionner"), ("couverture", "exporter"),
              ("trace", "swo-file"), ("trace", "trace-file")}
@@ -177,8 +179,8 @@ class SessionConfig:
         def fn(section, key, v):
             if (section, key) == ("serveur", "openocd"):
                 return _resolve_found(v, base)
-            if (section, key) == ("cible", "svd") and isinstance(v, str) and "/" not in v \
-                    and os.sep not in v:
+            if (section, key) in (("cible", "svd"), ("cible", "flash-loader")) and isinstance(v, str) \
+                    and "/" not in v and os.sep not in v:     # nom seul : STM32CubeIDE, CubeProgrammer, « pack »
                 return _resolve_found(v, base)
             return _resolve(v, base)
         return _map_paths(self.data, fn)
@@ -282,7 +284,7 @@ class SessionConfig:
             srv = {k: v for k, v in (d.get("serveur") or {}).items() if k in SERVER_COMMON}
             for key, v in srv.items():
                 argv += _option(p, "serveur", key, v)
-        for key in ("svd", "cpu-hz", "go", "break-on-fault", "add-symbols"):
+        for key in ("svd", "cpu-hz", "go", "break-on-fault", "add-symbols", "flash-loader", "flash-ram"):
             if key in cible:
                 argv += _option(p, "cible", key, cible[key])
         if isinstance(cible.get("programmer"), str):    # image HEX, S-record, binaire@adresse
@@ -339,6 +341,10 @@ class SessionConfig:
             cible["break-on-fault"] = True
         if args.add_symbols:
             cible["add-symbols"] = [os.path.abspath(p) for p in args.add_symbols]
+        if args.flash_loader:
+            cible["flash-loader"] = [os.path.abspath(p) if os.path.exists(p) else p for p in args.flash_loader]
+        if args.flash_ram:
+            cible["flash-ram"] = args.flash_ram
         if cible:
             d["cible"] = cible
         srv: dict[str, Any] = {}

@@ -140,6 +140,9 @@ class ConfigEditor(tk.Toplevel):
         self._row(f, 8, "Image à programmer au lieu de l'ELF (HEX, S-record, binaire@adresse)",
                   "cible", "image")
         self._row(f, 9, "Symboles d'autres ELF (un par ligne, ELF[@décalage])", "cible", "add-symbols", "list")
+        self._row(f, 10, "Chargeurs de flash (un par ligne : .FLM, .stldr, « pack »)", "cible", "flash-loader",
+                  "list")
+        self._row(f, 11, "RAM de l'algorithme de flash (ADRESSE:TAILLE)", "cible", "flash-ram")
 
     def _build_server(self, f) -> None:
         self.server_var = tk.StringVar(value="qemu")

@@ -6,6 +6,7 @@ Toutes les méthodes sont utilisables depuis n'importe quel thread.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shlex
@@ -38,6 +39,7 @@ class ProgramResult:
     verified: bool | None = None     # None : pas de vérification
     mismatched: list[str] = field(default_factory=list)
     verify_error: str = ""
+    loaders: list[str] = field(default_factory=list)   # écrit par les chargeurs de flash
 
     def summary(self) -> str:
         if self.mismatched:
@@ -46,7 +48,9 @@ class ProgramResult:
             v = "vérifié"
         else:
             v = "non vérifié" + (f" ({self.verify_error.splitlines()[-1]})" if self.verify_error else "")
-        return f"{os.path.basename(self.elf)} programmé : {self.size} octets en {self.seconds:.1f} s, {v}"
+        via = f" ; {' ; '.join(self.loaders)}" if self.loaders else ""
+        return (f"{os.path.basename(self.elf)} programmé : {self.size} octets en {self.seconds:.1f} s, "
+                f"{v}{via}")
 
 
 @dataclass
@@ -206,6 +210,9 @@ class Session:
         self._actions: dict[str, BreakAction] = {}
         self._counts: dict[str, int] = {}
         self._transient: set[str] = set()
+        #: chargeurs de flash (core/flashalgo.FlashLoader) : les segments de leur mémoire
+        #: passent par leur algorithme, exécuté sur la cible, plutôt que par le serveur
+        self.flash_loaders: list = []
         #: watchpoints posés au dernier Go et valeur de leur expression (voir _watch_trap)
         self._watch_vals: dict[str, dict] = {}
         #: interruption envoyée par halt() mais doublée par un autre arrêt (breakpoint) : le
@@ -594,8 +601,14 @@ class Session:
         if self.target is not None:
             if hasattr(self.target, "elf"):      # QEMU : relancé plus tard avec ce firmware
                 self.target.elf = elf
-            if self.target.needs_load:          # sonde : flash écrite cible arrêtée au reset
-                self.target.reset(self)
+        if self.flash_loaders:                  # une partie de l'image par un algorithme
+            from .flashalgo import split_segments
+            from .memtools import read_image
+            segments = read_image(elf)
+            if split_segments(segments, self.flash_loaders)[0]:
+                return self._program_segments(elf, segments, verify, t0)
+        if self.target is not None and self.target.needs_load:   # sonde : flash écrite au reset
+            self.target.reset(self)
         res = self.gdb.command("-target-download", timeout=300)
         result = ProgramResult(elf, int(res.get("load-size", 0) or 0))
         if verify and getattr(self.target, "verify_by_read", False):
@@ -634,6 +647,10 @@ class Session:
         segments = read_image(spec)
         if self.state == "running":
             self.halt()
+        if self.flash_loaders:
+            from .flashalgo import split_segments
+            if split_segments(segments, self.flash_loaders)[0]:
+                return self._program_segments(spec, segments, verify, t0)
         if self.target is not None and self.target.needs_load:
             self.target.reset(self)
         fd, tmp = tempfile.mkstemp(suffix=".hex", prefix="gdbtrace-")
@@ -653,6 +670,57 @@ class Session:
                 result.verified = cmp.same
                 if not cmp.same:
                     result.mismatched = [cmp.summary()]
+        if self.target is not None:
+            self.target.reset(self)
+        else:
+            self.monitor("reset halt")
+        self.cli("flushregs")
+        result.seconds = time.monotonic() - t0
+        self._emit("stopped", {"reason": "programmed"})
+        return result
+
+    def _program_segments(self, name: str, segments, verify: bool, t0: float) -> "ProgramResult":
+        """Programmation dont une partie passe par les chargeurs de flash : reset (cible
+        arrêtée, périphériques à leur état de départ), segments de leur mémoire par leur
+        algorithme, le reste par le `load` de gdb (Intel HEX temporaire), vérification
+        (fonction de l'algorithme, sinon relecture), reset."""
+        import tempfile
+        import time
+
+        from .flashalgo import FlashAlgoError, split_segments
+        from .memtools import format_ihex
+        if self.target is not None:
+            self.target.reset(self)
+        else:
+            self.monitor("reset halt")
+        covered, rest = split_segments(segments, self.flash_loaders)
+        result = ProgramResult(name, sum(len(d) for _a, d in segments))
+        for loader, segs in covered.items():
+            try:
+                st = loader.program(segs)
+            except (FlashAlgoError, GdbError, TimeoutError) as exc:
+                raise FlashAlgoError(f"{os.path.basename(loader.algo.path)} : {exc}") from exc
+            result.loaders.append(f"{st['octets']} octets par {os.path.basename(loader.algo.path)} "
+                                  f"({st['secteurs']} secteur(s), {st['pages']} page(s), "
+                                  f"{st['secondes']:.1f} s)")
+        if rest:
+            fd, tmp = tempfile.mkstemp(suffix=".hex", prefix="gdbtrace-")
+            try:
+                with os.fdopen(fd, "w", encoding="ascii") as fh:
+                    fh.write(format_ihex(rest))
+                self.gdb.console(f'load "{tmp}"', timeout=300)
+            finally:
+                os.unlink(tmp)
+        if verify:
+            try:
+                for loader, segs in covered.items():
+                    result.mismatched += loader.verify(segs)
+                for a, d in rest:
+                    if self.read_memory(a, len(d)) != d:
+                        result.mismatched.append(f"{a:#x}+{len(d):#x}")
+                result.verified = not result.mismatched
+            except (FlashAlgoError, GdbError, TimeoutError) as exc:
+                result.verify_error = str(exc)
         if self.target is not None:
             self.target.reset(self)
         else:
@@ -952,6 +1020,82 @@ class Session:
             extra["new"] = self.evaluate(expr)
             return extra["new"] != old
         return self._step_loop(changed, asm, max_steps, extra)
+
+    @contextlib.contextmanager
+    def target_calls(self, return_addr: int, sp: int, static_base: int | None = None):
+        """Appels de fonctions sur la cible arrêtée (algorithmes de flash) : rend
+        `call(adresse, args, timeout)` → r0. Chaque appel pose r0-r3, r9 (`static_base`), sp,
+        lr (= `return_addr`, où une instruction BKPT attend et où gdb pose un breakpoint
+        matériel, masqué de breakpoints()), pc, puis laisse tourner la cible jusqu'au retour.
+        Silencieux : ni événement, ni resume hook (chrono, compteurs, trace simulée). Un délai
+        dépassé interrompt la cible ; un arrêt ailleurs qu'au retour (faute) est une erreur."""
+        with self._lock:
+            if self.state != "stopped":
+                raise GdbError("la cible doit être arrêtée")
+            self._looping, self._loop_first, self._halt_wanted = True, False, False
+        ret = return_addr & ~1
+        num = None
+        try:
+            try:
+                num = self.gdb.command(f"-break-insert -h *{ret:#x}")["bkpt"]["number"]
+            except GdbError:                    # plus de comparateur matériel : logiciel
+                num = self.gdb.command(f"-break-insert *{ret:#x}")["bkpt"]["number"]
+            self._transient.add(num)
+
+            def call(addr: int, args=(), timeout: float = 5.0) -> int:
+                if len(args) > 4:
+                    raise ValueError("quatre arguments au plus (r0-r3)")
+                for i, value in enumerate(args):
+                    self.write_register(f"r{i}", value & 0xFFFFFFFF)
+                if static_base is not None:
+                    self.write_register("r9", static_base)
+                self.write_register("sp", sp)
+                self.write_register("lr", ret | 1)
+                self.write_register("pc", addr & ~1)
+                try:
+                    self.write_register("xpsr", 0x01000000)     # état Thumb, mode Thread
+                except GdbError:
+                    pass
+                self._loop_stop.clear()
+                with self._lock:
+                    self._loop_inflight = True
+                self.gdb.command("-exec-continue")
+                if not self._loop_stop.wait(timeout):
+                    try:
+                        self.gdb.command("-exec-interrupt")
+                    except GdbError:
+                        pass
+                    self._loop_stop.wait(5)
+                    self.state = "stopped"
+                    where = self._pc_text()
+                    raise TimeoutError(f"fonction à {addr:#x} sans retour après {timeout:g} s "
+                                       f"(arrêtée à {where})")
+                self.state = "stopped"
+                pc = int(self.evaluate("(unsigned int)$pc"), 0)
+                if pc != ret:
+                    raise GdbError(f"fonction à {addr:#x} arrêtée hors de son retour : pc {pc:#x} "
+                                   f"({(self._loop_reason or {}).get('reason', '?')})")
+                return int(self.evaluate("(unsigned int)$r0"), 0)
+            yield call
+        finally:
+            if num is not None:
+                self._transient.discard(num)
+                try:
+                    self.gdb.command(f"-break-delete {num}")
+                except GdbError:
+                    pass
+            with self._lock:
+                self._looping = self._loop_inflight = False
+            if self.state != "disconnected":
+                self.state = "stopped"
+            self._stopped.set()
+
+    def _pc_text(self) -> str:
+        try:
+            pc = int(self.evaluate("(unsigned int)$pc"), 0)
+            return f"{pc:#x} {self.symbol_at(pc).split(' in section')[0]}"
+        except Exception:  # noqa: BLE001
+            return "?"
 
     def _step_loop(self, done: Callable[[], bool], asm: bool, max_steps: int, extra: dict) -> dict:
         """Pas répétés vus comme UNE reprise : hooks de reprise une fois, un seul `running`,

@@ -226,6 +226,29 @@ def setup_mtb(args, trace, session, log=print) -> None:
     log(describe(base, trace.setup_mtb(session, base, *buffer, autohalt=args.mtb_autohalt)))
 
 
+def build_flash_loaders(args, session, device=None) -> list:
+    """Chargeurs de flash des options (`--flash-loader`, `--flash-ram`) pour cette session :
+    `session.flash_loaders`. `device` : la puce du CMSIS-Pack (`--flash-loader pack`)."""
+    from .core.flashalgo import FlashAlgoError, FlashLoader, find_external_loader, load_algo, parse_ram
+    ram = parse_ram(args.flash_ram) if args.flash_ram else None
+    loaders = []
+    for spec in args.flash_loader:
+        if spec == "pack":
+            if device is None:
+                raise FlashAlgoError("--flash-loader pack : aucune puce de CMSIS-Pack (--pack, --device)")
+            loaders += device.flash_loaders(session, ram)
+            continue
+        path = spec if os.path.isfile(spec) else None
+        if path is None and os.sep not in spec and "/" not in spec:
+            path = find_external_loader(spec)
+        if path is None:
+            raise FlashAlgoError(f"chargeur de flash introuvable : {spec} (fichier, ou nom d'un chargeur "
+                                 "du dossier ExternalLoader de STM32CubeProgrammer)")
+        loaders.append(FlashLoader(session, load_algo(path), ram, clock=args.cpu_hz))
+    session.flash_loaders = loaders
+    return loaders
+
+
 class BatchSession:
     """Session sans interface : mode `--batch`, serveur MCP (`gdbtrace.mcp`). Connexion,
     programmation (`program`), décodage de la trace, objet `gdbtrace` (`api`) ; `setup()`
@@ -246,6 +269,8 @@ class BatchSession:
         s.on_event(on_event)
         self.live = None
         self.trace = TraceManager(on_error=log)
+        for ld in build_flash_loaders(args, s):  # avant la programmation de la connexion
+            log(f"chargeur de flash : {ld.describe()}")
         try:
             s.connect(elf, target, load)
         except BaseException:
@@ -433,6 +458,14 @@ def build_parser() -> argparse.ArgumentParser:
                          "reset (ELF par défaut : celui de la ligne de commande) ; aussi une image "
                          "HEX, S-record ou binaire (FICHIER.bin@0x08000000), symboles de l'ELF"),
     g2.add_argument("--no-verify", action="store_true", help="ne pas vérifier la programmation")
+    g2.add_argument("--flash-loader", action="append", default=[], metavar="FICHIER",
+                    help="algorithme de flash exécuté sur la cible pour programmer sa mémoire, quel "
+                         "que soit le serveur : FLM d'un CMSIS-Pack, chargeur externe .stldr de "
+                         "STM32CubeProgrammer (un nom seul est cherché dans son dossier "
+                         "ExternalLoader), ou « pack » (ceux de --device) ; répétable ; avec --program")
+    g2.add_argument("--flash-ram", metavar="ADRESSE:TAILLE",
+                    help="RAM où placer l'algorithme de flash (code, pile, tampon) ; un FLM hors "
+                         "pack l'exige ; ex. 0x20000000:0x4000")
     c = p.add_argument_group("couverture de code (trace ETM)")
     c.add_argument("--coverage", action="append", default=[], metavar="FICHIER",
                    help="--batch : écrire la couverture à la fin (.html, .info LCOV, .json) ; répétable")
@@ -478,6 +511,20 @@ def validate(args) -> list[str]:
                                or args.trace_file or (args.etm_config and args.etm_port == "swo")):
         errors.append("--var-trace : avec une capture SWO ou de trace (--swo-config, --swo, "
                       "--swo-file, --etm-config --etm-port swo, --trace)")
+    if args.flash_loader:
+        stldr = [f for f in args.flash_loader if f.lower().endswith(".stldr")]
+        others = [f for f in args.flash_loader if f not in stldr and f != "pack"]
+        if others and not args.flash_ram:
+            errors.append(f"--flash-loader {others[0]} : préciser la RAM de l'algorithme (--flash-ram "
+                          "ADRESSE:TAILLE)")
+        if "pack" in args.flash_loader and not getattr(args, "device", None):
+            errors.append("--flash-loader pack : avec --device (et --pack)")
+    if args.flash_ram:
+        from .core.flashalgo import parse_ram
+        try:
+            parse_ram(args.flash_ram)
+        except ValueError as exc:
+            errors.append(f"--flash-ram : {exc}")
     etm_swo = args.etm_config and args.etm_port in ("swo", "etr")
     swo_etm = (args.swo or args.swo_file) and args.swo_formatter     # flux formaté : ETM ID 2
     if args.coverage and not (args.etm_sim or args.trace or args.trace_file or args.coverage_merge
@@ -649,6 +696,7 @@ def start_gui_session(app, args) -> None:
     app.verify_program = verify
     app.verify_var.set(verify)
     app.target_factory = lambda e: build_target(args, e)     # Fichier › Programmer un ELF…
+    app.flash_loader_factory = lambda s: build_flash_loaders(args, s)   # --flash-loader
     # valeurs initiales de Trace › ETM par SWO…
     app.swo_hz, app.swo_port, app.etm_stall, app.stm32 = args.swo_hz, args.swo_port, args.etm_stall, args.stm32
     if args.svd and app.wants_svd(args.svd):        # pas deux lectures du même SVD

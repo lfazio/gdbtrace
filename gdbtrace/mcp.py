@@ -272,6 +272,13 @@ TOOLS = [
           "HardFault, BusFault…) : cause en clair, adresse et instruction fautives, fonction et "
           "ligne, cadre empilé. `catch` : true pose l'arrêt à l'entrée de toute faute, false le "
           "retire.", {"catch": _B}),
+    _tool("flash_info", "Chargeurs de flash", "Chargeurs de flash de la session (--flash-loader : "
+          "FLM, .stldr, pack) : mémoire couverte, page, secteurs, RAM de l'algorithme. Sans "
+          "chargeur, la flash passe par le serveur gdb.", read_only=True),
+    _tool("flash_erase", "Effacer la flash", "Efface les secteurs de [`address`, `address` + "
+          "`length`) par le chargeur de flash qui couvre l'adresse ; sans `address` : toute la "
+          "mémoire de chaque chargeur. Cible arrêtée.", {"address": _ADDR, "length": _I},
+          destructive=True),
     _tool("program", "Programmer", "Programme un ELF dans la cible (reset, écriture, "
           "vérification, reset) ; défaut : l'ELF de la session.", {"elf": _S}, destructive=True),
     # --- portes de sortie
@@ -1016,6 +1023,15 @@ class GdbTraceMcp:
 
     def tool_itm(self, port: int = 0) -> str:
         return self.api.itm(port) or f"(rien reçu sur le port {port})"
+
+    def tool_flash_info(self) -> str:
+        self.api.flash_info()
+        return ""
+
+    def tool_flash_erase(self, address: str | None = None, length: int | None = None) -> str:
+        self._stopped()
+        self.api.flash_erase(address, length)
+        return ""
 
     def tool_program(self, elf: str | None = None) -> str:
         import os
