@@ -80,8 +80,10 @@ mais avec son firmware de test.
   gardés pour le résultat suivant. Un outil sur une méthode de `ScriptAPI` est déclaré dans
   `TOOLS` (`_tool` : titre, annotations `read_only` / `destructive`) et implémenté par
   `tool_<nom>`, mêmes paramètres que le schéma (vérifié par `tests/test_mcp.py`). Le
-  `.mcp.json` du dépôt le lance par le Python du venv avec `--root ${CLAUDE_PROJECT_DIR:-.}` :
-  le répertoire du projet devient le répertoire courant (chemins des outils relatifs à lui) ;
+  `.mcp.json` du dépôt le lance par `sh -c` (pas de `${…}` : Claude Code ne les développe pas
+  toujours) : projet = `$CLAUDE_PROJECT_DIR` sinon `$PWD`, interpréteur = `$GDBTRACE_PYTHON`,
+  sinon le venv du dépôt, sinon `python3` ; `--root` : le répertoire du projet devient le
+  répertoire courant (chemins des outils relatifs à lui) ;
   `--check` / outil `check` : bilan de l'environnement (`environment_report`).
 
 - `GdbMI` : un thread lecteur ; chaque commande porte un jeton et attend sa réponse dans une

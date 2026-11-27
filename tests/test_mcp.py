@@ -88,23 +88,43 @@ def test_serve_reads_lines_and_survives_bad_json():
     assert replies[1]["error"]["code"] == -32700 and "tools" in replies[2]["result"]
 
 
-def _expand(text, env):
-    """Développement « ${VAR} » / « ${VAR:-défaut} » de Claude Code dans le .mcp.json."""
-    return re.sub(r"\$\{(\w+)(?::-([^}]*))?\}",
-                  lambda m: env.get(m.group(1)) or (m.group(2) or ""), text)
-
-
-def test_project_mcp_json():
-    """Le .mcp.json du dépôt : le Python du venv du projet, et --root sur le projet, que
-    Claude Code pose CLAUDE_PROJECT_DIR ou non."""
+def _launch(cwd, env):
+    """La commande du .mcp.json du dépôt, lancée telle que Claude Code la lance."""
     with open(os.path.join(ROOT, ".mcp.json"), encoding="utf-8") as fh:
-        conf = json.load(fh)
-    server = conf["mcpServers"]["gdbtrace"]
-    for env, root in (({"CLAUDE_PROJECT_DIR": "/proj"}, "/proj"), ({}, ".")):
-        cmd = _expand(server["command"], env)
-        args = [_expand(a, env) for a in server["args"]]
-        assert cmd == f"{root}/.venv/bin/python"
-        assert args == ["-m", "gdbtrace.mcp", "--root", root]
+        server = json.load(fh)["mcpServers"]["gdbtrace"]
+    return subprocess.Popen([server["command"], *server["args"]], cwd=cwd, env=env, text=True,
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+@pytest.mark.parametrize("how", ["variable", "repertoire"])
+def test_project_mcp_json(how, tmp_path):
+    """Le .mcp.json du dépôt : sh trouve le projet (CLAUDE_PROJECT_DIR que Claude Code pose,
+    sinon le répertoire de lancement) et l'interpréteur (GDBTRACE_PYTHON, le venv du dépôt,
+    python3), sans que Claude Code ait à développer une variable."""
+    with open(os.path.join(ROOT, ".mcp.json"), encoding="utf-8") as fh:
+        text = fh.read()
+    assert "${" not in text                       # rien à développer par Claude Code
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"}
+    env["GDBTRACE_PYTHON"] = sys.executable
+    if how == "variable":
+        env["CLAUDE_PROJECT_DIR"] = ROOT
+        cwd = str(tmp_path)
+    else:
+        cwd = ROOT
+    p = _launch(cwd, env)
+    try:
+        p.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                  "params": {"protocolVersion": "2025-06-18"}}) + "\n")
+        p.stdin.flush()
+        reply = json.loads(p.stdout.readline() or "{}")
+        assert reply.get("result", {}).get("serverInfo", {}).get("name") == "gdbtrace", \
+            p.stderr.read()
+        assert ROOT in reply["result"]["instructions"]   # --root : le projet
+    finally:
+        p.stdin.close()
+        p.wait(20)
+        p.stdout.close()
+        p.stderr.close()
     assert mcp.build_parser().parse_args(["--root", "/proj"]).root == "/proj"
 
 

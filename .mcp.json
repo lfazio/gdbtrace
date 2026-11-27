@@ -1,8 +1,11 @@
 {
   "mcpServers": {
     "gdbtrace": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
-      "args": ["-m", "gdbtrace.mcp", "--root", "${CLAUDE_PROJECT_DIR:-.}"]
+      "command": "sh",
+      "args": [
+        "-c",
+        "d=\"$CLAUDE_PROJECT_DIR\"; [ -n \"$d\" ] || d=\"$PWD\"; cd \"$d\" || exit 2; py=\"$GDBTRACE_PYTHON\"; [ -n \"$py\" ] || py=\"$d/.venv/bin/python\"; [ -x \"$py\" ] || command -v \"$py\" >/dev/null 2>&1 || py=python3; exec \"$py\" -m gdbtrace.mcp --root \"$d\""
+      ]
     }
   }
 }

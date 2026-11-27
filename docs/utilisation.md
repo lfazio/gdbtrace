@@ -861,14 +861,14 @@ comme le mode batch, et la pilote par des outils.
    ```
 
 3. **Ouvrir Claude Code dans le dépôt.** Le fichier `.mcp.json` de la racine déclare le
-   serveur `gdbtrace` (portée projet) : le Python du venv du projet, avec `--root` sur le
-   projet.
+   serveur `gdbtrace` (portée projet). Il le lance par `sh`, qui trouve au lancement :
+   - le projet : `CLAUDE_PROJECT_DIR` (posée par Claude Code), sinon le répertoire de
+     lancement ; il devient le répertoire courant et le `--root` du serveur ;
+   - l'interpréteur : `GDBTRACE_PYTHON` s'il est posé (venv hors du dépôt), sinon
+     `.venv/bin/python` du projet, sinon `python3`.
 
-   ```json
-   {"mcpServers": {"gdbtrace": {
-       "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
-       "args": ["-m", "gdbtrace.mcp", "--root", "${CLAUDE_PROJECT_DIR:-.}"]}}}
-   ```
+   Aucune variable n'est à développer par Claude Code dans ce fichier. Il faut `sh` : sous
+   Windows, déclarer le serveur par `claude mcp add` (étape 5).
 
    Au premier lancement, Claude Code demande d'approuver ce serveur de projet : accepter.
    `/mcp` dans Claude Code (ou `claude mcp list` dans un terminal) le montre connecté.
@@ -953,7 +953,7 @@ inconnue, cible en marche) est un résultat d'erreur ; la session continue.
 
 | Symptôme | Cause, remède |
 | --- | --- |
-| `/mcp` : gdbtrace « failed » | venv absent ou incomplet (étape 1) ; lancer à la main `.venv/bin/python -m gdbtrace.mcp --check` |
+| `/mcp` : gdbtrace « failed » | venv absent ou incomplet (étape 1) ; lancer à la main `.venv/bin/python -m gdbtrace.mcp --check` ; venv ailleurs que dans le dépôt : `GDBTRACE_PYTHON=/chemin/venv/bin/python` dans l'environnement de Claude Code |
 | gdbtrace absent de `/mcp` | serveur de projet refusé : `claude mcp reset-project-choices`, puis relancer Claude Code dans le dépôt |
 | `connect` : « ELF introuvable » | chemin relatif au projet (`check` donne le répertoire), ou `--root` à corriger |
 | `connect` : QEMU, gdb ou OpenOCD introuvable | `check` dit ce qui manque et à quoi il sert |
