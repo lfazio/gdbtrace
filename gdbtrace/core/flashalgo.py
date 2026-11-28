@@ -469,7 +469,10 @@ class FlashLoader:
 
     def verify(self, segments: list[tuple[int, bytes]]) -> list[str]:
         """Différences entre les segments et la mémoire : fonction Verify d'un FLM, Read d'un
-        .stldr, sinon relecture directe (mémoire visible à son adresse)."""
+        .stldr, sinon relecture directe (mémoire visible à son adresse). Un .stldr sans Read
+        (ceux de la STM32N6) : Init d'abord, qui passe la mémoire externe en mode mappé comme
+        pour STM32CubeProgrammer ; après Write ou SectorErase, elle ne l'est plus (la lecture
+        par le débogueur échoue)."""
         bad = []
         segs = [(a, bytes(b)) for a, b in _merge(segments) if b]
         p = self.placement
@@ -501,6 +504,10 @@ class FlashLoader:
                             bad.append(f"{a + off + i:#x}")
                             break
             return bad
+        if self.algo.kind == "stldr":
+            self._install()
+            with self._session_calls() as call:
+                self._init(call, 3)
         for a, b in segs:
             got = self.session.read_memory(a, len(b))
             if got != b:

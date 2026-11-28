@@ -196,7 +196,7 @@ mais avec son firmware de test.
   - MPU (`core/mpu.py`) : RNR écrit puis restauré ; écriture ignorée (QEMU 8.2) → régions
     lisibles sans elle (alias A1..A3 en ARMv8-M), dit ; `fault._mpu_cause` (MemManage).
   - Chargeur de flash (`core/flashalgo.py`) : FLM (PrgCode/PrgData, r9 = données) et `.stldr`
-    (segments à leur adresse) appelés par `Session.target_calls` (r0-r3, r9, sp, lr = BKPT de
+    (segments à leur adresse ; sans Read, relu après Init, qui remet la mémoire en mode mappé) appelés par `Session.target_calls` (r0-r3, r9, sp, lr = BKPT de
     retour + breakpoint matériel masqué, PRIMASK à 1, `_looping` : ni événement ni resume
     hook) ; `Session.flash_loaders` : `program`/`program_image` y envoient leur mémoire
     (`split_segments`), le reste par `load` ; posés par `build_flash_loaders` (`__main__.py`,
@@ -449,9 +449,10 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
   F072, `DWT_CYCCNT` sur F746, F446 et N6), journal des tâches en RAM lu en marche (F072), RTT
   en marche (F072, F746, F446, N6), compteurs du DWT (F746, F446) et de la PMU (N6), tables ROM
   (F746, F446, N6, F072) et MPU (F746, F446, N6 ; la STM32F746 n'intègre pas le CTI du Cortex-M7 :
-  entrée de la table non présente), état sécurisé du M55 de la N6 (jalon 23, vue Registres). Matrice
-  jalon × carte : `Documentations/Jalons.md`. Prêts, pas encore passés : FLM d'un pack (F446),
-  chargeur externe de la flash XSPI (N6) (`boards.system_passes`, `flash_by_algorithm`). Un
+  entrée de la table non présente), état sécurisé du M55 de la N6 (jalon 23, vue Registres), chargeur
+  externe de la flash XSPI de la N6 (`MX25UM51245G_STM32N6570-NUCLEO.stldr`). Matrice jalon ×
+  carte : `Documentations/Jalons.md`. Prêt, pas encore passé : FLM d'un pack (F446)
+  (`boards.system_passes`, `flash_by_algorithm`). Un
   firmware recompilé déplace `worker_step` : `etm-stop` de `nucleo-f446re.yaml` est son
   `bx lr` (vérifié par le test). Non validé sur sonde
   réelle : `--rtos`, port de trace parallèle, MTB (dont le sens de

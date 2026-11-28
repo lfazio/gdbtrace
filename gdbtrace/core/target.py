@@ -380,13 +380,16 @@ def find_stlink_gdbserver() -> str | None:
 
 
 def find_cubeprogrammer() -> str | None:
-    """Dossier `bin` de STM32CubeProgrammer, dont ST-LINK_gdbserver se sert (-cp)."""
+    """Dossier `bin` de STM32CubeProgrammer, dont ST-LINK_gdbserver se sert (-cp) : celui de
+    STM32CubeIDE ou de STM32CubeCLT, l'installation autonome, celui du gestionnaire de paquets
+    de STM32Cube (~/.local/share/stm32cube/bundles), sinon le PATH."""
     found = _latest([
         f"{root}/stm32cubeide*/plugins/*cubeprogrammer*/tools/bin/STM32_Programmer_CLI"
         for root in ("/opt/st", "~/st")] + [
         f"{root}/stm32cubeclt*/STM32CubeProgrammer/bin/STM32_Programmer_CLI"
         for root in ("/opt/st", "~/st")] + [
-        "~/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin/STM32_Programmer_CLI"])
+        "~/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin/STM32_Programmer_CLI",
+        "~/.local/share/stm32cube/bundles/programmer/*/bin/STM32_Programmer_CLI"])
     if found:
         return os.path.dirname(found)
     cli = shutil.which("STM32_Programmer_CLI")

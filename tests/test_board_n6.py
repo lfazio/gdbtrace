@@ -337,12 +337,13 @@ def test_chrono_by_cyccnt(run):
     boards.chrono_checks(run["extra"]["chrono"], "DWT_CYCCNT")
 
 
-N6_LOADER = "MX66UW1G45G_STM32N6570-NUCLEO.stldr"
+N6_LOADER = "MX25UM51245G_STM32N6570-NUCLEO.stldr"
 
 
 def n6_external_flash(app) -> dict:
     """64 Ko de la flash externe XSPI (0x70100000) programmés par le chargeur externe de
-    STM32CubeProgrammer, relus par sa fonction Read, puis effacés."""
+    STM32CubeProgrammer, relus par sa fonction Read, puis effacés. La Nucleo-N657X0-Q porte
+    une MX25UM51245G (512 Mbit) ; la MX66UW1G45G est celle de la STM32N6570-DK."""
     from gdbtrace.core.flashalgo import find_external_loader
     if find_external_loader(N6_LOADER) is None:
         return {"absent": f"{N6_LOADER} introuvable (STM32CubeProgrammer, ExternalLoader)"}

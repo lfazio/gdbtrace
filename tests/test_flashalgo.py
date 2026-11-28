@@ -105,6 +105,23 @@ def test_program_through_algorithm(algos, qemu_session, tmp_path, which):
 
 
 @needs_qemu
+def test_stldr_without_read_verified_after_init(algos, qemu_session):
+    """Un .stldr sans Read (ceux de la STM32N6) : la relecture directe suit un Init, qui passe
+    la mémoire externe en mode mappé (après Write, elle ne l'est plus : constaté sur la
+    Nucleo-N657X0-Q, lecture de 0x70100000 refusée)."""
+    s = qemu_session
+    ld = fa.FlashLoader(s, fa.load_algo(STLDR))
+    del ld.placement.funcs["Read"]
+    data = bytes((i * 13 + 5) & 0xFF for i in range(0x1000))
+    ld.program([(DEV, data)])
+    calls = ld.calls
+    assert ld.verify([(DEV, data)]) == []
+    assert ld.calls == calls + 1                             # Init, puis la mémoire à son adresse
+    assert ld.verify([(DEV, b"\0" * 16)]) == ["0x300000 : image 0x00, mémoire 0x05"]
+    ld.erase(DEV, DEV + 1)
+
+
+@needs_qemu
 def test_mixed_image_ram_and_flash(algos, qemu_session, tmp_path):
     """Une image en partie dans la « flash » (algorithme) et en partie en RAM (load de gdb)."""
     from gdbtrace.core.memtools import write_image
@@ -170,12 +187,12 @@ def test_config_roundtrip(tmp_path):
     from gdbtrace.__main__ import build_parser
     from gdbtrace.core.config import SessionConfig
     p = build_parser()
-    args = p.parse_args(["x.elf", "--flash-loader", "MX66UW1G45G_STM32N6570-NUCLEO.stldr",
+    args = p.parse_args(["x.elf", "--flash-loader", "MX25UM51245G_STM32N6570-NUCLEO.stldr",
                          "--flash-loader", FLM, "--flash-ram", "0x34000000:0x10000"])
     cfg = SessionConfig.from_args(args)
     assert cfg.data["cible"]["flash-ram"] == "0x34000000:0x10000"
     cfg.path = str(tmp_path / "c.yaml")
     cfg.save(cfg.path)
     again = p.parse_args(SessionConfig.load(cfg.path).to_argv())
-    assert again.flash_loader == ["MX66UW1G45G_STM32N6570-NUCLEO.stldr", FLM]
+    assert again.flash_loader == ["MX25UM51245G_STM32N6570-NUCLEO.stldr", FLM]
     assert again.flash_ram == "0x34000000:0x10000"
