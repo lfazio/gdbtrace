@@ -14,7 +14,7 @@ l'hôte ; mêmes options, ou une configuration de session (YAML).
 
    ```bash
    cd vscode/gdbtrace
-   npx @vscode/vsce package          # → gdbtrace-0.1.0.vsix
+   npx @vscode/vsce package --skip-license   # → gdbtrace-0.1.0.vsix (pas de fichier de licence)
    code --install-extension gdbtrace-0.1.0.vsix
    ```
 

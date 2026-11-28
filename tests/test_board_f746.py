@@ -218,3 +218,16 @@ def test_coresight_and_mpu(run):
     sysinfo = run["extra"]["systeme"]
     boards.system_checks(sysinfo, {"ROM", "SCS", "DWT", "FPB", "ITM", "ETM", "TPIU"}, 4, "ARMv7-M")
     assert "CTI" not in {c["type"] for c in sysinfo["coresight"]}, sysinfo["coresight"]
+
+
+def test_trace_recorded_on_disk(request, tmp_path, run):
+    """Trace sur disque (jalon 26) : la session de la carte en --batch avec --trace-record —
+    ETMv4 et ITM formatés sur le SWO, en trames TPIU — enregistre le flux reçu tel quel, avec
+    son index ; relu, il redonne la trace vue en direct, et une page se décode depuis un point
+    de reprise."""
+    serial = board_serial(request, boards.NUCLEO_F746)
+    cleanup = ("from gdbtrace.trace.etm.config import TRCPRGCTLR, TRCSTALLCTLR\n"
+               "for a in (TRCPRGCTLR, TRCSTALLCTLR):\n    g.s.write_u32(a, 0)")
+    live, path = boards.record_on_board(["--config", CONFIG], tmp_path, cleanup,
+                                        env={"STLINK_SERIAL": serial})
+    print(boards.replay_checks(live, path, FW, "tpiu", True))

@@ -355,3 +355,14 @@ def test_rtt_read_live_by_openocd(run):
     """RTT lu en marche par le port TCL d'OpenOCD (lecture, puis RdOff écrit), pendant que
     l'ETMv3 et l'ITM occupent le SWO."""
     boards.rtt_checks(run["extra"]["rtt"])
+
+
+def test_trace_recorded_on_disk(request, tmp_path, run):
+    """Trace sur disque (jalon 26) : ETMv3 (start/stop sur worker_step) et ITM formatés sur
+    le SWO, enregistrés avec leur index ; relus, ils redonnent la trace vue en direct."""
+    serial = board_serial(request, boards.NUCLEO_F446)
+    cleanup = ("from gdbtrace.trace.etm.config import ETMCR, ETMCR_POWERDOWN, ETMCR_PROGRAMMING\n"
+               "g.s.write_u32(ETMCR, ETMCR_PROGRAMMING | ETMCR_POWERDOWN)")
+    live, path = boards.record_on_board(["--config", CONFIG], tmp_path, cleanup,
+                                        env={"STLINK_SERIAL": serial})
+    print(boards.replay_checks(live, path, FW, "tpiu", True))

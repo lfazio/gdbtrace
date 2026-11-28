@@ -8,6 +8,9 @@ relecture (`--trace-file FICHIER`), pour les captures qui dépassent la mémoire
   l'ETM, ELF, date), positions horodatées par l'hôte (octet, secondes) tous les 256 Ko ou
   toutes les 0,5 s, points de synchronisation du flux (trame TPIU, A-sync de l'ETM), trous
   (octets perdus avant l'écriture), fin.
+- `FICHIER.itm` (et son index) : l'ITM seul sur le SWO quand l'ETM arrive par un autre
+  chemin (ETR d'un STM32N6) ; `FICHIER` est toujours le flux qui porte l'ETM, et la relecture
+  lit les deux.
 - `FICHIER.points` : points de reprise du décodage, écrits à la relecture — octet, nombre
   d'événements décodés avant lui, état des décodeurs (déformateur, paquets, flot, sans leurs
   caches) — tous les `POINT_EVENTS` événements. La relecture calcule couverture et timing au
@@ -28,8 +31,6 @@ import types
 import zlib
 from collections import deque
 
-from .tpiu import TpiuDeformatter
-
 FORMAT = 1
 INDEX_BYTES = 256 * 1024
 INDEX_SECONDS = 0.5
@@ -38,7 +39,7 @@ CHUNK = 4096                      # lecture par morceaux : un point de reprise e
 #: motifs de synchronisation : trame TPIU complète, A-sync de l'ETMv4 puis de l'ETMv3
 SYNC_PATTERNS = (("tpiu", b"\xff\xff\xff\x7f"), ("etm", b"\x00" * 11 + b"\x80"),
                  ("etm", b"\x00" * 5 + b"\x80"))
-ITM_STREAM, ETM_STREAM = 1, 2
+
 
 
 def index_path(path: str) -> str:
@@ -47,6 +48,11 @@ def index_path(path: str) -> str:
 
 def points_path(path: str) -> str:
     return path + ".points"
+
+
+def itm_path(path: str) -> str:
+    """Compagnon d'un enregistrement : l'ITM du SWO quand l'ETM vient de l'ETR."""
+    return path + ".itm"
 
 
 # ====================================================================== enregistrement
@@ -100,6 +106,13 @@ class TraceRecorder:
                 self._next_o, self._next_t = self.offset + INDEX_BYTES, t + INDEX_SECONDS
                 self._raw.flush()
                 self._idx.flush()
+
+    def move(self, path: str) -> None:
+        """Renomme l'enregistrement en cours (et son index) ; l'écriture continue."""
+        with self._lock:
+            os.replace(self.path, path)
+            os.replace(index_path(self.path), index_path(path))
+            self.path = path
 
     def gap(self) -> None:
         """Octets perdus avant l'écriture (SWO débordé, tampon de l'ETR plein)."""
@@ -246,11 +259,6 @@ class RecordedTrace:
             etm.set_heal_ranges(self.heal_ranges)
         return etm
 
-    def _deformatter(self) -> TpiuDeformatter | None:
-        if self.kind != "etm" and self.formatter:
-            return TpiuDeformatter(ids={ITM_STREAM, ETM_STREAM})
-        return None
-
     # ------------------------------------------------------------------ relecture complète
     def replay(self, etm, session=None, points: bool = True, chunk: int = CHUNK, stop=None,
                pause=None, progress=None) -> None:
@@ -261,6 +269,7 @@ class RecordedTrace:
         from .swo import TraceSession
         if self.kind != "etm" and session is None:
             session = TraceSession(formatter=self.formatter)
+        feed_etm = self.kind == "etm"               # sinon : ETM et ITM par la session
         if session is not None and etm is not None and self.kind != "etm":
             session.etm_sink = etm.feed
         gaps = deque(sorted(self.index["gaps"]))
@@ -282,7 +291,7 @@ class RecordedTrace:
                     data = fh.read(n)
                     if not data:
                         break
-                    if self.kind == "etm":
+                    if feed_etm:
                         if etm is not None:
                             etm.feed(data)
                     else:
@@ -356,11 +365,16 @@ class RecordedTrace:
                 base_o, base_n, state = o, n, s
         etm = self._etm(Window, history=1)
         etm.cov = _NoCoverage()
-        deformatter = self._deformatter()
+        session = None
+        if self.kind != "etm":                   # même chemin que la relecture : TraceSession
+            from .swo import TraceSession       # (son déformateur note les alignements par l'ITM)
+            session = TraceSession(formatter=self.formatter)
+            session.etm_sink = etm.feed
         if state is not None:
             deformatter, etm.packets, etm.flow = load_state(state, self.image, self.symbols)
-            if self.kind != "etm" and deformatter is None:
-                deformatter = self._deformatter()
+            if session is not None and deformatter is not None:
+                deformatter.scorer = session._itm_errors
+                session.deformatter = deformatter
         etm.events_total = base_n
         gaps = deque(g for g in sorted(self.index["gaps"]) if g > base_o)
         with open(self.path, "rb") as fh:
@@ -376,12 +390,10 @@ class RecordedTrace:
                     etm.flush()
                     break
                 offset += len(data)
-                if self.kind == "etm":
+                if session is None:
                     etm.feed(data)
-                elif deformatter is not None:
-                    e = b"".join(c for sid, c in deformatter.feed(data) if sid == ETM_STREAM)
-                    if e:
-                        etm.feed(e)
+                else:
+                    session.feed(data)
         return got
 
     def rows(self, start: int, count: int):

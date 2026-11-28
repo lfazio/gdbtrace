@@ -7,6 +7,7 @@ PC du DWT. `post(fn, *args)` sert à rappeler les abonnés dans le bon thread (G
 from __future__ import annotations
 
 import collections
+import os
 import sys
 import threading
 import time
@@ -81,6 +82,7 @@ class TraceManager:
         self.record_path: str | None = None
         self.record_elf: str | None = None
         self.recorder = None
+        self.itm_recorder = None            # compagnon FICHIER.itm : l'ITM du SWO (ETM par l'ETR)
         self._etm_recorder = None           # flux ETM de l'ETR enregistré tel quel
         self.recorded = None
         # trace MTB des Cortex-M0+ (sonde réelle, ou simulée sous QEMU), même EtmTrace
@@ -1008,9 +1010,10 @@ class TraceManager:
         self.mtb = None
         self._stop_etr_stream()
         self.tmc = None
-        if self.recorder is not None:
-            self.recorder.close()
-            self.recorder = self._etm_recorder = None
+        for rec in (self.recorder, self.itm_recorder):
+            if rec is not None:
+                rec.close()
+        self.recorder = self.itm_recorder = self._etm_recorder = None
 
     # ------------------------------------------------------------------ sources
     @property
@@ -1036,14 +1039,22 @@ class TraceManager:
     def _open_recorder(self, source: str, formatter: bool):
         if not self.record_path:
             return None
+        from .record import TraceRecorder, itm_path
+        etm = self.etm
+
+        def new():
+            return TraceRecorder(self.record_path, source, formatter,
+                                 etm=etm.version if etm is not None else None, elf=self.record_elf,
+                                 cycle_accurate=bool(etm and etm.cycle_accurate))
+        h = self.recorder.header if self.recorder is not None else None
         if self.recorder is None:
-            from .record import TraceRecorder
-            etm = self.etm
-            self.recorder = TraceRecorder(self.record_path, source, formatter,
-                                          etm=etm.version if etm is not None else None,
-                                          elf=self.record_elf,
-                                          cycle_accurate=bool(etm and etm.cycle_accurate))
-        elif self.recorder.header["source"] != source:
+            self.recorder = new()
+        elif source == "etm" and h["source"] == "swo" and not h["formateur"]:
+            # l'ITM seul sur le SWO a démarré d'abord ; l'ETM arrive par l'ETR : l'ITM passe
+            # dans le compagnon FICHIER.itm, le fichier lui-même enregistre l'ETM
+            self.recorder.move(itm_path(self.record_path))
+            self.itm_recorder, self.recorder = self.recorder, new()
+        elif h["source"] != source:
             self.on_error(f"--trace-record : capture {source} non enregistrée (le fichier "
                           f"enregistre déjà une capture {self.recorder.header['source']})")
             return None
@@ -1053,8 +1064,10 @@ class TraceManager:
         """Relit une capture enregistrée par GdbTrace (son index dit la source) : ITM vers
         les vues, ETM décodé au fil de la lecture, couverture et timing de toute la trace,
         points de reprise écrits (pages de Trace.List). Rend la `RecordedTrace`."""
-        from .record import RecordedTrace
+        from .record import RecordedTrace, index_path, itm_path
         etm = self.etm
+        itm = (RecordedTrace(itm_path(path), None) if os.path.exists(index_path(itm_path(path)))
+               else None)
         rec = RecordedTrace(path, etm.image if etm else None, etm.symbols if etm else None,
                             version=etm.version if etm else None,
                             cycle_accurate=etm.cycle_accurate if etm else None,
@@ -1072,7 +1085,7 @@ class TraceManager:
             while self.gui_busy() and time.monotonic() < end:
                 time.sleep(0.005)
             self._etm_changed()
-        self._start(RecordingSource(rec, etm, pause=pause, on_done=self._etm_changed),
+        self._start(RecordingSource(rec, etm, pause=pause, on_done=self._etm_changed, itm=itm),
                     rec.formatter if rec.kind != "etm" else False, etm_sink=False)
         self.recorded = rec
         return rec
@@ -1111,8 +1124,9 @@ class TraceManager:
         """Octets SWO perdus avant le décodage : la trace d'instructions qu'ils portaient a un
         trou. Un marqueur dans la file ETM le place exactement entre les octets d'avant et
         ceux d'après ; là, l'ETM attend sa prochaine synchronisation."""
-        if self.recorder is not None and self._etm_recorder is None:
-            self.recorder.gap()
+        rec = self.itm_recorder or (self.recorder if self._etm_recorder is None else None)
+        if rec is not None:
+            rec.gap()
         if self.etm is not None:
             self._etm_feed(_ETM_GAP)
 

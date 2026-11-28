@@ -363,3 +363,13 @@ def test_external_flash_by_cubeprogrammer_loader(run):
     if "absent" in res:
         pytest.skip(res["absent"])
     assert not res["différences"] and res["programmé"]["octets"] == 0x10000, res
+
+
+def test_trace_recorded_on_disk(request, tmp_path, run):
+    """Trace sur disque (jalon 26) : le flux ETM écrit par l'ETR, lu en continu par le relais,
+    enregistré tel quel (trous compris) avec son index ; relu, il redonne la trace vue en
+    direct, et une page se décode depuis un point de reprise."""
+    serial = board_serial(request, boards.NUCLEO_N6)
+    cleanup = "from gdbtrace.trace.etm.config import TRCPRGCTLR\ng.s.write_u32(TRCPRGCTLR, 0)"
+    live, path = boards.record_on_board(["--config", CONFIG, "--stlink", serial], tmp_path, cleanup)
+    print(boards.replay_checks(live, path, FW, "etm", False))

@@ -445,3 +445,92 @@ def run_gui(argv: list[str], name: str, ready, cleanup=None, extra=None) -> dict
     with open(os.path.join(artifacts, f"board-{name}.json"), "w") as fh:
         json.dump(result, fh, indent=1, ensure_ascii=False)
     return result
+
+
+# ====================================================================== trace sur disque
+RECORD_SCRIPT = r'''
+import json, time
+g = gdbtrace
+tm = g.trace
+g.go(); time.sleep(SECONDS); g.halt(); g.wait(10)
+time.sleep(1.0)                 # la fin du flux (tampons du serveur, de la sonde)
+sess = tm.session
+if tm.source is not None:
+    tm.stop()                   # plus rien n'arrive : compteurs définitifs
+tm.wait_etm(180)
+etm = tm.etm
+res = {"stats": etm.stats, "events": etm.events_total, "e": sorted(etm.cov.e),
+       "heal": etm.heal_ranges, "version": etm.version, "max_spec": etm.max_spec,
+       "commit_opt1": etm.commit_opt1, "cycle": etm.cycle_accurate,
+       "raw": sess.stats["octets"] if sess is not None else None,
+       "etm_bytes": etm.bytes, "dropped": tm.etm_dropped,
+       "recorded": tm.recorder.offset if tm.recorder is not None else None,
+       "status": tm.trace_status()}
+CLEANUP
+print("RESULT " + json.dumps(res))
+'''
+
+
+def record_on_board(argv: list[str], tmp_path, cleanup: str, seconds: float = 1.0,
+                    env: dict | None = None) -> tuple[dict, str]:
+    """Session --batch de la carte (`argv` : ELF ou --config, serveur) avec --trace-record :
+    Go, `seconds`, Break, trace décodée, puis `cleanup` (code Python : carte sans ETM).
+    Rend (relevé de la session en direct, chemin de l'enregistrement)."""
+    import json
+    path = str(tmp_path / "capture.bin")
+    script = tmp_path / "enregistrer.py"
+    script.write_text(RECORD_SCRIPT.replace("SECONDS", repr(seconds)).replace("CLEANUP", cleanup))
+    r = subprocess.run([sys.executable, "-m", "gdbtrace", *argv, "--trace-record", path, "--batch",
+                        "--script", str(script)], capture_output=True, text=True, timeout=300,
+                       cwd=ROOT, env={**os.environ, **(env or {}), "PYTHONPATH": ROOT})
+    line = next((ln for ln in r.stdout.splitlines() if ln.startswith("RESULT ")), None)
+    assert line, r.stdout[-3000:] + r.stderr[-3000:]
+    return json.loads(line[7:]), path
+
+
+def replay_checks(live: dict, path: str, elf: str, source: str, formatter: bool) -> dict:
+    """L'enregistrement d'une vraie capture : flux complet (octets reçus = octets écrits),
+    index (source, horodatage, points de synchronisation, fin) ; relu, il redonne la trace
+    vue en direct (instructions, code couvert) ; une page du milieu, décodée depuis un point de
+    reprise, est celle du décodage depuis le début."""
+    from gdbtrace.core.symbols import SymbolTable
+    from gdbtrace.trace import record
+    from gdbtrace.trace.etm.image import CodeImage
+    size = os.path.getsize(path)
+    assert size > 10_000 and live["recorded"] == size, (size, live)
+    assert live["dropped"] == 0, live["status"]
+    assert size == (live["raw"] if source != "etm" else live["etm_bytes"]), (size, live)
+    if source == "etm" and live["raw"]:          # ITM du SWO : le compagnon FICHIER.itm
+        assert os.path.getsize(record.itm_path(path)) == live["raw"], live["raw"]
+    idx = record.read_index(path)
+    h = idx["header"]
+    assert (h["source"], h["formateur"], h["etm"]) == (source, formatter, live["version"]), h
+    assert idx["end"] and idx["end"][0] == size and idx["times"] and idx["syncs"], idx["end"]
+    img, sym = CodeImage(elf), SymbolTable(elf)
+
+    def recorded():
+        return record.RecordedTrace(path, img, sym, heal_ranges=live["heal"],
+                                    max_spec=live["max_spec"], commit_opt1=live["commit_opt1"],
+                                    cycle_accurate=live["cycle"])
+    r = recorded()
+    t0 = time.monotonic()
+    etm = r.scan(timing=True)
+    seconds = time.monotonic() - t0
+    live_i, rep_i = live["stats"]["instructions"], etm.stats["instructions"]
+    # en direct, l'arrêt de la cible valide la dernière instruction en attente ; relue, la
+    # suite du flux la valide : quelques instructions d'écart au plus
+    assert live_i > 1000 and abs(rep_i - live_i) <= max(64, live_i // 10_000), (live_i, rep_i)
+    diff = set(live["e"]) ^ set(etm.cov.e)
+    assert len(diff) <= 16, sorted(diff)[:20]
+    assert etm.stats["erreurs"] == live["stats"]["erreurs"]
+    assert etm.timing_result().total > 0
+    start = etm.events_total // 2
+    page = r.events(start, 200)
+    whole = recorded()
+    whole._points = []                          # sans point de reprise : depuis le début
+    ref = whole.events(start, 200)
+    key = lambda evs: [(type(e).__name__, getattr(e, "addr", None)) for e in evs]  # noqa: E731
+    assert len(page) == 200 and key(page) == key(ref)
+    return {"octets": size, "instructions": rep_i, "événements": etm.events_total,
+            "points": len(r.points()), "relu en (s)": round(seconds, 1),
+            "durée (s)": r.duration()}

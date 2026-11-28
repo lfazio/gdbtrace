@@ -279,3 +279,31 @@ def test_command_line_record_and_replay(qemu_paths, elf, tmp_path):
     cfg = SessionConfig.from_args(args)
     assert cfg.data["trace"]["trace-record"] == str(rec)
     assert SessionConfig(cfg.data).parse().trace_record == str(rec)
+
+
+@needs_qemu
+def test_itm_companion_when_etm_comes_from_the_etr(qemu_paths, tmp_path):
+    """STM32N6 : l'ITM arrive par le SWO (capture démarrée d'abord), l'ETM par l'ETR. Le
+    fichier enregistre l'ETM, l'ITM passe dans FICHIER.itm ; la relecture rend les deux."""
+    from test_itm import SYNC, stim
+    img, events = qemu_paths["bare"]
+    etm_bytes = _encode(events[:40_000], img, 4)
+    path = tmp_path / "n6.bin"
+    tm = _manager(ELF, 4)
+    tm.set_record(str(path), ELF)
+    swo = tm._open_recorder("swo", False)                 # SWO (ITM seul) d'abord
+    swo.write(SYNC + b"".join(stim(0, c) for c in b"itm du swo\n"))
+    tm._etm_recorder = tm._open_recorder("etm", False)     # puis l'ETR
+    tm._etm_recorder.write(etm_bytes)
+    swo.write(b"".join(stim(0, c) for c in b"suite\n"))    # l'ITM continue dans le compagnon
+    tm.close()
+    assert path.read_bytes() == etm_bytes
+    assert record.read_index(str(path))["header"]["source"] == "etm"
+    assert record.read_index(record.itm_path(str(path)))["header"]["source"] == "swo"
+    tm2 = _manager(ELF, 4)
+    tm2.replay_recording(str(path))
+    _wait(tm2.source.done.is_set)
+    assert tm2.source.error is None
+    assert "itm du swo" in tm2.text.text(0) and "suite" in tm2.text.text(0)
+    assert tm2.etm.events_total == len(_in_memory(img, tm2.etm.symbols, etm_bytes, 4)[1])
+    tm2.close()

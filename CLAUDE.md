@@ -308,7 +308,11 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
   `setup_trace` avant les captures) ; `TraceRecorder` reçoit les octets bruts
   (`TraceSession.raw_tap` : SWO, TPIU) ou le flux ETM de l'ETR (`_etm_feed`, `_etm_recorder`),
   plus les trous ; index `FICHIER.idx` (JSON par ligne : en-tête, positions horodatées, points
-  de synchronisation, trous, fin). `--trace-file` d'un fichier indexé : `replay_recording` →
+  de synchronisation, trous, fin). `FICHIER` porte toujours l'ETM : l'ITM seul sur le SWO,
+  démarré avant l'ETR (N6), passe dans le compagnon `FICHIER.itm` (`TraceRecorder.move`),
+  relu aussi. La pagination redécode par une `TraceSession`, comme la relecture : son
+  déformateur retrouve l'alignement TPIU par les erreurs ITM (`scorer`, rebranché au retour
+  d'un point). `--trace-file` d'un fichier indexé : `replay_recording` →
   `RecordingSource`, qui décode l'ETM **dans son fil** (`_start(..., etm_sink=False)`) pour que
   les points de reprise (`FICHIER.points` : octet, `EtmTrace.events_total`, état des décodeurs
   picklé sans l'image ni les caches de `Etm4Flow`, rappels retirés) tombent sur l'octet exact ;
@@ -488,8 +492,9 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
   (F746, F446, N6, F072) et MPU (F746, F446, N6 ; la STM32F746 n'intègre pas le CTI du Cortex-M7 :
   entrée de la table non présente), état sécurisé du M55 de la N6 (jalon 23, vue Registres), chargeur
   externe de la flash XSPI de la N6 (`MX25UM51245G_STM32N6570-NUCLEO.stldr`), FLM du pack
-  Keil.STM32F4xx_DFP sur la F446 (`boards.system_passes`, `flash_by_algorithm`). Matrice
-  jalon × carte : `Documentations/Jalons.md`. Un
+  Keil.STM32F4xx_DFP sur la F446 (`boards.system_passes`, `flash_by_algorithm`), trace sur
+  disque (`boards.record_on_board`, `replay_checks` : F746 en SWO, N6 en ETR ; F446 prête).
+  Matrice jalon × carte : `Documentations/Jalons.md`. Un
   firmware recompilé déplace `worker_step` : `etm-stop` de `nucleo-f446re.yaml` est son
   `bx lr` (vérifié par le test). Non validé sur sonde
   réelle : `--rtos`, port de trace parallèle, MTB (dont le sens de

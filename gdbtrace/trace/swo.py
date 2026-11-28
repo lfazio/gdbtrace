@@ -289,9 +289,10 @@ class RecordingSource(SwoSource):
     """Relit une capture enregistrée (`record.RecordedTrace`) : ITM vers la session, ETM
     décodé dans le même fil (synchrone : points de reprise exacts) ; `done` à la fin."""
 
-    def __init__(self, recorded, etm, pause=None, on_done=None):
+    def __init__(self, recorded, etm, pause=None, on_done=None, itm=None):
         super().__init__()
         self.recorded, self.etm, self.pause, self.on_done = recorded, etm, pause, on_done
+        self.itm = itm                      # compagnon : l'ITM du SWO (ETM par l'ETR)
         self.description = f"capture enregistrée {recorded.path}"
         self.done = threading.Event()
         self.offset = 0
@@ -302,6 +303,8 @@ class RecordingSource(SwoSource):
     def _run(self) -> None:
         self.connected = True
         try:
+            if self.itm is not None:
+                self.itm.replay(None, self.session, points=False, stop=self._stop)
             self.recorded.replay(self.etm, self.session, stop=self._stop, pause=self.pause,
                                  progress=self._progress)
         except Exception as exc:  # noqa: BLE001 - dit par status()
