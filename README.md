@@ -1,14 +1,16 @@
 # GdbTrace
 
 Débogueur pour Cortex-M avec trace, construit sur **gdb** (GDB/MI) et des briques open source
-(OpenOCD, QEMU, pyelftools, capstone). Interface en **tkinter** ; pilotage en Python et par un
-agent (serveur MCP).
+(OpenOCD, QEMU, pyelftools, capstone). Interface en **tkinter** ; pilotage en Python, par un
+agent (serveur MCP) et par VS Code, nvim-dap ou Emacs (adaptateur DAP) ; rapports JUnit pour
+l'intégration continue.
 
 - **Débogage** : run-control, breakpoints à condition, compteur ou action, Go.Till et
   Step.Till, variables, mémoire, registres, périphériques (SVD), fautes décodées, FreeRTOS,
   programmes de l'hôte et leurs threads.
 - **Trace et mesures** : ITM/SWO, profil, trace de données du DWT, ETM (v3 et v4), MTB, timing
-  par fonction et par chemin d'appel, couverture de code, chrono et compteurs sans trace.
+  par fonction et par chemin d'appel, couverture de code, chrono et compteurs sans trace ;
+  captures enregistrées sur disque et relues à mémoire bornée.
 - **Cibles** : QEMU, OpenOCD, ST-LINK_gdbserver ou tout serveur gdb ; tables ROM CoreSight,
   MPU, CMSIS-Packs, algorithmes de flash (FLM, `.stldr`), TrustZone, plusieurs cœurs ; validé
   sur Nucleo-F746ZG, Nucleo-N657X0-Q (STM32N6), Nucleo-F446RE et Nucleo-F072RB.

@@ -33,6 +33,9 @@ make -C examples/multicore-an521 # deux Cortex-M33 (QEMU mps2-an521, --core cpu1
 .venv/bin/python -m gdbtrace --config configs/qemu-freertos.yaml      # session décrite en YAML
 .venv/bin/python -m gdbtrace.mcp                                       # serveur MCP (stdio)
 .venv/bin/python -m gdbtrace.mcp --check                               # bilan de l'environnement
+.venv/bin/python -m gdbtrace.dap                                       # adaptateur DAP (stdio) : VS Code, nvim-dap
+.venv/bin/python -m gdbtrace fw.elf --batch --script t.py --junit r.xml  # cas test_* → rapport JUnit
+.venv/bin/python -m gdbtrace fw.elf --swo-config --trace-record c.bin  # capture sur disque ; relue par --trace-file c.bin
 
 xvfb-run -a .venv/bin/python -m pytest                 # suite complète
 .venv/bin/python -m pytest tests/test_etm.py -k rtos   # sous-ensemble
@@ -87,8 +90,21 @@ mais avec son firmware de test.
 
 `GdbMI` (`core/gdb_backend.py`) → `Session` (`core/session.py`) → consommateurs :
 `App` (GUI), `ScriptAPI` (objet `gdbtrace` de la console et des scripts), mode `--batch`
-(`__main__.py`), serveur MCP (`mcp.py`).
+(`__main__.py`), serveur MCP (`mcp.py`), adaptateur DAP (`dap.py`).
 
+- Adaptateur DAP (`dap.py`, `python -m gdbtrace.dap`, extension `vscode/gdbtrace`) : sur une
+  `BatchSession` comme le MCP (mêmes descripteurs dupliqués) ; messages `Content-Length`.
+  `launch` (program, config, args) connecte puis envoie `initialized` (`_after` : événement
+  après la réponse) ; les arrêts de la connexion ne sont pas rapportés (`_launching`). Les
+  événements de la session sont traduits dans le thread lecteur sans appeler gdb (`_on_event`,
+  `_stop_body`) ; un arrêt ou une reprise périme frames, références de variables et objets
+  variables de gdb (`_invalidate`, supprimés au `stackTrace` suivant). Les pas (`_resume`)
+  tournent dans un fil : `Session.step*` est synchrone. Breakpoint posé cible en marche :
+  `_while_stopped` (arrêt et reprise silencieux, `_silent` ; l'arrêt d'un breakpoint à message
+  est le nôtre, un autre arrêt est rapporté). Threads : ceux de gdb, `CORE_BASE + k` (autres
+  cœurs), `TASK_BASE + k` (tâches FreeRTOS, pile par `freertos.task_context`, pas refusés).
+  `stepBack` / `reverseContinue` appellent `ScriptAPI.step_back` / `reverse_continue` s'ils
+  existent (retour arrière du jalon 25 : garder ces noms), sinon `supportsStepBack` est faux.
 - `BatchSession` (`__main__.py`) : session sans GUI (connexion, programmation, trace,
   `ScriptAPI`), commune à `--batch` et au serveur MCP ; `check_args` contrôle les options
   pour les deux. Serveur MCP : JSON-RPC sur stdio, une ligne par message, une session à la
@@ -288,6 +304,22 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
   seules entrées nouvelles (LivePoller en marche, gdb à l'arrêt), compte les pertes, déroule
   les horodatages 32 bits ; `TraceManager.task_log_active` : jamais avec l'ITM (mesure remise à
   zéro quand l'ITM prend le relais).
+- Trace sur disque (`trace/record.py`) : `TraceManager.set_record` (`--trace-record`, posé par
+  `setup_trace` avant les captures) ; `TraceRecorder` reçoit les octets bruts
+  (`TraceSession.raw_tap` : SWO, TPIU) ou le flux ETM de l'ETR (`_etm_feed`, `_etm_recorder`),
+  plus les trous ; index `FICHIER.idx` (JSON par ligne : en-tête, positions horodatées, points
+  de synchronisation, trous, fin). `--trace-file` d'un fichier indexé : `replay_recording` →
+  `RecordingSource`, qui décode l'ETM **dans son fil** (`_start(..., etm_sink=False)`) pour que
+  les points de reprise (`FICHIER.points` : octet, `EtmTrace.events_total`, état des décodeurs
+  picklé sans l'image ni les caches de `Etm4Flow`, rappels retirés) tombent sur l'octet exact ;
+  `RecordedTrace.events/rows` repartent du dernier point (`trace_list(start=…)`). Couverture
+  cumulée et timing de toute la trace au fil du décodage (`EtmTrace.stream_timing_on`,
+  `timing_result()`, pris par `gdbtrace.timing()` et la vue Timing) : `TimingAnalyzer` se
+  nourrit par morceaux (`start`, `feed`, `finish`, `snapshot` ; positions absolues ; un segment
+  entre deux `CycleMark` attend la seconde), `analyze(liste)` en est le cas d'une seule liste.
+- JUnit (`core/junit.py`, `--junit`, clé `script.junit`) : le script, puis ses `test_*`
+  (définies dans le script) en cas ; `ScriptAPI.check` ; en `--batch`, code 1 si un cas ou un
+  `check` échoue. `script` d'une configuration : un chemin, ou une section (`fichier`, `junit`).
 - SNOOPer (`core/snooper.py`, `TraceManager.snoop`) : variables lues à période fixe par le canal
   mémoire (`TraceManager.live`, posé par l'App et le batch), son propre fil (le LivePoller est à
   200 ms), versées dans le `DataTraceSink` comme `TracedVar` de numéro **négatif** (jamais un
