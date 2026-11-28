@@ -1,0 +1,146 @@
+{
+  "name": "gdbtrace",
+  "displayName": "GdbTrace",
+  "description": "Débogueur Cortex-M avec trace : sessions GdbTrace (QEMU, OpenOCD, ST-LINK_gdbserver, programme de l'hôte) par son adaptateur DAP.",
+  "version": "0.1.0",
+  "publisher": "gdbtrace",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lfazio/gdbtrace"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Debuggers"
+  ],
+  "keywords": [
+    "cortex-m",
+    "gdb",
+    "trace",
+    "etm",
+    "freertos"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onDebugResolve:gdbtrace",
+    "onDebugDynamicConfigurations:gdbtrace"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "GdbTrace",
+      "properties": {
+        "gdbtrace.python": {
+          "type": "string",
+          "default": "",
+          "description": "Interpréteur Python où gdbtrace est installé. Vide : .venv du dossier de travail, sinon python3."
+        }
+      }
+    },
+    "breakpoints": [
+      { "language": "c" },
+      { "language": "cpp" },
+      { "language": "arm" },
+      { "language": "asm" }
+    ],
+    "debuggers": [
+      {
+        "type": "gdbtrace",
+        "label": "GdbTrace",
+        "languages": [ "c", "cpp" ],
+        "configurationAttributes": {
+          "launch": {
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "ELF à déboguer : firmware Cortex-M (QEMU par défaut) ou programme de l'hôte."
+              },
+              "config": {
+                "type": "string",
+                "description": "Configuration de session GdbTrace (YAML, menu Configuration) : cible, serveur, OS, trace."
+              },
+              "args": {
+                "type": [ "array", "string" ],
+                "items": { "type": "string" },
+                "description": "Autres options de la ligne de commande de GdbTrace (--openocd, --stlink, --svd, --etm-sim, --swo…).",
+                "default": []
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Répertoire de travail : chemins relatifs des options.",
+                "default": "${workspaceFolder}"
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Rester arrêté après la connexion (sinon : Go jusqu'au premier breakpoint).",
+                "default": false
+              },
+              "python": {
+                "type": "string",
+                "description": "Interpréteur Python pour cette configuration (avant le réglage gdbtrace.python)."
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "gdbtrace",
+            "request": "launch",
+            "name": "GdbTrace : firmware sous QEMU",
+            "program": "${workspaceFolder}/build/firmware.elf",
+            "cwd": "${workspaceFolder}"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "GdbTrace : firmware sous QEMU",
+            "description": "Cortex-M3 émulé (mps2-an385), ETM simulé",
+            "body": {
+              "type": "gdbtrace",
+              "request": "launch",
+              "name": "GdbTrace : QEMU",
+              "program": "^\"\\${workspaceFolder}/build/firmware.elf\"",
+              "args": [ "--etm-sim" ],
+              "cwd": "^\"\\${workspaceFolder}\""
+            }
+          },
+          {
+            "label": "GdbTrace : configuration de session",
+            "description": "Session décrite en YAML (carte, serveur, OS, trace)",
+            "body": {
+              "type": "gdbtrace",
+              "request": "launch",
+              "name": "GdbTrace : ${1:carte}",
+              "config": "^\"\\${workspaceFolder}/configs/${2:carte}.yaml\"",
+              "cwd": "^\"\\${workspaceFolder}\""
+            }
+          },
+          {
+            "label": "GdbTrace : carte par OpenOCD",
+            "description": "Flashage, SVD, ITM par SWO",
+            "body": {
+              "type": "gdbtrace",
+              "request": "launch",
+              "name": "GdbTrace : OpenOCD",
+              "program": "^\"\\${workspaceFolder}/build/firmware.elf\"",
+              "args": [ "--openocd", "${1:board/st_nucleo_f4.cfg}", "--program", "--svd", "${2:STM32F446.svd}", "--swo-config" ],
+              "cwd": "^\"\\${workspaceFolder}\""
+            }
+          },
+          {
+            "label": "GdbTrace : programme de l'hôte",
+            "description": "Programme natif sous gdb (pthreads)",
+            "body": {
+              "type": "gdbtrace",
+              "request": "launch",
+              "name": "GdbTrace : programme",
+              "program": "^\"\\${workspaceFolder}/${1:a.out}\"",
+              "args": [ "--args" ],
+              "cwd": "^\"\\${workspaceFolder}\""
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

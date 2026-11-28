@@ -18,3 +18,7 @@ examples/nucleo-n6/nucleo-n6.elf
 examples/flashalgo/*.FLM
 examples/flashalgo/*.stldr
 examples/flashalgo/*.pack
+
+# extension VS Code empaquetée
+vscode/gdbtrace/*.vsix
+vscode/gdbtrace/node_modules/

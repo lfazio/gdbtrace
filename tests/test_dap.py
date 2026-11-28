@@ -274,3 +274,30 @@ def test_native_threads_output_and_exit(tmp_path):
         assert any("produced=" in o for o in c.output), c.output[-5:]
     finally:
         c.close()
+
+
+def test_vscode_extension_manifest():
+    """Extension VS Code (vscode/gdbtrace) : type de débogage gdbtrace, attributs de launch.json
+    lus par l'adaptateur (requête launch), extension qui lance gdbtrace.dap (syntaxe vérifiée
+    par Node s'il est installé) ; point d'entrée gdbtrace-dap du paquet."""
+    import inspect
+    import json
+
+    from gdbtrace import dap
+    ext = os.path.join(ROOT, "vscode", "gdbtrace")
+    with open(os.path.join(ext, "package.json"), encoding="utf-8") as fh:
+        pkg = json.load(fh)
+    dbg = pkg["contributes"]["debuggers"][0]
+    assert dbg["type"] == "gdbtrace" and pkg["main"] == "./extension.js"
+    props = set(dbg["configurationAttributes"]["launch"]["properties"])
+    assert props == {"program", "config", "args", "cwd", "stopOnEntry", "python"}
+    launch = inspect.getsource(dap.GdbTraceDap.req_launch)
+    assert all(f'"{p}"' in launch for p in props - {"python"})     # python : lu par l'extension
+    js = open(os.path.join(ext, "extension.js"), encoding="utf-8").read()
+    assert '"gdbtrace.dap"' in js and "config.python" in js
+    if shutil.which("node"):
+        r = subprocess.run(["node", "--check", os.path.join(ext, "extension.js")],
+                           capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+    with open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8") as fh:
+        assert 'gdbtrace-dap = "gdbtrace.dap:main"' in fh.read()

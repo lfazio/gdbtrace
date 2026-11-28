@@ -16,6 +16,7 @@ dev = ["pytest>=7", "capstone>=5.0"]
 [project.scripts]
 gdbtrace = "gdbtrace.__main__:main"
 gdbtrace-mcp = "gdbtrace.mcp:main"   # serveur MCP (stdio) pour un agent : Claude Code…
+gdbtrace-dap = "gdbtrace.dap:main"   # adaptateur DAP (stdio) : VS Code, nvim-dap, Emacs
 
 [tool.setuptools.packages.find]
 include = ["gdbtrace*"]
