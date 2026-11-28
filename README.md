@@ -19,8 +19,9 @@ agent (serveur MCP).
 interface, breakpoints, données, RTOS, trace (SWO, ETM, MTB), cartes, scripting Python,
 serveur MCP, référence des options, dépannage, jalons, architecture, tests.
 
-Ses pages sont dans [`Documentations/`](Documentations/Home.md) et publiées dans le wiki par
-`tools/publish_wiki.sh`.
+Le wiki est aussi le sous-module `Documentations/` du dépôt : `git clone --recurse-submodules`,
+ou `git submodule update --init` dans un dépôt déjà cloné ; `tools/publish_wiki.sh` y publie
+les pages modifiées.
 
 ## Installation
 

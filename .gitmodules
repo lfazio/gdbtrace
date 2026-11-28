@@ -1,0 +1,4 @@
+[submodule "Documentations"]
+	path = Documentations
+	url = ../gdbtrace.wiki.git
+	branch = master

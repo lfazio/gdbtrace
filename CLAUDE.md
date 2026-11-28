@@ -39,7 +39,9 @@ xvfb-run -a .venv/bin/python -m pytest                 # suite complète
 .venv/bin/python -m pytest tests/test_etm.py::test_roundtrip_matches_qemu
 tools/build_opencsd.sh           # oracle OpenCSD dans .cache/ (active test_opencsd_*)
 tools/release_check.sh           # release : toute la suite, cartes de test exigées
-tools/publish_wiki.sh            # publie Documentations/ dans le wiki GitHub (chez l'utilisateur)
+git submodule update --init      # Documentations/ : le wiki GitHub (sous-module)
+tools/publish_wiki.sh "message"  # pages modifiées : commit et push du wiki, pointeur indexé
+tools/publish_wiki.sh --pull     # pages modifiées sur GitHub : sous-module mis à jour
 ```
 
 Outils externes : `qemu-system-arm`, `gdb-multiarch`, `arm-none-eabi-gcc`, `xvfb-run`. Les
@@ -50,12 +52,18 @@ tests non exécutés, vérifier les skips. Les fixtures `elf` / `rtos_elf` de
 QEMU sur un port libre. `pythonpath` inclut `tests/`, d'où `from conftest import …`.
 Aucun linter n'est configuré.
 
-Documentation : `Documentations/`, les pages du wiki GitHub (Home, _Sidebar, une page par
-thème : Lancer-GdbTrace, Trace-ETM, Scripting, Serveur-MCP, Référence-des-options…), liens
-entre pages en `[texte](Nom-de-page)`. Le README reste court et renvoie au wiki. Le wiki ne
-s'atteint pas depuis une session cloud : `tools/publish_wiki.sh` le publie depuis le poste de
-l'utilisateur. `git pull --rebase origin main` avant chaque commit : les commits qui arrivent
-sur le distant viennent des tests sur carte.
+Documentation : `Documentations/` est le wiki GitHub lui-même, en **sous-module** (URL
+relative `../gdbtrace.wiki.git`, branche `master`) : Home, _Sidebar, une page par thème
+(Lancer-GdbTrace, Trace-ETM, Scripting, Serveur-MCP, Référence-des-options…), liens entre
+pages en `[texte](Nom-de-page)`. Le README reste court et renvoie au wiki. Une page modifiée
+se publie en deux commits : dans le sous-module (poussé vers le wiki **avant** le dépôt,
+`tools/publish_wiki.sh "message"`, ou `git push --recurse-submodules=on-demand`), puis le
+pointeur du sous-module dans le commit du dépôt. Pages éditées sur GitHub :
+`tools/publish_wiki.sh --pull`. Sans le sous-module, `tests/test_docs.py` est ignoré. Le wiki
+ne s'atteint pas depuis une session cloud : elle ne peut ni lire ni modifier la doc, et dit
+dans son compte rendu les pages à mettre à jour depuis le poste de l'utilisateur.
+`git pull --rebase origin main` avant chaque commit : les commits qui arrivent sur le distant
+viennent des tests sur carte.
 
 Tests sur carte (`tests/test_board_f746.py`, Nucleo-F746ZG, firmware `examples/nucleo-f746`
 flashé ; `tests/test_board_n6.py`, Nucleo-N657X0-Q, `examples/nucleo-n6` chargé en RAM par

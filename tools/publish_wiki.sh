@@ -1,40 +1,43 @@
 #!/bin/sh
-# Publie Documentations/ dans le wiki GitHub du dépôt : clone le wiki, y remplace les pages
-# par celles du dépôt (les pages absentes du dépôt sont retirées), commit et pousse.
+# Documentations/ est le wiki GitHub du dépôt (sous-module, branche master). Ce script publie
+# les pages modifiées dans le dépôt : commit dans le sous-module, rebase sur les pages
+# modifiées entre-temps sur GitHub, push vers le wiki, puis pointeur du sous-module ajouté à
+# l'index du dépôt (à committer avec le reste).
 #
-#   tools/publish_wiki.sh              # wiki de « origin » (…/gdbtrace.wiki.git)
-#   WIKI_URL=… tools/publish_wiki.sh   # un autre wiki
-#   tools/publish_wiki.sh --dry-run    # montre les changements sans pousser
+#   tools/publish_wiki.sh "message"    # pages modifiées : commit avec ce message, puis push
+#   tools/publish_wiki.sh              # commits déjà faits dans le sous-module : push seul
+#   tools/publish_wiki.sh --pull       # pages modifiées sur GitHub : sous-module mis à jour
 #
-# À lancer là où git a accès au wiki (identifiants GitHub de l'utilisateur). Le wiki doit
-# exister : sur GitHub, onglet Wiki, « Create the first page » une fois.
+# À lancer là où git a accès au wiki (identifiants GitHub de l'utilisateur ; pas depuis une
+# session cloud).
 set -eu
 cd "$(dirname "$0")/.."
-dry=0
-[ "${1:-}" = "--dry-run" ] && dry=1
-origin=$(git remote get-url origin)
-url=${WIKI_URL:-$(printf '%s' "$origin" | sed -e 's#\.git$##' -e 's#$#.wiki.git#')}
-rev=$(git rev-parse --short HEAD)
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
-if ! git clone -q "$url" "$tmp/wiki"; then
-    echo "wiki introuvable : $url" >&2
-    echo "le créer sur GitHub (onglet Wiki, « Create the first page »), puis relancer" >&2
+if ! git -C Documentations rev-parse --show-superproject-working-tree 2>/dev/null | grep -q .; then
+    echo "sous-module Documentations/ absent : git submodule update --init Documentations" >&2
     exit 1
 fi
-find "$tmp/wiki" -maxdepth 1 -name '*.md' -delete
-cp Documentations/*.md "$tmp/wiki/"
-cd "$tmp/wiki"
-git add -A
-if git diff --cached --quiet; then
-    echo "wiki déjà à jour ($rev)"
+wiki() { git -C Documentations "$@"; }
+wiki fetch -q origin master
+if [ "${1:-}" = "--pull" ]; then
+    wiki rebase -q FETCH_HEAD
+    git add Documentations
+    echo "wiki relu : $(wiki rev-parse --short HEAD) ; pointeur ajouté à l'index (à committer)"
     exit 0
 fi
-git diff --cached --stat
-if [ "$dry" = 1 ]; then
-    echo "--dry-run : rien n'est poussé"
-    exit 0
+if [ -n "$(wiki status --porcelain)" ]; then
+    if [ -z "${1:-}" ]; then
+        echo "pages modifiées : donner le message du commit du wiki" >&2
+        wiki status --short >&2
+        exit 1
+    fi
+    wiki add -A
+    wiki commit -q -m "$1"
 fi
-git commit -q -m "Documentation du dépôt ($rev)"
-git push -q origin HEAD
-echo "wiki publié : $rev"
+wiki rebase -q FETCH_HEAD
+if [ "$(wiki rev-parse HEAD)" = "$(wiki rev-parse FETCH_HEAD)" ]; then
+    echo "wiki déjà à jour : $(wiki rev-parse --short HEAD)"
+else
+    wiki push -q origin HEAD:master
+    echo "wiki publié : $(wiki rev-parse --short HEAD)"
+fi
+git add Documentations

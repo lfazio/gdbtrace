@@ -11,12 +11,17 @@ import unicodedata
 import pytest
 from conftest import ROOT, needs_qemu
 
-DOC = os.path.join(ROOT, "Documentations", "Scripting.md")
+WIKI = os.path.join(ROOT, "Documentations")
+DOC = os.path.join(WIKI, "Scripting.md")
+#: Documentations/ est le wiki GitHub, en sous-module : absent tant qu'il n'est pas initialisé
+pytestmark = pytest.mark.skipif(not os.path.exists(DOC), reason="sous-module Documentations/ absent (git submodule update --init)")
 _BLOCK = re.compile(r"<!-- test(?::\s*(?P<opts>.*?))?\s*-->\s*\n```python\n(?P<code>.*?)```", re.S)
 
 
 def blocks() -> list[tuple[str, str, str]]:
     """[(identifiant, options, code)] ; identifiant = titre de la section + rang du bloc."""
+    if not os.path.exists(DOC):
+        return []
     text = open(DOC, encoding="utf-8").read()
     out, seen = [], {}
     for m in _BLOCK.finditer(text):
@@ -63,7 +68,7 @@ def test_wiki_pages_and_links():
     """Documentations/ : les pages du wiki. Chaque lien `[texte](Page)` mène à une page qui
     existe, et la barre latérale (_Sidebar) les donne toutes."""
     import glob
-    wiki = os.path.join(ROOT, "Documentations")
+    wiki = WIKI
     pages = {os.path.basename(p)[:-3] for p in glob.glob(os.path.join(wiki, "*.md"))}
     assert {"Home", "_Sidebar", "Scripting", "Installation"} <= pages
     broken = []
