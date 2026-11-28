@@ -1021,12 +1021,25 @@ class Session:
             return extra["new"] != old
         return self._step_loop(changed, asm, max_steps, extra)
 
+    def _hw_breakpoint_reaches(self, addr: int) -> bool:
+        """Un comparateur du FPB peut-il arrêter le cœur à `addr` ? Le FPB de révision 1
+        (Cortex-M3, M4 : FP_CTRL.REV = 0) et le BPU des M0/M0+ ne comparent que la zone de code
+        (< 0x20000000). Au-delà, gdb accepte le breakpoint matériel, mais OpenOCD le refuse à la
+        reprise et le cœur ne repart pas (constaté sur STM32F446 : retour d'un FLM en SRAM)."""
+        if addr < 0x20000000:
+            return True
+        try:
+            fp_ctrl = int.from_bytes(self.read_memory(0xE0002000, 4), "little")
+        except GdbError:                        # FPB illisible : laisser essayer le matériel
+            return True
+        return (fp_ctrl >> 28) & 0xF != 0
+
     @contextlib.contextmanager
     def target_calls(self, return_addr: int, sp: int, static_base: int | None = None):
         """Appels de fonctions sur la cible arrêtée (algorithmes de flash) : rend
         `call(adresse, args, timeout)` → r0. Chaque appel pose r0-r3, r9 (`static_base`), sp,
         lr (= `return_addr`, où une instruction BKPT attend et où gdb pose un breakpoint
-        matériel, masqué de breakpoints()), pc, puis laisse tourner la cible jusqu'au retour.
+        matériel, ou logiciel hors de portée du FPB ; masqué de breakpoints()), pc, puis laisse tourner la cible jusqu'au retour.
         Silencieux : ni événement, ni resume hook (chrono, compteurs, trace simulée) ; PRIMASK à 1
         pendant les appels, remis ensuite. Un délai dépassé interrompt la cible ; un arrêt
         ailleurs qu'au retour (faute) est une erreur."""
@@ -1043,9 +1056,12 @@ class Session:
                 self.write_register("primask", 1)
             except GdbError:                    # registre absent de la description de cible
                 primask = None
-            try:
-                num = self.gdb.command(f"-break-insert -h *{ret:#x}")["bkpt"]["number"]
-            except GdbError:                    # plus de comparateur matériel : logiciel
+            if self._hw_breakpoint_reaches(ret):
+                try:
+                    num = self.gdb.command(f"-break-insert -h *{ret:#x}")["bkpt"]["number"]
+                except GdbError:                # plus de comparateur matériel : logiciel
+                    num = None
+            if num is None:
                 num = self.gdb.command(f"-break-insert *{ret:#x}")["bkpt"]["number"]
             self._transient.add(num)
 

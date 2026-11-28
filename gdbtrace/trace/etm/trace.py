@@ -129,6 +129,8 @@ class EtmTrace:
         attend la prochaine synchronisation, le flot une nouvelle adresse ; un trou."""
         with self._lock:
             self.packets.synced = False
+            if self.version != 4:               # ETMv3 : la dernière instruction, avant le trou
+                self._add(self.flow.flush)
             reset = getattr(self.flow, "_reset", None)
             if reset is not None:
                 reset()
@@ -173,11 +175,11 @@ class EtmTrace:
         return fs.instructions - n0
 
     def flush(self) -> int:
-        """ETMv4 : valide les éléments encore spéculatifs ; retourne le nombre d'instructions.
-        Un Commit reçu ensuite pour l'un d'eux est sans effet ; un Cancel ne pourrait plus
-        l'annuler (sans conséquence sur un ETM-M7, qui ne spécule pas les branchements)."""
-        if self.version != 4:
-            return 0
+        """Fin d'une exécution : ETMv4, valide les éléments encore spéculatifs ; ETMv3, émet
+        la dernière instruction, retenue jusqu'au paquet suivant (une exception pouvait
+        l'annuler). Retourne le nombre d'instructions. Un Commit reçu ensuite pour l'un d'eux
+        est sans effet ; un Cancel ne pourrait plus l'annuler (sans conséquence sur un ETM-M7,
+        qui ne spécule pas les branchements)."""
         with self._lock:
             return self._add(self.flow.flush)
 

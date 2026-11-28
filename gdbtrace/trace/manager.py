@@ -598,14 +598,15 @@ class TraceManager:
 
     def on_target_stopped(self) -> None:
         """Fin d'une exécution, en tâche de fond : sous QEMU, conversion du journal en trace ;
-        sur une cible avec MTB, lecture et remise à zéro du tampon. ETMv4 capturé : le dernier
-        élément, encore spéculatif, est validé."""
+        sur une cible avec MTB, lecture et remise à zéro du tampon. ETM capturé : le dernier
+        élément (spéculatif en ETMv4 ; en ETMv3, retenu au cas où une exception l'annulerait)
+        est validé."""
         if self.mtb_sim is not None and self.mtb_sim.autohalt:
             self.mtb_sim.clear_halt()
         jobs = [s for s in self._sims() if s.path is not None]
         mtb, tmc = self.mtb, self.tmc
         if not jobs and mtb is None and tmc is None:
-            if self.etm is not None and self.etm.version == 4:
+            if self.etm is not None:
                 with self._etm_cv:          # trace encore en file : validé après son décodage
                     if self._etm_q or self._etm_decoding:
                         self._etm_flush_pending = True

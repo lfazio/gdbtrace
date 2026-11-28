@@ -93,6 +93,7 @@ class QemuEtmSim:
         # ETMv3 : encodé en mode cycle-accurate
         data = Etm3Encoder(self.image, cycle_accurate=True).encode(events)
         self.etm.feed(data)
+        self.etm.flush()                             # la dernière instruction, retenue
         return len(data)
 
     def close(self) -> None:

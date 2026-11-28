@@ -19,6 +19,12 @@ tracés) : un tel trou est comblé quand l'image dit sans ambiguïté ce qui s'e
 les deux — depuis l'adresse attendue, des instructions du bloc, ordinaires et
 inconditionnelles, jusqu'à l'adresse de reprise. Sinon (exécution hors du bloc, branchement
 indirect ou conditionnel) : trou.
+
+Instruction annulée : une adresse de branchement d'exception dont le bit Cancel est à 1 dit
+que la dernière instruction tracée n'a pas été exécutée (interrompue : le cœur la reprendra
+au retour). La dernière instruction d'un atome est donc retenue jusqu'au paquet suivant
+(`_held`), qui l'émet ou l'annule ; `flush()` l'émet en fin de flux (arrêt de la cible).
+Constaté sur STM32F446 : un SysTick sur un `str` du bloc filtré, retiré par OpenCSD.
 """
 from __future__ import annotations
 
@@ -40,6 +46,7 @@ class FlowStats:
     gaps: int = 0                # trous émis (TraceGap)
     healed: int = 0              # trous comblés (instructions du bloc perdues par le filtre)
     overflows: int = 0           # reprises après débordement de la FIFO de l'ETM (I-sync 2)
+    cancelled: int = 0           # instructions annulées par une exception (bit Cancel)
 
 
 class FlowDecoder:
@@ -54,6 +61,8 @@ class FlowDecoder:
         self.synced = False          # un premier I-sync a été reçu
         #: blocs tracés par un filtre du DWT ; None : aucun trou n'est comblé
         self.heal_ranges: list[tuple[int, int]] | None = None
+        #: dernière instruction d'un atome, émise au paquet suivant sauf s'il l'annule
+        self._held: Step | None = None
 
     @property
     def timing(self) -> str:
@@ -68,6 +77,10 @@ class FlowDecoder:
     def feed(self, packets: list[EtmPacket]) -> list[Event]:
         out: list[Event] = []
         for p in packets:
+            if isinstance(p, Branch) and p.cancel and self._held is not None:
+                self._cancel()
+            elif not isinstance(p, Atoms):
+                self._release(out)
             if isinstance(p, ISync):
                 # trace réactivée (filtre) ou reprise après débordement : un trou dans le chemin
                 if self.synced and p.reason in (1, 2):
@@ -109,6 +122,31 @@ class FlowDecoder:
                     self._atom(atom, out)
         return out
 
+    def flush(self) -> list[Event]:
+        """Fin du flux (arrêt de la cible, fin d'une capture) : la dernière instruction,
+        retenue jusqu'au paquet suivant, est émise."""
+        out: list[Event] = []
+        self._release(out)
+        return out
+
+    def _release(self, out: list[Event]) -> None:
+        if self._held is not None:
+            out.append(self._held)
+            self._held = None
+
+    def _cancel(self) -> None:
+        """La dernière instruction tracée, annulée par l'exception qui suit, n'est pas
+        émise ; ses cycles mesurés reviennent à l'événement suivant (l'entrée d'exception)."""
+        s, self._held = self._held, None
+        self.stats.instructions -= 1
+        self.stats.cycles -= s.cycles
+        if not s.executed:
+            self.stats.not_executed -= 1
+        if self.cycle_accurate:
+            self.pending += s.cycles
+        self.stats.cancelled += 1
+        self.last_was_return = False
+
     MAX_HEAL = 8
 
     def _heal(self, resume: int, out: list[Event]) -> bool:
@@ -146,7 +184,8 @@ class FlowDecoder:
         executed = atom == "E"
         taken = executed and ins.kind in (DIRECT, INDIRECT)
         c = self._take(cycles_of(ins, executed, taken))
-        out.append(Step(self.addr, cycles=c, executed=executed))
+        self._release(out)
+        self._held = Step(self.addr, cycles=c, executed=executed)
         self.stats.instructions += 1
         self.stats.cycles += c
         if not executed:
@@ -166,4 +205,5 @@ def decode(data: bytes, image: CodeImage,
     pk = Etm3Decoder(cycle_accurate=cycle_accurate)
     fl = FlowDecoder(image, cycle_accurate)
     events = fl.feed(pk.feed(data))
+    events += fl.flush()
     return events, pk, fl

@@ -305,7 +305,8 @@ def test_etm3_range_filter_by_dwt_on_board(request, tmp_path, run):
     from gdbtrace.trace.etm.flow import FlowDecoder
     flow = FlowDecoder(img)
     flow.heal_ranges = [tuple(r) for r in res["ranges"]]
-    healed = [e.addr for e in flow.feed(Etm3Decoder().feed(data)) if isinstance(e, Step)]
+    healed = [e.addr for e in flow.feed(Etm3Decoder().feed(data)) + flow.flush()
+              if isinstance(e, Step)]
     it = iter(healed)
     assert all(a in it for a in theirs)                          # sous-suite, dans l'ordre
     assert len(healed) > len(theirs) and flow.stats.healed > 0

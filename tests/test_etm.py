@@ -223,6 +223,7 @@ def test_tpiu_routing_itm_and_etm(qemu_paths):
         sess.feed(raw[i:i + 64])
     assert text.text(0) == "trace ok"
     assert sess.stats["octets ETM"] == len(etm_bytes)
+    trace.flush()                   # fin du flux : la dernière instruction, retenue (Cancel)
     assert as_tuples(trace.last(len(events))) == as_tuples(events)
 
 
@@ -426,3 +427,37 @@ def test_simulated_etm_not_taken_it_branch(qemu_paths):
     assert pk.errors == 0 and as_tuples(decoded) == as_tuples(events)
     dsteps = [e for e in decoded if isinstance(e, ql.Step)]
     assert {dsteps[k].executed for k in skipped if k < len(dsteps)} == {False}
+
+
+def test_exception_cancels_the_last_traced_instruction(elf):
+    """Adresse de branchement d'exception avec le bit Cancel : la dernière instruction tracée
+    n'a pas été exécutée (interrompue, reprise au retour), OpenCSD la retire aussi (constaté
+    sur une vraie trace de STM32F446 : un SysTick sur un `str`). Elle est retenue jusqu'au
+    paquet suivant, même lu par un autre appel, et `flush()` l'émet en fin de flux."""
+    from gdbtrace.core.symbols import SymbolTable
+    from gdbtrace.trace.etm.flow import FlowDecoder
+    img = CodeImage(elf)
+    f = SymbolTable(elf).function("main")
+    a = f.start
+    while not (img.instr(a).kind == NORMAL and img.instr(a + img.instr(a).size).kind == NORMAL):
+        a += img.instr(a).size
+        assert a < f.end
+    b = a + img.instr(a).size
+    head = [ISync(addr=a, reason=0, thumb=True, cycles=0), Atoms(atoms="EE", cycles=())]
+    exc = lambda cancel: Branch(addr=f.start, bits=32, exception=15, cancel=cancel)  # noqa: E731
+    steps = lambda evs: [e.addr for e in evs if isinstance(e, ql.Step)]  # noqa: E731
+
+    fl = FlowDecoder(img)
+    evs = fl.feed(head + [exc(True)]) + fl.flush()
+    assert steps(evs) == [a] and any(isinstance(e, ql.ExcEntry) for e in evs)
+    assert fl.stats.instructions == 1 and fl.stats.cancelled == 1
+
+    fl = FlowDecoder(img)
+    assert steps(fl.feed(head + [exc(False)]) + fl.flush()) == [a, b]
+
+    fl = FlowDecoder(img)                       # l'annulation arrive dans l'appel suivant
+    assert steps(fl.feed(head)) == [a]
+    assert steps(fl.feed([exc(True)])) == [] and fl.flush() == []
+
+    fl = FlowDecoder(img)                       # fin du flux : la dernière émise par flush()
+    assert steps(fl.feed(head)) == [a] and steps(fl.flush()) == [b]

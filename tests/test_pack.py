@@ -98,6 +98,8 @@ def test_zipped_pack_and_installed_roots(pdsc, tmp_path, monkeypatch):
     """Un .pack (zip) se lit et s'extrait dans le cache ; les packs installés (cmsis-toolbox :
     <racine>/<Vendor>/<Name>/<version>/) donnent la dernière version, sans les index cachés."""
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))   # sans les packs installés du poste
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
     zpath = tmp_path / "Acme.M4_DFP.2.3.1.pack"
     with zipfile.ZipFile(zpath, "w") as z:
         z.write(pdsc, "Acme.M4_DFP.pdsc")

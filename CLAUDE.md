@@ -197,7 +197,8 @@ mais avec son firmware de test.
     lisibles sans elle (alias A1..A3 en ARMv8-M), dit ; `fault._mpu_cause` (MemManage).
   - Chargeur de flash (`core/flashalgo.py`) : FLM (PrgCode/PrgData, r9 = données) et `.stldr`
     (segments à leur adresse ; sans Read, relu après Init, qui remet la mémoire en mode mappé) appelés par `Session.target_calls` (r0-r3, r9, sp, lr = BKPT de
-    retour + breakpoint matériel masqué, PRIMASK à 1, `_looping` : ni événement ni resume
+    retour + breakpoint masqué, matériel si le FPB l'atteint : `_hw_breakpoint_reaches`, FPB rév. 1
+    des M3/M4 et BPU des M0/M0+ sous 0x20000000 seulement, sinon logiciel ; PRIMASK à 1, `_looping` : ni événement ni resume
     hook) ; `Session.flash_loaders` : `program`/`program_image` y envoient leur mémoire
     (`split_segments`), le reste par `load` ; posés par `build_flash_loaders` (`__main__.py`,
     avant la programmation, batch et `App.flash_loader_factory`).
@@ -371,7 +372,10 @@ GUI (aussi utilisé en batch ; `post` rappelle dans le bon thread).
   reprend à chaque branchement ; `FlowDecoder.heal_ranges` (blocs du DWT, posés par
   `configure_etm`, jamais en simulation) comble ces trous quand le code est sans ambiguïté
   (instructions du bloc, sans branchement indirect ni condition). I-sync raison 2 =
-  débordement (`overflows`), jamais comblé.
+  débordement (`overflows`), jamais comblé. Bit Cancel d'une adresse de branchement
+  d'exception : la dernière instruction tracée n'a pas été exécutée ; `FlowDecoder` retient
+  la dernière instruction d'un atome (`_held`) jusqu'au paquet suivant, et `flush()` l'émet en
+  fin de flux (`EtmTrace.flush`, à l'arrêt, ETMv3 comme ETMv4 ; `decode()` le fait).
 - ETMv3 programmé (`EtmConfig.apply`) : ETMCR relu, une option absente de l'ETM (cycle-accurate
   sur un ETM-M4) est retirée (`refused`, dite par `summary()`) et le décodeur refait
   (`TraceManager._rebuild_etm`) ; `--etm-stall` écrit aussi ETMFFLR (seuil FIFOFULL, nul au
@@ -450,9 +454,9 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
   en marche (F072, F746, F446, N6), compteurs du DWT (F746, F446) et de la PMU (N6), tables ROM
   (F746, F446, N6, F072) et MPU (F746, F446, N6 ; la STM32F746 n'intègre pas le CTI du Cortex-M7 :
   entrée de la table non présente), état sécurisé du M55 de la N6 (jalon 23, vue Registres), chargeur
-  externe de la flash XSPI de la N6 (`MX25UM51245G_STM32N6570-NUCLEO.stldr`). Matrice jalon ×
-  carte : `Documentations/Jalons.md`. Prêt, pas encore passé : FLM d'un pack (F446)
-  (`boards.system_passes`, `flash_by_algorithm`). Un
+  externe de la flash XSPI de la N6 (`MX25UM51245G_STM32N6570-NUCLEO.stldr`), FLM du pack
+  Keil.STM32F4xx_DFP sur la F446 (`boards.system_passes`, `flash_by_algorithm`). Matrice
+  jalon × carte : `Documentations/Jalons.md`. Un
   firmware recompilé déplace `worker_step` : `etm-stop` de `nucleo-f446re.yaml` est son
   `bx lr` (vérifié par le test). Non validé sur sonde
   réelle : `--rtos`, port de trace parallèle, MTB (dont le sens de
