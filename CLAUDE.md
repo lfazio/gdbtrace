@@ -493,7 +493,7 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
   entrée de la table non présente), état sécurisé du M55 de la N6 (jalon 23, vue Registres), chargeur
   externe de la flash XSPI de la N6 (`MX25UM51245G_STM32N6570-NUCLEO.stldr`), FLM du pack
   Keil.STM32F4xx_DFP sur la F446 (`boards.system_passes`, `flash_by_algorithm`), trace sur
-  disque (`boards.record_on_board`, `replay_checks` : F746 en SWO, N6 en ETR ; F446 prête).
+  disque (`boards.record_on_board`, `replay_checks` : F746 et F446 en SWO, N6 en ETR).
   Matrice jalon × carte : `Documentations/Jalons.md`. Un
   firmware recompilé déplace `worker_step` : `etm-stop` de `nucleo-f446re.yaml` est son
   `bx lr` (vérifié par le test). Non validé sur sonde
