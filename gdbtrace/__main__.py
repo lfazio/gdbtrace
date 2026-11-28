@@ -522,6 +522,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="arrêter la cible à l'entrée de toute faute (HardFault, BusFault…) : vector "
                          "catch, sinon breakpoints sur les gestionnaires ; vue Faute")
     p.add_argument("--script", help="script Python exécuté après connexion (objet `gdbtrace`)")
+    p.add_argument("--junit", metavar="FICHIER.xml",
+                   help="avec --batch et --script : chaque fonction test_* du script est un cas "
+                        "(assertion : échec, exception : erreur, durée, sortie), comme chaque "
+                        "gdbtrace.check() ; rapport JUnit écrit dans FICHIER.xml, code de retour "
+                        "non nul si un cas échoue")
     p.add_argument("--batch", action="store_true", help="sans GUI : exécute --script puis quitte")
     p.add_argument("--layout", default="gdbtrace-layout.json", help="fichier de layout des fenêtres")
     p.add_argument("--config", metavar="FICHIER.yaml",
@@ -537,6 +542,8 @@ def validate(args) -> list[str]:
     """Règles entre options, communes à la ligne de commande et aux configurations : la liste
     des erreurs (vide si tout va bien)."""
     errors = []
+    if getattr(args, "junit", None) and not args.script:
+        errors.append("--junit : avec --script (ses fonctions test_* sont les cas)")
     if not args.etm_config:              # options de programmation de l'ETM : sinon ignorées
         stray = [opt for opt, on in ((f"--etm-port {args.etm_port}", args.etm_port != "parallel"),
                                      ("--etm-stall", args.etm_stall), ("--stm32", args.stm32),
@@ -716,8 +723,14 @@ def main(argv: list[str] | None = None) -> int:
         rc = b.rc
         try:
             b.setup()
-            if args.script:
+            if args.script and args.junit:
+                from .core.junit import run_script
+                if run_script(b.api, args.script, args.junit).failed:
+                    rc = 1
+            elif args.script:
                 b.api.run_script(args.script)
+            if any(not ok for _name, ok, _msg in b.api.checks):
+                rc = 1
             for path in args.coverage:
                 b.api.cov.export(path)
             if args.coverage:

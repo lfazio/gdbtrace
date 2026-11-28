@@ -515,9 +515,9 @@ class GdbTraceMcp:
         from .__main__ import BatchSession, build_target, parse_command_line, resolve_session
         self.close()
         argv = shlex.split(args)
-        if any(a in ("--batch", "--script", "--coverage") for a in argv):
-            raise ToolError("--batch / --script / --coverage : sans objet ici (outils `python`, "
-                            "`coverage`)")
+        if any(a in ("--batch", "--script", "--coverage", "--junit") for a in argv):
+            raise ToolError("--batch / --script / --coverage / --junit : sans objet ici (outils "
+                            "`python`, `coverage`)")
         try:                                    # mêmes règles que la ligne de commande
             p, ns, config = parse_command_line(argv + ["--batch"])
             elf, program, verify, load, svd_warning = resolve_session(p, ns)

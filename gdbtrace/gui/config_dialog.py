@@ -266,9 +266,11 @@ class ConfigEditor(tk.Toplevel):
 
     def _build_script(self, f) -> None:
         self._row(f, 0, "Script Python (objet gdbtrace)", "", "script", browse="py")
-        self._row(f, 1, "Couverture fusionnée à la connexion (.json, un par ligne)", "couverture",
+        self._row(f, 1, "Rapport JUnit des test_* du script (.xml, en --batch)", "script", "junit",
+                  browse="file")
+        self._row(f, 2, "Couverture fusionnée à la connexion (.json, un par ligne)", "couverture",
                   "fusionner", "list")
-        self._row(f, 2, "Couverture écrite à la fin du script (.html, .info, .json)", "couverture",
+        self._row(f, 3, "Couverture écrite à la fin du script (.html, .info, .json)", "couverture",
                   "exporter", "list")
 
     # ------------------------------------------------------------------ fichiers
@@ -305,7 +307,8 @@ class ConfigEditor(tk.Toplevel):
     def set_config(self, config: SessionConfig) -> None:
         d = config.data
         for (section, key), var in self.vars.items():
-            holder = d if not section else (d.get(section) or {})
+            holder = d if not section else d.get(section)
+            holder = holder if isinstance(holder, dict) else {}
             v = holder.get(key)
             if isinstance(var, tk.BooleanVar):
                 var.set(v is not False if key == "verifier" else bool(v))
@@ -316,8 +319,11 @@ class ConfigEditor(tk.Toplevel):
             else:
                 var.set(str(v))
         for (section, key) in self.texts:
-            holder = d if not section else (d.get(section) or {})
+            holder = d if not section else d.get(section)
+            holder = holder if isinstance(holder, dict) else {}
             self._set_list(section, key, holder.get(key))
+        sc = d.get("script")                                    # chemin, ou section
+        self.vars[("", "script")].set(sc.get("fichier", "") if isinstance(sc, dict) else (sc or ""))
         prog = (d.get("cible") or {}).get("programmer")        # image au lieu de l'ELF
         self.vars[("cible", "image")].set(prog if isinstance(prog, str) else "")
         srv = d.get("serveur") or {}
@@ -388,7 +394,10 @@ class ConfigEditor(tk.Toplevel):
         if self.os_var.get() != "aucun":
             d["os"] = self.os_var.get()
         script = self.vars[("", "script")].get().strip()
-        if script:
+        junit = self.vars[("script", "junit")].get().strip()
+        if script and junit:
+            d["script"] = {"fichier": script, "junit": junit}
+        elif script:
             d["script"] = script
         cov = {k: self._get_list("couverture", k) for k in ("fusionner", "exporter")}
         cov = {k: v for k, v in cov.items() if v}

@@ -54,6 +54,8 @@ SERVER_COMMON = ["gdb", "gdb-port", "no-load"]
 CIBLE_KEYS = ["elf", "svd", "pack", "device", "cpu-hz", "programmer", "verifier", "go", "break-on-fault",
               "add-symbols", "flash-loader", "flash-ram", "coeurs"]
 COUVERTURE_KEYS = ["fusionner", "exporter"]
+#: `script` : un chemin, ou une section (le script et son rapport JUnit)
+SCRIPT_KEYS = ["fichier", "junit"]
 #: options de trace de la ligne de commande, dans l'ordre de --help
 TRACE_KEYS = ["swo", "swo-file", "swo-formatter", "swo-config", "swo-hz", "swo-port", "var-trace",
               "etm-sim", "trace", "trace-file", "etm-config", "etm-cycle-accurate", "etm-timestamps",
@@ -66,7 +68,8 @@ TOP_KEYS = ["gdbtrace", "nom", "cible", "serveur", "os", "script", "couverture",
 PATH_KEYS = {("cible", "elf"), ("cible", "svd"), ("cible", "programmer"), ("cible", "add-symbols"),
              ("cible", "flash-loader"), ("cible", "pack"), ("cible", "coeurs"),
              ("serveur", "openocd"), ("serveur", "cwd"), ("serveur", "qemu-load"),
-             ("", "script"), ("couverture", "fusionner"), ("couverture", "exporter"),
+             ("", "script"), ("script", "fichier"), ("script", "junit"),
+             ("couverture", "fusionner"), ("couverture", "exporter"),
              ("trace", "swo-file"), ("trace", "trace-file")}
 #: clé → option de la ligne de commande (quand le nom diffère)
 OPTION_OF = {("cible", "programmer"): "--program", ("cible", "coeurs"): "--core",
@@ -241,6 +244,13 @@ class SessionConfig:
             if not isinstance(sec, dict):
                 raise ConfigError(f"{name} : un dictionnaire est attendu")
             _known(sec, keys, name)
+        sc = d.get("script")
+        if isinstance(sc, dict):
+            _known(sc, SCRIPT_KEYS, "script")
+            if sc.get("junit") and not sc.get("fichier"):
+                raise ConfigError("script.junit : avec script.fichier (ses fonctions test_*)")
+        elif sc is not None and not isinstance(sc, str):
+            raise ConfigError("script : un chemin, ou une section (fichier, junit)")
         srv = d.get("serveur") or {}
         if not isinstance(srv, dict):
             raise ConfigError("serveur : un dictionnaire est attendu")
@@ -304,8 +314,14 @@ class SessionConfig:
             argv.append("--no-verify")
         if d.get("os") and d["os"] != "aucun":
             argv += ["--os", d["os"]]
-        if d.get("script"):
-            argv += ["--script", str(d["script"])]
+        sc = d.get("script")
+        if isinstance(sc, dict):
+            if sc.get("fichier"):
+                argv += ["--script", str(sc["fichier"])]
+            if sc.get("junit"):
+                argv += ["--junit", str(sc["junit"])]
+        elif sc:
+            argv += ["--script", str(sc)]
         for key, v in (d.get("couverture") or {}).items():
             argv += _option(p, "couverture", key, v)
         for key, v in (d.get("trace") or {}).items():
@@ -391,7 +407,10 @@ class SessionConfig:
         d["serveur"] = srv
         if getattr(args, "os", None):
             d["os"] = args.os
-        if args.script:
+        if args.script and getattr(args, "junit", None):
+            d["script"] = {"fichier": os.path.abspath(args.script),
+                           "junit": os.path.abspath(args.junit)}
+        elif args.script:
             d["script"] = os.path.abspath(args.script)
         cov = {}
         if args.coverage_merge:

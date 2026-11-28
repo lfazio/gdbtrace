@@ -161,6 +161,9 @@ class ScriptAPI:
         self.cov = CoverageAPI(self)
         self._until: str | None = None      # breakpoint temporaire de go(until=…)
         self._config: dict | None = None    # configuration de session (menu Configuration)
+        #: cas en ligne de `check()` : (nom, réussi, message) ; le mode batch en tire son code
+        self.checks: list[tuple[str, bool, str]] = []
+        self._junit = None                  # rapport JUnit en cours (--junit : core/junit.py)
         #: plusieurs cœurs (--core : core/cores.CoreSet), ou None
         self.core_set = None
         self._main_session = session
@@ -1447,10 +1450,25 @@ class ScriptAPI:
     def gdb(self, cli: str) -> str: return self.s.cli(cli)
     def monitor(self, cmd: str) -> str: return self.s.monitor(cmd)
 
+    def script_globals(self) -> dict:
+        """Globales d'un script et de la console : `gdbtrace`, `session`, `hexdump`."""
+        return {"gdbtrace": self, "session": self.s, "hexdump": hexdump}
+
     def run_script(self, path: str) -> None:
         """Exécute un script avec les mêmes globales que la console : `gdbtrace`, `session`,
         `hexdump`."""
-        runpy.run_path(path, init_globals={"gdbtrace": self, "session": self.s, "hexdump": hexdump})
+        runpy.run_path(path, init_globals=self.script_globals())
+
+    def check(self, name: str, condition, message: str = "") -> bool:
+        """Cas de test en ligne : affiche « ✓ nom » ou « ✗ nom : message » et rend la condition.
+        Avec `--junit`, un cas du rapport ; en `--batch`, un cas en échec rend le code de
+        retour non nul."""
+        ok = bool(condition)
+        print(f"✓ {name}" if ok else f"✗ {name}" + (f" : {message}" if message else ""))
+        self.checks.append((name, ok, message))
+        if self._junit is not None:
+            self._junit.check(name, ok, message)
+        return ok
 
 
 class Console:

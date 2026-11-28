@@ -359,8 +359,8 @@ class GdbTraceDap:
             argv = ["--config", str(args["config"])] + argv
         if args.get("program"):
             argv = [str(args["program"])] + argv
-        if any(a in ("--batch", "--script") for a in argv):
-            raise DapError("--batch / --script : sans objet ici")
+        if any(a in ("--batch", "--script", "--junit") for a in argv):
+            raise DapError("--batch / --script / --junit : sans objet ici")
         self.stop_on_entry = bool(args.get("stopOnEntry", False))
         err = io.StringIO()
         try:
