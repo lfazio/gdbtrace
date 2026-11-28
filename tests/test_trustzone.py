@@ -131,10 +131,14 @@ def test_state_and_stack_from_the_secure_world(tz):
                       ("NS", "NS_Reset_Handler"), ("S", "__gnu_cmse_nonsecure_call"),
                       ("S", "start_nonsecure"), ("S", "main")]
     assert "SG" in frames[1].note
-    sau = security.session_sau(s, st)                            # QEMU : région choisie seule
+    sau = security.session_sau(s, st)
     assert sau.readable and sau.enabled and sau.sregion == 8
-    assert [(r.number, r.base, r.attribute) for r in sau.regions] == [(2, 0x10100000, "NSC")]
-    assert "sélection de région ignorée" in sau.note
+    got = [(r.number, r.base, r.attribute) for r in sau.regions if r.enabled]
+    if len(sau.regions) < sau.sregion:          # QEMU 8.2 : SAU_RNR ignoré, région choisie seule
+        assert got == [(2, 0x10100000, "NSC")] and "sélection de région ignorée" in sau.note
+    else:                                       # QEMU 11 : SAU_RNR écrit, les 8 régions lues
+        assert got == [(0, 0x00200000, "NS"), (1, 0x28100000, "NS"), (2, 0x10100000, "NSC")]
+        assert "ignorée" not in sau.note
     api = ScriptAPI(s)
     assert api.mpu(quiet=True).world == "sécurisée"
     assert api.mpu(quiet=True, nonsecure=True).world == "non sécurisée"
@@ -248,7 +252,7 @@ def test_gui_registers_status_stack_and_system(tz_elfs, tmp_path):
         app.root.update()
         sys_view.refresh()
         assert sys_view.sau_info.cget("text").startswith("SAU 8 régions, activé")
-        assert len(sys_view.sau_tree.get_children()) == 1
+        assert len(sys_view.sau_tree.get_children()) in (1, 8)  # QEMU 8.2 : RNR ignoré ; 11 : toutes
         n = s.stop_count
         app.go()                                            # repart, s'arrête au tour suivant
         assert pump(app, lambda: s.stop_count > n and s.state == "stopped")

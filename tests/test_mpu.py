@@ -1,6 +1,9 @@
 """MPU (core/mpu.py) : décodage ARMv7-M et ARMv8-M sur des registres factices, serveur qui
 ignore l'écriture de MPU_RNR, puis QEMU (mps2-an385 : Cortex-M3 ; mps3-an547 : Cortex-M55)
-avec la démo des fautes, qui pose ses régions au démarrage."""
+avec la démo des fautes, qui pose ses régions au démarrage. Le gdbstub de QEMU 8.2 ignore
+l'écriture de MPU_RNR par le débogueur (seule la région choisie par le firmware, ou son groupe
+d'alias, est lue, et la note le dit) ; QEMU 11 l'applique (toutes les régions). Les tests QEMU
+acceptent les deux, chacun avec ce qu'il doit lire."""
 import os
 import time
 
@@ -112,6 +115,16 @@ def test_no_mpu():
 
 
 # ====================================================================== QEMU
+def _rnr_ignored(st) -> bool:
+    """QEMU 8.2 : l'écriture de MPU_RNR par le débogueur est ignorée (régions lues < DREGION,
+    note) ; QEMU 11 : appliquée, toutes les régions sont lues, sans note."""
+    if len(st.regions) < st.dregion:
+        assert "QEMU" in st.note, st.note
+        return True
+    assert len(st.regions) == st.dregion and not st.note, (st.regions, st.note)
+    return False
+
+
 def _demo(elf, machine):
     from gdbtrace.core.session import Session
     from gdbtrace.core.target import QemuTarget, free_port
@@ -131,11 +144,19 @@ def test_qemu_m3_mpu_and_memmanage(faults_elfs):
     try:
         st = ScriptAPI(s).mpu(quiet=True)
         assert st.arch == "ARMv7-M" and st.dregion == 8 and st.enabled and st.ctrl == 5
-        assert [r.number for r in st.regions] == [3] and "QEMU" in st.note   # RNR laissé à 3
-        r = st.regions[0]
+        guard = s.address_of("mpu_guard")
+        regions = {r.number: r for r in st.regions}
+        ignored = _rnr_ignored(st)
+        if ignored:                                             # QEMU 8.2 : RNR laissé à 3
+            assert list(regions) == [3]
+        else:                                                   # QEMU 11 : les 8 régions
+            assert [n for n, r in regions.items() if r.enabled] == [0, 1, 2, 3]
+            g = regions[2]
+            assert (g.base, g.limit, g.priv, g.unpriv, g.xn) == (guard, guard + 31, "aucun", "aucun", True)
+            assert (regions[0].base, regions[0].priv, regions[1].base) == (0, "RO", 0x20000000)
+        r = regions[3]
         assert (r.base, r.limit, r.priv, r.unpriv, r.xn, r.memory) == (
             0x40000000, 0x5FFFFFFF, "RW", "RW", True, "Device partagé")
-        guard = s.address_of("mpu_guard")
         s.set_var("fault_kind", "7")
         s.go()
         time.sleep(0.3)
@@ -145,7 +166,10 @@ def test_qemu_m3_mpu_and_memmanage(faults_elfs):
         names = [n for n, _ in rep.causes]
         assert "DACCVIOL" in names and rep.address == guard + 4
         mpu_cause = dict(rep.causes)["MPU"]
-        assert "hors des régions lues" in mpu_cause            # QEMU : région 2 illisible
+        if ignored:
+            assert "hors des régions lues" in mpu_cause        # QEMU 8.2 : région 2 illisible
+        else:
+            assert mpu_cause.startswith("région 2 ") and "aucun" in mpu_cause
     finally:
         s.disconnect()
 
@@ -168,8 +192,14 @@ def test_qemu_m55_mpu_v8_by_aliases(m55_elf):
     try:
         st = ScriptAPI(s).mpu(quiet=True)
         assert st.arch == "ARMv8-M Mainline" and st.dregion == 16 and st.enabled
-        assert [r.number for r in st.regions] == [1, 2, 3]      # RNR = 3 : alias A1..A3
-        r1, r2, r3 = st.regions
+        regions = {r.number: r for r in st.regions}
+        if _rnr_ignored(st):                                    # QEMU 8.2 : RNR = 3, alias A1..A3
+            assert list(regions) == [1, 2, 3]
+        else:                                                   # QEMU 11 : les 16 régions
+            assert [n for n, r in regions.items() if r.enabled] == [0, 1, 2, 3]
+            r0 = regions[0]
+            assert (r0.base, r0.limit, r0.priv) == (0x10000000, 0x1007FFFF, "RO")
+        r1, r2, r3 = regions[1], regions[2], regions[3]
         guard = s.address_of("mpu_guard")
         assert (r1.base, r1.limit, r1.priv, r1.xn) == (0x30000000, 0x3007FFFF, "RW", True)
         assert (r2.base, r2.limit, r2.priv, r2.unpriv) == (guard, guard + 31, "RO", "aucun")
@@ -208,8 +238,9 @@ def test_system_view_mpu_tab(faults_elfs):
         time.sleep(0.2)
         app.api.halt()
         pump(app, lambda: view.mpu_tree.get_children())
-        rows = [view.mpu_tree.item(i) for i in view.mpu_tree.get_children()]
-        assert rows[0]["text"] == "3" and rows[0]["values"][-1] == "Device partagé"
+        rows = {view.mpu_tree.item(i)["text"]: view.mpu_tree.item(i) for i in view.mpu_tree.get_children()}
+        assert rows["3"]["values"][-1] == "Device partagé"
+        assert list(rows) in (["3"], [str(n) for n in range(8)])  # QEMU 8.2 : RNR ignoré ; 11 : toutes
         assert "8 régions, activée" in view.mpu_info.cget("text")
     finally:
         close_app(app)

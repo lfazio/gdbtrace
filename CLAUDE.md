@@ -422,9 +422,10 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
 
 - QEMU n'émule pas le vector catch (DEMCR lu à 0 : arrêt sur faute par breakpoints) ni le
   DWT (compteurs absents : écriture de DWT_CTRL ignorée), et QMP n'écrit pas en mémoire (RTT
-  lu aux arrêts). Pas de table ROM CoreSight (0xE00FF000 lu à 0). MPU : l'écriture de MPU_RNR
-  par le débogueur est ignorée (seule la région choisie par le firmware, ou son groupe par les
-  alias en ARMv8-M). `mps3-an547` : Cortex-M55 en sécurisé, ITCM 0x10000000, DTCM 0x30000000. Démos : `Reset_Handler` remet la `.bss` à zéro,
+  lu aux arrêts). Pas de table ROM CoreSight (0xE00FF000 lu à 0). MPU et SAU : sous QEMU 8.2,
+  l'écriture de MPU_RNR / SAU_RNR par le débogueur est ignorée (seule la région choisie par le
+  firmware, ou son groupe par les alias en ARMv8-M) ; QEMU 11.1 l'applique (toutes les régions) :
+  `tests/test_mpu.py` et `tests/test_trustzone.py` acceptent les deux (`_rnr_ignored`). `mps3-an547` : Cortex-M55 en sécurisé, ITCM 0x10000000, DTCM 0x30000000. Démos : `Reset_Handler` remet la `.bss` à zéro,
   une variable de commande (`fault_kind`, `semihosting_on`) s'écrit après l'arrivée dans `main`.
 - QEMU et TrustZone (`mps2-an505`) : DSCSR lu à 0 ; accès du débogueur dans le monde courant
   (depuis le non sécurisé : mémoire sécurisée refusée, SAU et SHCSR lus à 0) ; il faut
