@@ -42,6 +42,8 @@ class TraceSession:
         self.overflows = 0
         self.gaps = 0
         self.on_gap = on_gap
+        #: octets bruts reçus, avant tout décodage (`--trace-record` : record.TraceRecorder)
+        self.raw_tap: Callable[[bytes], object] | None = None
         self.closed = False
         self._lock = threading.Lock()
 
@@ -86,6 +88,8 @@ class TraceSession:
             if self.closed:
                 return []
             self.bytes += len(data)
+            if self.raw_tap is not None:
+                self.raw_tap(data)
             if self.deformatter is not None:
                 chunks = self.deformatter.feed(data)
                 data = b"".join(c for sid, c in chunks if sid == self.itm_stream)
@@ -279,6 +283,34 @@ class FileSwoSource(SwoSource):
         finally:
             self.connected = False
             self.done.set()
+
+
+class RecordingSource(SwoSource):
+    """Relit une capture enregistrée (`record.RecordedTrace`) : ITM vers la session, ETM
+    décodé dans le même fil (synchrone : points de reprise exacts) ; `done` à la fin."""
+
+    def __init__(self, recorded, etm, pause=None, on_done=None):
+        super().__init__()
+        self.recorded, self.etm, self.pause, self.on_done = recorded, etm, pause, on_done
+        self.description = f"capture enregistrée {recorded.path}"
+        self.done = threading.Event()
+        self.offset = 0
+
+    def _progress(self, offset: int, _size: int) -> None:
+        self.offset = offset
+
+    def _run(self) -> None:
+        self.connected = True
+        try:
+            self.recorded.replay(self.etm, self.session, stop=self._stop, pause=self.pause,
+                                 progress=self._progress)
+        except Exception as exc:  # noqa: BLE001 - dit par status()
+            self.error = f"{type(exc).__name__}: {exc}"
+        finally:
+            self.connected = False
+            self.done.set()
+            if self.on_done is not None:
+                self.on_done()
 
 
 # ====================================================================== consommateurs

@@ -15,7 +15,8 @@ from typing import Callable
 from .config import SwoConfig, openocd_tpiu_commands, openocd_tpiu_name
 from .itm import ItmTextSink
 from .profile import Profile
-from .swo import ExceptionStats, FileSwoSource, SwoSource, TcpSwoSource, TraceSession, profile_sink
+from .swo import (ExceptionStats, FileSwoSource, RecordingSource, SwoSource, TcpSwoSource, TraceSession,
+                  profile_sink)
 
 ETM_NOTIFY_PERIOD = 0.5               # s : rafraîchissement des vues pendant une capture
 CPUID = 0xE000ED00
@@ -75,6 +76,13 @@ class TraceManager:
         # trace d'instructions ETM (flux TPIU id 2, ou simulée sous QEMU)
         self.etm = None                     # EtmTrace
         self.etm_sim = None                 # QemuEtmSim
+        #: trace sur disque (trace/record.py) : fichier demandé (--trace-record), enregistreur
+        #: ouvert, capture relue (--trace-file d'un enregistrement : pages de Trace.List)
+        self.record_path: str | None = None
+        self.record_elf: str | None = None
+        self.recorder = None
+        self._etm_recorder = None           # flux ETM de l'ETR enregistré tel quel
+        self.recorded = None
         # trace MTB des Cortex-M0+ (sonde réelle, ou simulée sous QEMU), même EtmTrace
         self.mtb = None                     # MtbCapture
         self.mtb_sim = None                 # QemuMtbSim
@@ -455,6 +463,9 @@ class TraceManager:
     def _etm_feed(self, data: bytes, flush: bool = False) -> None:
         """Octets ETM du déformateur TPIU (fil SWO) : mis en file pour le fil de décodage.
         `flush` : fin d'une exécution (ETR lu à l'arrêt), valider ses derniers éléments."""
+        rec = self._etm_recorder
+        if rec is not None:                     # ETR : le flux ETM est le flux brut
+            rec.gap() if data is _ETM_GAP else rec.write(data)
         with self._etm_cv:
             self._etm_q.append(data)
             if flush:
@@ -898,6 +909,7 @@ class TraceManager:
             self.setup_error = f"ETM par l'ETR : {exc}"
             raise
         self.tmc = tmc
+        self._etm_recorder = self._open_recorder("etm", False)
         self._etr_live = live
         if live is not None and sys.getswitchinterval() > 0.0005:
             # le fil de lecture attend la sonde ; derrière le décodage (calcul pur), il
@@ -996,6 +1008,9 @@ class TraceManager:
         self.mtb = None
         self._stop_etr_stream()
         self.tmc = None
+        if self.recorder is not None:
+            self.recorder.close()
+            self.recorder = self._etm_recorder = None
 
     # ------------------------------------------------------------------ sources
     @property
@@ -1010,11 +1025,68 @@ class TraceManager:
         self._start(src, formatter)
         return src
 
-    def _start(self, source: SwoSource, formatter: bool) -> None:
+    # ------------------------------------------------------------------ trace sur disque
+    def set_record(self, path: str | None, elf: str | None = None) -> None:
+        """Enregistre la capture qui démarrera ensuite (SWO, TPIU, ETR) dans `path` (avec
+        son index) ; couverture et timing de toute la trace calculés au fil du décodage."""
+        self.record_path, self.record_elf = path, elf
+        if path and self.etm is not None and self.etm.stream_timing is None:
+            self.etm.stream_timing_on()
+
+    def _open_recorder(self, source: str, formatter: bool):
+        if not self.record_path:
+            return None
+        if self.recorder is None:
+            from .record import TraceRecorder
+            etm = self.etm
+            self.recorder = TraceRecorder(self.record_path, source, formatter,
+                                          etm=etm.version if etm is not None else None,
+                                          elf=self.record_elf,
+                                          cycle_accurate=bool(etm and etm.cycle_accurate))
+        elif self.recorder.header["source"] != source:
+            self.on_error(f"--trace-record : capture {source} non enregistrée (le fichier "
+                          f"enregistre déjà une capture {self.recorder.header['source']})")
+            return None
+        return self.recorder
+
+    def replay_recording(self, path: str):
+        """Relit une capture enregistrée par GdbTrace (son index dit la source) : ITM vers
+        les vues, ETM décodé au fil de la lecture, couverture et timing de toute la trace,
+        points de reprise écrits (pages de Trace.List). Rend la `RecordedTrace`."""
+        from .record import RecordedTrace
+        etm = self.etm
+        rec = RecordedTrace(path, etm.image if etm else None, etm.symbols if etm else None,
+                            version=etm.version if etm else None,
+                            cycle_accurate=etm.cycle_accurate if etm else None,
+                            max_spec=etm.max_spec if etm else 1,
+                            commit_opt1=etm.commit_opt1 if etm else False,
+                            heal_ranges=etm.heal_ranges if etm else None)
+        want = rec.index["header"].get("etm")
+        if etm is not None and want and want != etm.version:
+            self.on_error(f"capture d'un ETMv{want}, décodeur ETMv{etm.version} : relue en ETMv{etm.version}")
+        if etm is not None and etm.stream_timing is None:
+            etm.stream_timing_on()
+
+        def pause():                            # le GUI d'abord (comme le fil ETM)
+            end = time.monotonic() + ETM_YIELD_MAX
+            while self.gui_busy() and time.monotonic() < end:
+                time.sleep(0.005)
+            self._etm_changed()
+        self._start(RecordingSource(rec, etm, pause=pause, on_done=self._etm_changed),
+                    rec.formatter if rec.kind != "etm" else False, etm_sink=False)
+        self.recorded = rec
+        return rec
+
+    def _start(self, source: SwoSource, formatter: bool, etm_sink=None) -> None:
+        """`etm_sink` : None, la file du fil ETM ; False, aucun (la source décode l'ETM)."""
         self.stop()
-        self.session = TraceSession(formatter=formatter,
-                                    etm_sink=self._etm_feed if self.etm is not None else None,
-                                    on_gap=self._swo_gap)
+        sink = (None if etm_sink is False else etm_sink or
+                (self._etm_feed if self.etm is not None else None))
+        self.session = TraceSession(formatter=formatter, etm_sink=sink, on_gap=self._swo_gap)
+        if not isinstance(source, RecordingSource):
+            rec = self._open_recorder("tpiu" if formatter else "swo", formatter)
+            if rec is not None:
+                self.session.raw_tap = rec.write
         self.session.add_sink(lambda pkts: [self.text.add(p) for p in pkts])
         self.session.add_sink(self.exceptions)
         self.session.add_sink(self.counter_tally)
@@ -1039,6 +1111,8 @@ class TraceManager:
         """Octets SWO perdus avant le décodage : la trace d'instructions qu'ils portaient a un
         trou. Un marqueur dans la file ETM le place exactement entre les octets d'avant et
         ceux d'après ; là, l'ETM attend sa prochaine synchronisation."""
+        if self.recorder is not None and self._etm_recorder is None:
+            self.recorder.gap()
         if self.etm is not None:
             self._etm_feed(_ETM_GAP)
 

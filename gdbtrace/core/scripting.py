@@ -669,15 +669,26 @@ class ScriptAPI:
                   f"pièce {c.part:#05x}  {c.designer_name}  rév. {c.revision}")
         return comps
 
-    def trace_list(self, n: int = 30):
-        """Trace.List : les `n` dernières instructions exécutées (et exceptions)."""
+    def trace_list(self, n: int = 30, start: int | None = None):
+        """Trace.List : les `n` dernières instructions exécutées (et exceptions). `start` : une
+        page de la capture enregistrée relue (`--trace-file`), depuis l'événement `start`
+        (0 : le premier), décodée depuis le fichier — index absolus."""
         from ..trace.etm.qemu_log import CycleMark, ExcEntry, ExcReturn, TimeMark, TraceGap
         from ..trace.itm import exception_name
         etm = self._etm()
-        events = etm.last(n)
+        rec = getattr(self.trace, "recorded", None)
+        if start is not None:
+            if rec is None:
+                raise RuntimeError("pas de capture enregistrée relue (--trace-file d'un "
+                                   "enregistrement --trace-record)")
+            events = rec.events(start, n)
+            base = start
+        else:
+            events = etm.last(n)
+            base = -len(events)
         sym = self._symbols()
         for i, e in enumerate(events):
-            idx = i - len(events)
+            idx = base + i
             if isinstance(e, ExcEntry):
                 print(f"{idx:>6}  ── exception {exception_name(e.number)} ({e.number}) → {e.handler:08x}")
             elif isinstance(e, ExcReturn):
@@ -695,6 +706,30 @@ class ScriptAPI:
                 loc = f"{le.file.rsplit('/', 1)[-1]}:{le.line}" if le and f else ""
                 print(f"{idx:>6}  {e.addr:08x}  {f.name if f else '':<22} {ins.text if ins else '?':<28} {loc}")
         return events
+
+    def trace_recording(self) -> dict:
+        """Trace sur disque : capture enregistrée (--trace-record) ou relue (--trace-file) —
+        fichier, source, taille, durée (horloge de l'hôte), événements décodés, points de
+        reprise ; affichée et rendue."""
+        t = self.trace
+        info: dict = {}
+        if t is not None and t.recorder is not None:
+            r = t.recorder
+            info["enregistrement"] = {"fichier": r.path, "source": r.header["source"],
+                                      "octets": r.offset, "fermé": r.closed}
+        rec = getattr(t, "recorded", None)
+        if rec is not None:
+            src = t.source
+            info["relecture"] = {"fichier": rec.path, "source": rec.kind, "octets": rec.size,
+                                 "durée": rec.duration(), "événements": rec.events_total,
+                                 "lu": getattr(src, "offset", None),
+                                 "fini": bool(getattr(src, "done", None) and src.done.is_set()),
+                                 "points de reprise": len(rec.points())}
+        if not info:
+            print("pas de trace sur disque (--trace-record, ou --trace-file d'un enregistrement)")
+        for k, v in info.items():
+            print(f"{k} : " + ", ".join(f"{a} {b}" for a, b in v.items() if b is not None))
+        return info
 
     def trace_find(self, query: str, n: int = 50_000, show: int = 20) -> list[dict]:
         """Trace.FindAll : dans les `n` derniers événements de la trace, les lignes qui
@@ -742,8 +777,10 @@ class ScriptAPI:
         `kind` : "function" ou "exception" pour filtrer. Retourne le `TimingResult`."""
         from ..trace.timing import TimingAnalyzer
         etm = self._etm()
-        events = etm.last(n or etm.history.maxlen or 200_000)
-        r = TimingAnalyzer(etm.image, self._symbols()).analyze(events)
+        r = etm.timing_result() if n is None else None     # toute la trace (sur disque)
+        if r is None:
+            events = etm.last(n or etm.history.maxlen or 200_000)
+            r = TimingAnalyzer(etm.image, self._symbols()).analyze(events)
         conv, u = self._time_unit(unit)
         print(f"{conv(r.total):,.2f} {u} analysés — durées {etm.timing}"
               + (f" — {r.context_switches} changements de tâche" if r.context_switches else ""))

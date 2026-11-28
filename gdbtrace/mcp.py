@@ -224,7 +224,12 @@ TOOLS = [
           {"top": _I, "unit": _S}, read_only=True),
     # --- trace
     _tool("trace_list", "Trace.List", "Les `n` dernières instructions exécutées (défaut 40), "
-          "avec exceptions et trous.", {"n": _I}, read_only=True),
+          "avec exceptions et trous ; `start` : une page de la capture enregistrée relue "
+          "(--trace-file), depuis l'événement `start` (0 : le premier).",
+          {"n": _I, "start": _I}, read_only=True),
+    _tool("trace_recording", "Trace sur disque", "Capture enregistrée (--trace-record) ou relue "
+          "(--trace-file) : fichier, source, taille, durée, événements décodés, points de "
+          "reprise.", {}, read_only=True),
     _tool("trace_find", "Chercher dans la trace", "Cherche dans la trace d'instructions (les `n` "
           "derniers événements, défaut 50000) : adresse 0x…, nom de fonction (chaque entrée), "
           "« exception » ou « exception SysTick », ou texte ; `top` lignes (défaut 20).",
@@ -952,9 +957,13 @@ class GdbTraceMcp:
         return ""
 
     # --- trace
-    def tool_trace_list(self, n: int = 40) -> str:
+    def tool_trace_list(self, n: int = 40, start: int | None = None) -> str:
         self._settle()
-        self.api.trace_list(n)
+        self.api.trace_list(n, start)
+        return ""
+
+    def tool_trace_recording(self) -> str:
+        self.api.trace_recording()
         return ""
 
     def tool_calls(self, n: int = 40) -> str:

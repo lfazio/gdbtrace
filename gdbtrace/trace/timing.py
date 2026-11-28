@@ -36,6 +36,7 @@ avec la position de l'appel dans la trace (index du listing : -1 = dernier évé
 """
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field, replace
 
 from .distribution import Distribution, Reservoir, distribution
@@ -225,6 +226,14 @@ class TimingAnalyzer:
 
     # ------------------------------------------------------------------ API
     def analyze(self, events: list[Event]) -> TimingResult:
+        """Toute une liste d'événements ; positions relatives à sa fin (-1 : le dernier)."""
+        self.start()
+        self.feed(events, base=-len(events))
+        return self.finish()
+
+    def start(self) -> None:
+        """Analyse par morceaux (`feed`, puis `finish` ou `snapshot`) : une trace relue depuis
+        un fichier, au fil du décodage, sans garder tout l'historique."""
         self.stack: list[_Frame] = []
         self.stats: dict[str, FuncStats] = {}
         self.tree: dict[tuple, FuncStats] = {}
@@ -237,19 +246,52 @@ class TimingAnalyzer:
         self.suspended: list[_Suspended] = []
         self.after_exc = False                  # le pas suit un retour d'exception
         self.durations: dict[str, Reservoir] = {}
-        # position de chaque événement retenu dans la liste d'origine (marques retirées)
-        where = [i - len(events) for i, e in enumerate(events) if not isinstance(e, MARKS)]
         self.pos: int | None = None
-        for k, e in enumerate(measured_cycles(events)):
-            self.pos = where[k] if k < len(where) else None
-            if isinstance(e, Step):
-                self._step(e)
-            elif isinstance(e, ExcEntry):
-                self._exc_entry(e)
-            elif isinstance(e, ExcReturn):
-                self._exc_return(e)
-            elif isinstance(e, TraceGap):
-                self._gap(e)
+        self._fed = 0                           # événements reçus (marques comprises)
+        self._measuring = False                 # une CycleMark vue : segments ramenés à la mesure
+        self._seg: list[tuple[int, Event]] = [] # segment en attente de sa mesure
+
+    def feed(self, events: list[Event], base: int | None = None) -> None:
+        """Ajoute des événements. Position de chacun : `base` + rang (défaut : rang dans tout
+        ce qui a été reçu). Comme `measured_cycles`, mais d'un morceau à l'autre : un segment
+        entre deux CycleMark attend la seconde pour être ramené à sa mesure."""
+        first = self._fed if base is None else base
+        self._fed += len(events)
+        for i, e in enumerate(events):
+            if isinstance(e, CycleMark):
+                seg, self._seg = self._seg, []
+                if self._measuring and seg:
+                    scaled = _scaled([x for _p, x in seg], e.cycles)
+                    seg = [(p, x) for (p, _old), x in zip(seg, scaled)]
+                self._measuring = True
+                for p, x in seg:
+                    self._one(p, x)
+            elif isinstance(e, MARKS):
+                continue
+            elif self._measuring:
+                self._seg.append((first + i, e))
+            else:
+                self._one(first + i, e)
+        if len(self.intervals) > 2 * self.max_intervals:     # borné d'un morceau à l'autre
+            self.intervals = self.intervals[-self.max_intervals:]
+
+    def _one(self, pos: int, e: Event) -> None:
+        self.pos = pos
+        if isinstance(e, Step):
+            self._step(e)
+        elif isinstance(e, ExcEntry):
+            self._exc_entry(e)
+        elif isinstance(e, ExcReturn):
+            self._exc_return(e)
+        elif isinstance(e, TraceGap):
+            self._gap(e)
+
+    def finish(self) -> TimingResult:
+        """Fin de la trace : segment après la dernière mesure (estimé), cadres encore ouverts,
+        tâches jamais reprises ; le résultat."""
+        seg, self._seg = self._seg, []
+        for p, x in seg:
+            self._one(p, x)
         while self.stack:                       # fin de trace : cadres encore ouverts
             self._close(len(self.stack) - 1, complete_end=False)
         for susp in self.suspended:             # tâches jamais reprises
@@ -259,6 +301,11 @@ class TimingAnalyzer:
             self.intervals = self.intervals[-self.max_intervals:]
         return TimingResult(self.stats, self.intervals, self.t, self.switches, self.tree, self.irq,
                             self.durations)
+
+    def snapshot(self) -> TimingResult:
+        """Le résultat à cet instant, l'analyse continuant (trace encore en cours)."""
+        memo = {id(self.image): self.image, id(self.symbols): self.symbols}
+        return copy.deepcopy(self, memo).finish()
 
     # ------------------------------------------------------------------ outils
     def _func(self, addr: int):

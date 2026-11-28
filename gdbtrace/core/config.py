@@ -58,7 +58,7 @@ COUVERTURE_KEYS = ["fusionner", "exporter"]
 SCRIPT_KEYS = ["fichier", "junit"]
 #: options de trace de la ligne de commande, dans l'ordre de --help
 TRACE_KEYS = ["swo", "swo-file", "swo-formatter", "swo-config", "swo-hz", "swo-port", "var-trace",
-              "etm-sim", "trace", "trace-file", "etm-config", "etm-cycle-accurate", "etm-timestamps",
+              "etm-sim", "trace", "trace-file", "trace-record", "etm-config", "etm-cycle-accurate", "etm-timestamps",
               "etm-width", "etm-port", "etr-buffer", "etr-at-stop", "etm-stall", "stm32", "etm-filter",
               "etm-start", "etm-stop",
               "mtb", "mtb-buffer", "mtb-sim", "mtb-autohalt", "mtb-probe", "semihosting", "rtt", "snoop"]
@@ -70,7 +70,7 @@ PATH_KEYS = {("cible", "elf"), ("cible", "svd"), ("cible", "programmer"), ("cibl
              ("serveur", "openocd"), ("serveur", "cwd"), ("serveur", "qemu-load"),
              ("", "script"), ("script", "fichier"), ("script", "junit"),
              ("couverture", "fusionner"), ("couverture", "exporter"),
-             ("trace", "swo-file"), ("trace", "trace-file")}
+             ("trace", "swo-file"), ("trace", "trace-file"), ("trace", "trace-record")}
 #: clé → option de la ligne de commande (quand le nom diffère)
 OPTION_OF = {("cible", "programmer"): "--program", ("cible", "coeurs"): "--core",
              ("couverture", "fusionner"): "--coverage-merge",
@@ -424,7 +424,7 @@ class SessionConfig:
             dest = key.replace("-", "_")
             if changed(dest):
                 v = getattr(args, dest)
-                trace[key] = os.path.abspath(v) if key in ("swo-file", "trace-file") else v
+                trace[key] = os.path.abspath(v) if key in ("swo-file", "trace-file", "trace-record") else v
         if trace:
             d["trace"] = trace
         return cls(d)

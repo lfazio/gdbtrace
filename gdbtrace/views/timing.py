@@ -176,6 +176,9 @@ class TimingView(View):
         symbols = self.app.symbols
 
         def work():
+            whole = etm.timing_result()         # trace sur disque : toute la trace
+            if whole is not None:
+                return whole, etm.timing
             events = etm.last(etm.history.maxlen or 200_000)
             return TimingAnalyzer(etm.image, symbols).analyze(events), etm.timing
 

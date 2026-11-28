@@ -70,6 +70,12 @@ class EtmTrace:
         self.fed_instructions = 0    # instructions venues d'une autre source (MTB)
         self.fed_errors = 0
         self.gaps = 0                # interruptions de la trace (filtre, débordement)
+        #: événements ajoutés depuis le début (l'historique n'en garde que les derniers) : la
+        #: position absolue d'un événement, celle de la pagination d'une trace enregistrée
+        self.events_total = 0
+        #: timing de toute la trace au fil du décodage (TimingAnalyzer), ou None : la trace
+        #: relue ou enregistrée sur disque dépasse l'historique (`stream_timing_on`)
+        self.stream_timing = None
         #: cible relancée depuis le dernier arrêt : la resynchronisation qui ouvre la nouvelle
         #: exécution (I-sync, Trace On) n'est pas un trou, rien n'ayant tourné entre les deux
         self._resumed = False
@@ -101,6 +107,23 @@ class EtmTrace:
             if max_spec != self.max_spec or opt != self.commit_opt1:
                 self.max_spec, self.commit_opt1 = max_spec, opt
                 self.packets, self.flow = self._decoders()
+
+    def stream_timing_on(self, symbols=None) -> None:
+        """Timing de toute la trace calculé au fil du décodage (sans garder l'historique)."""
+        from ..timing import TimingAnalyzer
+        with self._lock:
+            self.stream_timing = TimingAnalyzer(self.image, symbols or self.symbols)
+            self.stream_timing.start()
+
+    def timing_result(self):
+        """Timing de toute la trace (`stream_timing_on`), ou None."""
+        with self._lock:
+            return self.stream_timing.snapshot() if self.stream_timing is not None else None
+
+    def _account(self, events: list[Event]) -> None:
+        self.events_total += len(events)
+        if self.stream_timing is not None and events:
+            self.stream_timing.feed(events)
 
     def resumed(self) -> None:
         """La cible repart après un arrêt (appelé avant chaque reprise)."""
@@ -137,6 +160,7 @@ class EtmTrace:
             else:
                 self.flow.addr = None
             self.history.append(TraceGap())
+            self._account([self.history[-1]])
             self.gaps += 1
             self.generation += 1
 
@@ -144,6 +168,7 @@ class EtmTrace:
         """Ajoute des événements déjà décodés (trace MTB) ; retourne le nombre d'instructions."""
         with self._lock:
             self.history.extend(events)
+            self._account(events)
             self.cov.add(events)
             n = sum(1 for e in events if isinstance(e, Step))
             self.fed_instructions += n
@@ -167,6 +192,7 @@ class EtmTrace:
         if not events:
             return 0
         self.history.extend(events)
+        self._account(events)
         if hasattr(self.flow, "take_counts"):
             self.cov.add_counts(*self.flow.take_counts())
         else:
@@ -187,6 +213,9 @@ class EtmTrace:
         with self._lock:
             self.packets, self.flow = self._decoders()
             self.history.clear()
+            self.events_total = 0
+            if self.stream_timing is not None:
+                self.stream_timing.start()
             self.bytes = 0
             self.fed_instructions = self.fed_errors = self.gaps = 0
             self.generation += 1

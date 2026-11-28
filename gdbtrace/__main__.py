@@ -132,6 +132,9 @@ def setup_terminal(args, term, session, target, live, symbols, log=print) -> Non
 def setup_trace(args, trace, session, target, log=print) -> None:
     """Options de trace, après la connexion (cible arrêtée) : programmation de la cible puis
     démarrage des captures. Commun au mode --batch (`log` = print) et au GUI (console)."""
+    if getattr(args, "trace_record", None):  # avant le démarrage des captures
+        trace.set_record(args.trace_record, getattr(session, "elf", None))
+        log(f"capture enregistrée dans {args.trace_record} (index : {args.trace_record}.idx)")
     if args.etm_filter or args.etm_start or args.etm_stop:   # avant la programmation de l'ETM
         for line in trace.set_etm_filter(args.etm_filter, args.etm_start, args.etm_stop, session):
             log(line)
@@ -195,8 +198,15 @@ def setup_trace(args, trace, session, target, log=print) -> None:
         trace.start_tcp(host or "127.0.0.1", int(port), formatter=True)
         log(f"capture de trace TCP {args.trace} démarrée")
     elif args.trace_file:
-        trace.start_file(args.trace_file, formatter=True)
-        log(f"capture de trace rejouée : {args.trace_file}")
+        from .trace.record import index_path
+        if os.path.exists(index_path(args.trace_file)):  # capture enregistrée par GdbTrace
+            rec = trace.replay_recording(args.trace_file)
+            dur = rec.duration()
+            log(f"capture enregistrée relue : {args.trace_file} ({rec.kind}, {rec.size >> 10} Ko"
+                + (f", {dur:.1f} s" if dur is not None else "") + ")")
+        else:
+            trace.start_file(args.trace_file, formatter=True)
+            log(f"capture de trace rejouée : {args.trace_file}")
 
 
 
@@ -424,7 +434,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="QEMU : ETM simulé (journal d'exécution converti en trace ETMv3 à chaque arrêt)")
     e.add_argument("--trace", metavar="HOST:PORT",
                    help="flux TPIU brut formaté (ETM + ITM) servi en TCP (ex. par Orbuculum)")
-    e.add_argument("--trace-file", metavar="FICHIER", help="rejouer une capture TPIU formatée")
+    e.add_argument("--trace-file", metavar="FICHIER",
+                   help="rejouer une capture TPIU formatée, ou une capture enregistrée par --trace-record (son index dit la source : SWO, TPIU, ETR)")
+    e.add_argument("--trace-record", metavar="FICHIER",
+                   help="enregistrer la capture (SWO, TPIU, ETR) sur disque : flux brut écrit en continu, index horodaté (FICHIER.idx) ; couverture et timing de toute la trace calculés au fil du décodage ; relecture par --trace-file")
     e.add_argument("--etm-config", action="store_true",
                    help="programmer l'ETM et le TPIU parallèle à la connexion")
     e.add_argument("--etm-cycle-accurate", action="store_true",
@@ -542,6 +555,14 @@ def validate(args) -> list[str]:
     """Règles entre options, communes à la ligne de commande et aux configurations : la liste
     des erreurs (vide si tout va bien)."""
     errors = []
+    if getattr(args, "trace_record", None):
+        capture = (args.swo or args.swo_file or args.swo_config or args.trace or args.trace_file
+                   or (args.etm_config and args.etm_port in ("swo", "etr")))
+        if not capture:
+            errors.append("--trace-record : avec une capture (--swo, --swo-config, --swo-file, "
+                          "--trace, --trace-file, --etm-config --etm-port swo ou etr)")
+        elif args.trace_file and os.path.abspath(args.trace_file) == os.path.abspath(args.trace_record):
+            errors.append("--trace-record : un autre fichier que --trace-file")
     if getattr(args, "junit", None) and not args.script:
         errors.append("--junit : avec --script (ses fonctions test_* sont les cas)")
     if not args.etm_config:              # options de programmation de l'ETM : sinon ignorées
