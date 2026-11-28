@@ -54,6 +54,8 @@ Elle équivaut à :
 
 Il vérifie en plus le décodage des boucles LE : le nombre de tours relevé dans la trace doit suivre le firmware.
 
+Il mesure aussi le chrono (`DWT_CYCCNT`) et les compteurs de la PMU, lit le RTT en marche par le relais, relève les tables ROM CoreSight (ETMv4, CTI, PMU) et la MPU ARMv8-M, et vérifie que le M55 tourne dans le monde sécurisé (vue Registres ; ignoré si ST-LINK_gdbserver n'expose pas les registres bancaires). Avec STM32CubeProgrammer, il programme 64 Ko de la flash XSPI par son chargeur externe (`MX66UW1G45G_STM32N6570-NUCLEO.stldr`), les relit et les efface ; sans lui, ce test est ignoré.
+
 La carte est trouvée seule : sonde ST-LINK dans `/sys`, puis identité de la puce lue par ST-LINK_gdbserver. `GDBTRACE_N6_SERIAL` impose la sonde.
 
 ## Pour aller plus loin

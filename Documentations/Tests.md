@@ -4,11 +4,10 @@ xvfb-run -a .venv/bin/python -m pytest
 
 Les tests lancent QEMU (`mps2-an385`) avec le firmware de démo. Sans `DISPLAY`, les tests GUI sont ignorés.
 Le client TCL OpenOCD est testé contre un faux serveur TCL, et contre un vrai OpenOCD lancé sans
-sonde (`noinit`) s'il est installé ; il a été utilisé sur une Nucleo-F746ZG. Validés sur cette
-carte (test sur carte, ci-dessous) : capture SWO et ITM, ETMv4 par SWO, trace de données du DWT,
-profil par SWO, vue RTOS et temps des tâches ; et sur une Nucleo-F446RE, l'ETMv3 par SWO.
-Restent à valider sur sonde réelle : le support RTOS d'OpenOCD (`--rtos`), `DWT_PCSR` via
-OpenOCD, le port de trace parallèle et la MTB d'un M0+.
+sonde (`noinit`) s'il est installé ; les tests sur carte (ci-dessous) s'en servent sur la F746,
+la F446 et la F072. Ce que chaque carte a validé, jalon par jalon :
+[Validation sur carte](Jalons#validation-sur-carte). Restent à valider sur sonde réelle : le
+support RTOS d'OpenOCD (`--rtos`), le port de trace parallèle et la MTB d'un M0+.
 Les tests ETM comparent notre décodeur à OpenCSD si `tools/build_opencsd.sh` a été lancé
 (sinon ce test est ignoré) ; la trace ETM nécessite `pip install capstone` (extra `etm`).
 
@@ -54,6 +53,18 @@ Les vues de trace (ITM, Trace, Couverture, Variables tracées, Temps des tâches
 pourquoi ; le profil échantillonne `DWT_PCSR` ; et le run-control éprouve les comparateurs du
 cœur : breakpoint à compteur, breakpoint à message (arrêts internes, un message par passage),
 Go.Till sur une globale (watchpoint du DWT) (`tests/artifacts/board-g070.json`, `board-f072.json`).
+
+Sur chaque carte, la session éprouve aussi les mesures et la puce (`extra`, `tests/boards.py`) :
+- le chrono entre deux passages par `worker_step`, comparé au compte des ticks du noyau
+  (`DWT_CYCCNT` ; SysTick sur la F072 et la G070), une pause de 1 s du débogueur non comptée ;
+- le RTT lu en marche (port TCL d'OpenOCD ; relais de ST-LINK_gdbserver sur la N6) ;
+- les tables ROM CoreSight et la MPU relue en entier (vue Système) ;
+- les compteurs du DWT (F746, F446) ou de la PMU (N6) ;
+- sur la N6, le monde sécurisé du M55 dans la vue Registres, si ST-LINK_gdbserver expose les
+  registres bancaires ;
+- si l'outil est installé : la flash de la F446 programmée par le FLM du pack
+  Keil.STM32F4xx_DFP, la flash XSPI de la N6 par le chargeur externe de STM32CubeProgrammer
+  (`MX66UW1G45G_STM32N6570-NUCLEO.stldr`) ; sinon, ces tests sont ignorés.
 
 - La carte est trouvée seule : sonde ST-LINK lue dans `/sys`, puis identité de la puce lue
   sans reset, par OpenOCD (F746, F446, G070, F072) ou par ST-LINK_gdbserver (N6, qu'OpenOCD

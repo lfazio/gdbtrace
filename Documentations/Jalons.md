@@ -23,6 +23,43 @@ Le développement avance par jalons ; ✅ : fait et validé, 🚧 : fait, à val
 | 19. Débogage de tous les jours | Vue Faute (CFSR, HFSR, SFSR décodés, cadre empilé, ligne fautive ; cause déduite sur un Cortex-M0/M0+) et arrêt sur faute ; outils mémoire (enregistrer, charger, remplir, chercher, comparer) ; images HEX, S-record, binaire à programmer ; symboles d'autres ELF ; navigateur de symboles ; vue Terminal (semihosting, RTT) ; recherche et export CSV dans la trace | ✅ RTT en marche (F072, F746, F446, N6) ; 🚧 vector catch et semihosting d'OpenOCD (à valider sur carte) |
 | 20. Analyse de trace avancée | Arbre d'appels (durées par chemin d'appel) ; statistiques d'exceptions (durée, période, gigue, préemptions, enchaînements) depuis la trace ou l'ITM ; variables échantillonnées sans trace par le canal mémoire (Cortex-M0, QEMU) ; compteurs de performance du DWT et de la PMU du Cortex-M55 | ✅ (compteurs du DWT sur F746 et F446, PMU sur N6) |
 | 21. Serveur MCP clé en main | `.mcp.json` du dépôt : Claude Code trouve et lance le serveur seul, par `sh` (`CLAUDE_PROJECT_DIR`, `GDBTRACE_PYTHON`, `--root`) ; bilan de l'environnement (`--check`, outil `check`) ; 55 outils titrés et annotés (lecture seule, destructif), dont Go.Till, Step.Till / Step.Change, désassemblage, types, écriture, remplissage, recherche et fichiers mémoire, symboles ajoutés, périphériques SVD, valeurs des variables tracées, contexte des tâches et objets FreeRTOS, temps par tâche, filtre ETM, export de la trace et de la couverture ; guide pas à pas dans la notice | ✅ |
-| 22. Toutes les puces Cortex-M | Tables ROM CoreSight parcourues (SCS, DWT, FPB, ITM, TPIU, ETM et sa version, CTI, MTB, PMU, ETF/ETR ; une puce sans ETM le dit) ; MPU décodée (ARMv7-M, ARMv8-M ; région citée par une MemManage) ; chargeur de flash générique exécuté sur la cible par gdb (FLM des CMSIS-Packs, chargeurs externes .stldr de STM32CubeProgrammer) ; puce décrite par son CMSIS-Pack (`--device` : SVD, mémoires, algorithmes, cœur vérifié) ; vue Système | ✅ tables ROM et MPU (F746, F446, N6) ; 🚧 FLM d'un pack et chargeur externe (à valider sur carte) |
-| 23. TrustZone et plusieurs cœurs | Monde du cœur arrêté (barre d'état, vue Registres : registres bancaires groupés Sécurisé / Non sécurisé) ; pile déroulée à travers les deux mondes (appels SG et BLXNS, FNC_RETURN) ; SAU décodé, MPU non sécurisée, SecureFault et CFSR non sécurisé ; démo `mps2-an505` à deux images (`--qemu-load`) ; plusieurs cœurs (`--core`) : processus du même serveur (QEMU `mps2-an521`) ou autre serveur gdb, sélecteur Cœur, Go / Break de tous, arrêt synchrone par CTI | 🚧 (CTI et TrustZone sur carte à valider) |
+| 22. Toutes les puces Cortex-M | Tables ROM CoreSight parcourues (SCS, DWT, FPB, ITM, TPIU, ETM et sa version, CTI, MTB, PMU, ETF/ETR ; une puce sans ETM le dit) ; MPU décodée (ARMv7-M, ARMv8-M ; région citée par une MemManage) ; chargeur de flash générique exécuté sur la cible par gdb (FLM des CMSIS-Packs, chargeurs externes .stldr de STM32CubeProgrammer) ; puce décrite par son CMSIS-Pack (`--device` : SVD, mémoires, algorithmes, cœur vérifié) ; vue Système | ✅ tables ROM (F746, F446, N6, F072) et MPU (F746, F446, N6) ; 🚧 FLM d'un pack et chargeur externe (à valider sur carte) |
+| 23. TrustZone et plusieurs cœurs | Monde du cœur arrêté (barre d'état, vue Registres : registres bancaires groupés Sécurisé / Non sécurisé) ; pile déroulée à travers les deux mondes (appels SG et BLXNS, FNC_RETURN) ; SAU décodé, MPU non sécurisée, SecureFault et CFSR non sécurisé ; démo `mps2-an505` à deux images (`--qemu-load`) ; plusieurs cœurs (`--core`) : processus du même serveur (QEMU `mps2-an521`) ou autre serveur gdb, sélecteur Cœur, Go / Break de tous, arrêt synchrone par CTI | ✅ état sécurisé et registres bancaires sur la N6 ; 🚧 pile des deux mondes, SAU, plusieurs cœurs et CTI (à valider sur carte) |
 | 24. Distribution des durées | Histogramme des durées de chaque fonction et exception (trace d'instructions), des tranches de chaque tâche, des valeurs d'une variable tracée ; centiles p50/p90/p99, appels les plus longs avec leur position (vue Trace à cette position) ; onglet Distribution de la vue Timing, `gdbtrace.distribution()`, outil MCP | ✅ |
+
+## Validation sur carte
+
+Chaque jalon est d'abord validé sous QEMU. Il est ensuite passé sur chaque carte de test qui a la fonction : un test par carte, lancé à chaque release ([Tests](Tests)).
+
+✅ : passé sur la carte ; 🚧 : test prêt, pas encore passé ; — : la carte n'a pas la fonction.
+
+| Jalon | F746ZG (M7) | N657X0-Q (M55) | F446RE (M4) | F072RB (M0) | G070RB (M0+) |
+|---|---|---|---|---|---|
+| 1. Run-control | ✅ | ✅ | ✅ | ✅ | 🚧 |
+| 2. Scripting | ✅ | ✅ | ✅ (et `--batch`) | ✅ | 🚧 |
+| 3. Vues en direct | ✅ OpenOCD TCL | ✅ relais ST-LINK | ✅ OpenOCD TCL | ✅ OpenOCD TCL | 🚧 |
+| 4. RTOS | ✅ | ✅ | ✅ | ✅ | 🚧 |
+| 5. Trace SWO/ITM | ✅ | ✅ SWO de la sonde | ✅ | ✅ profil par `DWT_PCSR` (pas d'ITM) | 🚧 profil par `DWT_PCSR` |
+| 6. Trace ETM (ETMv3) | — | — | ✅ = OpenCSD | — | — |
+| 7. Analyse temporelle | ✅ | ✅ cycle-accurate, horodatage | ✅ | — | — |
+| 8. Couverture de code | ✅ | ✅ | ✅ | — | — |
+| 9. ETM par SWO | ✅ ETMv4 | — | ✅ ETMv3 | — | — |
+| 10. ETMv4 (Cortex-M7) | ✅ | — | — | — | — |
+| 11. Trace ciblée | ✅ trace de données, temps par tâche (ITM) | ✅ filtre par le DWT, trace de données (ARMv8-M) | ✅ filtres plage et start/stop | ✅ breakpoints à compteur et à message, Go.Till | 🚧 |
+| 13. ST-LINK_gdbserver, STM32N6 | — | ✅ ETMv4.5 par l'ETR, boucles LE | — | — | — |
+| 14. Cortex-M0 et M0+ | — | — | — | ✅ | 🚧 |
+| 15. Configurations | ✅ | ✅ | ✅ | ✅ | 🚧 |
+| 17. Nucleo-F446RE | — | — | ✅ | — | — |
+| 18. Mesure du temps | ✅ `DWT_CYCCNT` | ✅ `DWT_CYCCNT` | ✅ `DWT_CYCCNT` | ✅ SysTick ; journal des tâches en RAM | 🚧 |
+| 19. Débogage de tous les jours | ✅ RTT | ✅ RTT par le relais | ✅ RTT | ✅ RTT | 🚧 |
+| 20. Analyse de trace avancée | ✅ compteurs du DWT | ✅ PMU | ✅ compteurs du DWT | — | — |
+| 22. Toutes les puces Cortex-M | ✅ tables ROM (sans CTI), MPU | ✅ tables ROM, MPU ; 🚧 flash XSPI par un `.stldr` | ✅ tables ROM, MPU ; 🚧 flash par le FLM du pack | ✅ tables ROM (pas d'ETM, dit), pas de MPU | 🚧 |
+| 23. TrustZone | — | ✅ monde sécurisé, registres bancaires (vue Registres) | — | — | — |
+
+Les autres jalons ne dépendent pas d'une carte. Ils sont validés sous QEMU et sur l'hôte : programmes natifs (12), serveur MCP (16, 21), distribution des durées (24).
+
+Ce qu'aucune carte de test n'a encore passé :
+- la MTB (9, 18) : le M0+ de la STM32G070 n'en a pas ;
+- la vue Faute sur une vraie faute, le vector catch et le semihosting par OpenOCD (19) ;
+- le support RTOS d'OpenOCD (`--rtos`) et le port de trace parallèle ;
+- plusieurs cœurs et l'arrêt synchrone par CTI (23) : aucune carte de test n'a deux cœurs.

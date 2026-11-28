@@ -440,8 +440,9 @@ blocs `<!-- test -->` sont exécutés en `--batch` par `tests/test_docs.py` et d
   (jalons 18-22) : chrono (`boards.chrono_passes`, comparé au compte des ticks : SysTick sur la
   F072, `DWT_CYCCNT` sur F746, F446 et N6), journal des tâches en RAM lu en marche (F072), RTT
   en marche (F072, F746, F446, N6), compteurs du DWT (F746, F446) et de la PMU (N6), tables ROM
-  et MPU (F746, F446, N6 ; la STM32F746 n'intègre pas le CTI du Cortex-M7 : entrée de la
-  table non présente). Prêts, pas encore passés : tables ROM de la F072, FLM d'un pack (F446),
+  (F746, F446, N6, F072) et MPU (F746, F446, N6 ; la STM32F746 n'intègre pas le CTI du Cortex-M7 :
+  entrée de la table non présente), état sécurisé du M55 de la N6 (jalon 23, vue Registres). Matrice
+  jalon × carte : `Documentations/Jalons.md`. Prêts, pas encore passés : FLM d'un pack (F446),
   chargeur externe de la flash XSPI (N6) (`boards.system_passes`, `flash_by_algorithm`). Un
   firmware recompilé déplace `worker_step` : `etm-stop` de `nucleo-f446re.yaml` est son
   `bx lr` (vérifié par le test). Non validé sur sonde

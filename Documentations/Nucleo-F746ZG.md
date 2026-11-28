@@ -45,6 +45,8 @@ Ce script lance toute la suite, construit l'oracle OpenCSD s'il manque, et **exi
 3. déroule trois phases : arrêt sur `worker_step`, marche avec le profil, arrêt final ;
 4. relève à chaque phase le contenu de toutes les vues dans `tests/artifacts/board-f746.json`, et un test par vue vérifie ce qui doit s'y afficher.
 
+Il mesure en plus le chrono (`DWT_CYCCNT`) et les compteurs du DWT entre deux passages par `worker_step`, lit le RTT en marche par le port TCL d'OpenOCD, et relève les tables ROM CoreSight et la MPU. La STM32F746 n'intègre pas le CTI du Cortex-M7 : l'entrée de la table du cœur est marquée absente, et GdbTrace ne le liste pas.
+
 La carte est trouvée seule (sonde ST-LINK dans `/sys`, puis identité de la puce lue par OpenOCD). `GDBTRACE_F746_SERIAL` impose la sonde, `GDBTRACE_SVD_DIR` le dossier du SVD. Avec pytest, `--boards=auto` (défaut) ignore ces tests sans carte, `--boards=require` les fait échouer, `--boards=skip` les désactive.
 
 Le test remplace le firmware de la carte, et la laisse sans ETM ni stall.

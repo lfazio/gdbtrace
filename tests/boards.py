@@ -279,7 +279,9 @@ def system_checks(passed: dict, kinds: set[str], etm: int | None, arch: str) -> 
     assert kinds <= found, (kinds - found, passed["coresight"])
     etms = [c["etm"] for c in passed["coresight"] if c["type"] == "ETM"]
     if etm is None:
-        assert not etms and "pas d'ETM" in (passed["sans_etm"] or ""), passed
+        # « pas d'ETM » (table ROM sans ETM) ; « ni ITM, ni SWO, ni ETM » (cœur ARMv6-M)
+        why = passed["sans_etm"] or ""
+        assert not etms and ("pas d'ETM" in why or "ni ETM" in why), passed
     else:
         assert etms == [etm], passed["coresight"]
     m = passed["mpu"]
